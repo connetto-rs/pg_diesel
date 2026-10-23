@@ -2,7 +2,7 @@
 
 use sql_traits::{
     errors::LookupError,
-    traits::{DatabaseLike, DocumentationMetadata, Metadata, PartitionStrategy, TableLike},
+    traits::{DatabaseLike, Metadata, PartitionStrategy, TableLike},
 };
 
 use crate::{
@@ -12,10 +12,6 @@ use crate::{
 
 impl Metadata for PgTable {
     type Meta = TableMetadata;
-}
-
-impl DocumentationMetadata for PgTable {
-    type Documentation = ();
 }
 
 /// Returns the metadata `database` holds for `table`.
