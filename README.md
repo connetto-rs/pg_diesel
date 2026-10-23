@@ -4,7 +4,6 @@
 [![Security Audit](https://github.com/earth-metabolome-initiative/pg_diesel/workflows/Security%20Audit/badge.svg)](https://github.com/earth-metabolome-initiative/pg_diesel/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Codecov](https://codecov.io/gh/earth-metabolome-initiative/pg_diesel/branch/main/graph/badge.svg)](https://codecov.io/gh/earth-metabolome-initiative/pg_diesel)
-[![Codacy](https://app.codacy.com/project/badge/Grade/bd0cd35c4f5c42b7aa8bf9f5e5e26513)](https://app.codacy.com/gh/earth-metabolome-initiative/pg_diesel/dashboard)
 
 Diesel schemas and models for 216 `PostgreSQL` metadata relations across `pg_catalog`, `information_schema` and `PostGIS`, so a program can read a live schema the way it reads its own tables. `PgDieselDatabaseBuilder` turns a connection into a `PgDieselDatabase`, the `sql_traits` object model of one catalog, which is what makes the crate useful for code generation. The `sql_traits` crate is re-exported so a consumer speaks the version this crate was built against.
 
