@@ -14,7 +14,7 @@ ipnetwork = { version = "0.21.1", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"], optional = true }
 bigdecimal = { version = "0.4", features = ["serde"] }
 sql-traits = { git = "https://github.com/earth-metabolome-initiative/sql-traits", branch = "main" }
-sqlparser = { version = "0.62", features = ["serde", "visitor"] }
+sqlparser = { version = "0.63", features = ["serde", "visitor"] }
 thiserror = "2.0.17"
 
 [dev-dependencies]
@@ -26,8 +26,8 @@ proc-macro2 = "1.0"
 tempfile = "3.20"
 
 # `sql-traits` main tracks `sqlparser` upstream main, which carries AST changes
-# not yet in the 0.62 release (`CheckConstraint::no_inherit`,
-# `AlterTableOperation::SetLogged`, `ArrayElemTypeDef::Qualified`, ...).
+# not yet in a release. The `sqlparser` requirement names the version upstream
+# main declares, otherwise the patch does not apply to this crate.
 # Patching at the workspace root keeps every dependent on one `sqlparser`, so
 # AST types stay compatible across crate boundaries.
 [patch.crates-io]
