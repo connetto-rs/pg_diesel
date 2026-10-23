@@ -154,7 +154,7 @@
   <rect x="0" y="0" width="800" height="135" fill="url(#accentGradient)"/>
 
   <!-- Title (clickable) -->
-  <a href="https://github.com/earth-metabolome-initiative/pg_diesel" target="_blank">
+  <a href="https://github.com/connetto-rs/pg_diesel" target="_blank">
     <text x="400" y="55" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="42" font-weight="700" fill="white" style="cursor: pointer;">pg_diesel</text>
   </a>
   <text x="400" y="80" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" fill="rgba(255,255,255,0.9)">PostgreSQL Diesel Models &amp; Schemas for Rust</text>
@@ -386,14 +386,14 @@
 
   <!-- Footer -->
   <rect x="0" y="1025" width="800" height="80" fill="#1E293B"/>
-  <a href="https://github.com/earth-metabolome-initiative/pg_diesel" target="_blank">
+  <a href="https://github.com/connetto-rs/pg_diesel" target="_blank">
     <use href="#fa-github" x="355" y="1040" width="20" height="20" fill="rgba(255,255,255,0.8)" style="cursor: pointer;"/>
   </a>
   <a href="https://crates.io/crates/pg_diesel" target="_blank">
     <use href="#fa-database" x="423" y="1040" width="20" height="20" fill="rgba(255,255,255,0.8)" style="cursor: pointer;"/>
   </a>
-  <a href="https://github.com/earth-metabolome-initiative/pg_diesel" target="_blank">
-    <text x="400" y="1075" text-anchor="middle" font-family="system-ui, sans-serif" font-size="13" fill="rgba(255,255,255,0.85)" style="cursor: pointer;">github.com/earth-metabolome-initiative/pg_diesel</text>
+  <a href="https://github.com/connetto-rs/pg_diesel" target="_blank">
+    <text x="400" y="1075" text-anchor="middle" font-family="system-ui, sans-serif" font-size="13" fill="rgba(255,255,255,0.85)" style="cursor: pointer;">github.com/connetto-rs/pg_diesel</text>
   </a>
   <text x="400" y="1093" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" fill="rgba(255,255,255,0.5)">
     <a href="https://earth-metabolome-initiative.github.io/" target="_blank" style="fill: rgba(255,255,255,0.5);">Earth Metabolome Initiative</a>  |  Rust 2024 Edition  |  <a href="https://diesel.rs" target="_blank" style="fill: rgba(255,255,255,0.6);">Diesel ORM</a>  |  Apache-licensed sqlparser
