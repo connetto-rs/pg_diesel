@@ -114,7 +114,7 @@ jobs:
         cargo tarpaulin --engine=llvm --out xml --workspace --run-types AllTargets --no-default-features --features postgres-18
         mv cobertura.xml coverage-postgres-18.xml
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+      uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         files: ./coverage-postgres-14.xml,./coverage-postgres-15.xml,./coverage-postgres-16.xml,./coverage-postgres-17.xml,./coverage-postgres-18.xml

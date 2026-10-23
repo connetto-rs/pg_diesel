@@ -3,7 +3,7 @@
 use sql_traits::{
     errors::{LookupError, ObjectKind},
     structs::TargetName,
-    traits::{DatabaseLike, DocumentationMetadata, Metadata, PolicyLike},
+    traits::{DatabaseLike, Metadata, PolicyLike},
 };
 use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Expr, Owner};
 
@@ -14,10 +14,6 @@ use crate::{
 
 impl Metadata for PgPolicy {
     type Meta = PolicyMetadata;
-}
-
-impl DocumentationMetadata for PgPolicy {
-    type Documentation = ();
 }
 
 /// Returns the metadata `database` holds for `policy`.
