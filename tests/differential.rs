@@ -1,0 +1,260 @@
+//! Differential test of [`PgDieselDatabase`] against `ParserDB`.
+//!
+//! Every DDL document under `tests/differential/corpus` is applied to a fresh
+//! `PostgreSQL` database, read back through [`PgDieselDatabaseBuilder`], and
+//! parsed by `ParserDB`. The two models are described through the
+//! `sql-traits` traits and compared fact by fact. A difference fails the test
+//! unless [`expected::EXPECTED`] names it.
+
+mod test_utils;
+
+#[path = "differential/compare.rs"]
+mod compare;
+#[path = "differential/deparse.rs"]
+mod deparse;
+#[path = "differential/expected.rs"]
+mod expected;
+
+use std::{
+    collections::BTreeSet,
+    fmt::Write as _,
+    fs,
+    path::{Path, PathBuf},
+};
+
+use diesel::{
+    ExpressionMethods, JoinOnDsl, PgConnection, QueryDsl, RunQueryDsl, TextExpressionMethods,
+    connection::SimpleConnection,
+    dsl::sql,
+    sql_types::{Oid, Text},
+};
+use pg_diesel::{
+    PgDieselDatabase,
+    database::PgDieselDatabaseBuilder,
+    schema::pg_catalog::{
+        pg_class::pg_class, pg_depend::pg_depend, pg_namespace::pg_namespace, pg_proc::pg_proc,
+        pg_roles::pg_roles,
+    },
+    sql_traits::structs::ParserDB,
+    sqlparser::dialect::PostgreSqlDialect,
+};
+use test_utils::{establish_connection, reference_docker};
+
+use crate::{
+    compare::{AlreadyStored, Difference, Scope, describe, differences},
+    deparse::ThroughPostgres,
+};
+
+/// The port the differential container listens on.
+const PORT: u16 = 35437;
+/// The maintenance database documents are created from.
+const MAINTENANCE: &str = "differential";
+/// The superuser the container creates, left out of role comparisons.
+const SUPERUSER: &str = "user";
+
+/// Returns every corpus document, sorted by path.
+fn corpus() -> Vec<PathBuf> {
+    fn walk(directory: &Path, documents: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(directory).expect("the corpus directory is readable") {
+            let path = entry.expect("the corpus entry is readable").path();
+            if path.is_dir() {
+                walk(&path, documents);
+            } else if path.extension().is_some_and(|extension| extension == "sql") {
+                documents.push(path);
+            }
+        }
+    }
+    let mut documents = Vec::new();
+    walk(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/differential/corpus"),
+        &mut documents,
+    );
+    documents.sort();
+    documents
+}
+
+/// Returns `name` as a quoted identifier.
+fn quoted(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// Drops every role a document created, so the next document starts from the
+/// cluster's own roles.
+fn drop_document_roles(maintenance: &mut PgConnection) {
+    let roles: Vec<Option<String>> = pg_roles::table
+        .filter(pg_roles::rolname.not_like("pg\\_%"))
+        .filter(pg_roles::rolname.ne(SUPERUSER))
+        .select(pg_roles::rolname)
+        .load(maintenance)
+        .expect("the roles are listed");
+    for role in roles.into_iter().flatten() {
+        maintenance
+            .batch_execute(&format!("DROP ROLE {};", quoted(&role)))
+            .unwrap_or_else(|error| panic!("the role {role} drops: {error}"));
+    }
+}
+
+/// What one document produced.
+enum Outcome {
+    /// Both models were described, with these unexplained differences.
+    Compared(Vec<Difference>),
+    /// The document could not be compared, for this reason.
+    Failed(String),
+}
+
+/// Returns the `(schema, name)` of every function and relation an extension
+/// script created, which `pg_depend` ties to the extension with deptype `e`.
+fn extension_members(connection: &mut PgConnection) -> BTreeSet<(String, String)> {
+    let functions: Vec<(String, String)> = pg_depend::table
+        .inner_join(pg_proc::table.on(pg_proc::oid.eq(pg_depend::objid)))
+        .inner_join(pg_namespace::table.on(pg_namespace::oid.eq(pg_proc::pronamespace)))
+        .filter(pg_depend::deptype.eq("e"))
+        .filter(pg_depend::classid.eq(sql::<Oid>("'pg_proc'::regclass")))
+        .select((pg_namespace::nspname, pg_proc::proname))
+        .load(connection)
+        .expect("the extension functions are listed");
+    let relations: Vec<(String, String)> = pg_depend::table
+        .inner_join(pg_class::table.on(pg_class::oid.eq(pg_depend::objid)))
+        .inner_join(pg_namespace::table.on(pg_namespace::oid.eq(pg_class::relnamespace)))
+        .filter(pg_depend::deptype.eq("e"))
+        .filter(pg_depend::classid.eq(sql::<Oid>("'pg_class'::regclass")))
+        .select((pg_namespace::nspname, pg_class::relname))
+        .load(connection)
+        .expect("the extension relations are listed");
+    functions.into_iter().chain(relations).collect()
+}
+
+/// Applies `ddl` to the database `database`, then describes and compares the
+/// two models.
+fn compare_document(database: &str, ddl: &str) -> Outcome {
+    let mut connection: PgConnection =
+        establish_connection(PORT, database).expect("the document database accepts connections");
+    if let Err(error) = connection.batch_execute(ddl) {
+        return Outcome::Failed(format!("PostgreSQL refused the document: {error}"));
+    }
+    let source = match ParserDB::parse::<PostgreSqlDialect>(ddl) {
+        Ok(source) => source,
+        Err(error) => return Outcome::Failed(format!("ParserDB refused the document: {error}")),
+    };
+    let default_schema: String = diesel::select(sql::<Text>("current_schema()"))
+        .get_result(&mut connection)
+        .expect("the session has a current schema");
+    let schemas: Vec<String> = pg_namespace::table
+        .filter(pg_namespace::nspname.not_like("pg\\_%"))
+        .filter(pg_namespace::nspname.ne("information_schema"))
+        .select(pg_namespace::nspname)
+        .load(&mut connection)
+        .expect("the schemas are listed");
+    let scope = Scope {
+        default_schema,
+        schemas,
+        ignored_roles: vec![SUPERUSER.to_owned()],
+        extension_members: extension_members(&mut connection),
+    };
+    let live: PgDieselDatabase = match PgDieselDatabaseBuilder::default()
+        .connection(&mut connection)
+        .catalog(database)
+        .schemas(&scope.schemas)
+        .try_into()
+    {
+        Ok(live) => live,
+        Err(error) => {
+            return Outcome::Failed(format!("pg_diesel could not read the database: {error}"));
+        }
+    };
+    let live_facts = match describe(&live, &scope, &mut AlreadyStored) {
+        Ok(facts) => facts,
+        Err(error) => return Outcome::Failed(format!("describing the live model failed: {error}")),
+    };
+    let source_facts = match describe(&source, &scope, &mut ThroughPostgres::new(&mut connection)) {
+        Ok(facts) => facts,
+        Err(error) => {
+            return Outcome::Failed(format!("describing the source model failed: {error}"));
+        }
+    };
+    Outcome::Compared(
+        differences(&source_facts, &live_facts)
+            .into_iter()
+            .filter(|difference| match expected::accepted(difference) {
+                Some(accepted) => {
+                    eprintln!(
+                        "{database}: {difference} accepted as {}, {}",
+                        accepted.name, accepted.reason
+                    );
+                    false
+                }
+                None => true,
+            })
+            .collect(),
+    )
+}
+
+/// Returns the oldest `PostgreSQL` major version a document's DDL needs, from
+/// a `-- minimum server: N` line among its leading comments.
+fn minimum_server(ddl: &str) -> Option<u32> {
+    ddl.lines()
+        .take_while(|line| line.starts_with("--"))
+        .find_map(|line| line.strip_prefix("-- minimum server:"))
+        .map(|version| {
+            version
+                .trim()
+                .parse()
+                .expect("a minimum server line names a major version")
+        })
+}
+
+#[tokio::test]
+async fn parser_and_catalog_agree_on_every_corpus_document() {
+    let _docker = reference_docker(PORT, MAINTENANCE)
+        .await
+        .expect("the container starts");
+    let mut maintenance: PgConnection = establish_connection(PORT, MAINTENANCE)
+        .expect("the maintenance database accepts connections");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/differential/corpus");
+    let server_major = diesel::select(sql::<Text>("current_setting('server_version_num')"))
+        .get_result::<String>(&mut maintenance)
+        .expect("the server reports its version")
+        .parse::<u32>()
+        .expect("server_version_num is a number")
+        / 10_000;
+    let mut report = String::new();
+    let documents = corpus();
+    assert!(!documents.is_empty(), "the corpus holds documents");
+    for (number, document) in documents.iter().enumerate() {
+        let ddl = fs::read_to_string(document).expect("the document is readable");
+        let name = document.strip_prefix(&root).unwrap_or(document).display();
+        if let Some(minimum) = minimum_server(&ddl)
+            && server_major < minimum
+        {
+            eprintln!(
+                "{name}: skipped, it needs PostgreSQL {minimum} and the server is {server_major}"
+            );
+            continue;
+        }
+        let database = format!("document_{number}");
+        maintenance
+            .batch_execute(&format!("CREATE DATABASE {};", quoted(&database)))
+            .expect("the document database is created");
+        let outcome = compare_document(&database, &ddl);
+        maintenance
+            .batch_execute(&format!(
+                "DROP DATABASE {} WITH (FORCE);",
+                quoted(&database)
+            ))
+            .expect("the document database drops");
+        drop_document_roles(&mut maintenance);
+        match outcome {
+            Outcome::Compared(found) if found.is_empty() => {}
+            Outcome::Compared(found) => {
+                writeln!(report, "{name}:").expect("writing to a string succeeds");
+                for difference in found {
+                    writeln!(report, "  {difference}").expect("writing to a string succeeds");
+                }
+            }
+            Outcome::Failed(reason) => {
+                writeln!(report, "{name}: {reason}").expect("writing to a string succeeds");
+            }
+        }
+    }
+    assert!(report.is_empty(), "the models disagree:\n{report}");
+}
