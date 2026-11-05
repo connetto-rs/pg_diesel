@@ -14,3 +14,12 @@ diesel::table! {
         adbin -> Text,
     }
 }
+
+use super::pg_attribute::pg_attribute;
+diesel::allow_tables_to_appear_in_same_query!(pg_attrdef, pg_attribute);
+
+use super::pg_class::pg_class;
+diesel::allow_tables_to_appear_in_same_query!(pg_attrdef, pg_class);
+
+use super::pg_namespace::pg_namespace;
+diesel::allow_tables_to_appear_in_same_query!(pg_attrdef, pg_namespace);

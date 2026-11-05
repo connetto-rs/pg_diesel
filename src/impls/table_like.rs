@@ -1,9 +1,13 @@
 //! Implementation of [`TableLike`] for [`PgTable`].
 
+use std::borrow::Cow;
+
 use sql_traits::{
     errors::LookupError,
+    structs::{ForeignTableSource, PartitionBound},
     traits::{DatabaseLike, Metadata, PartitionStrategy, TableLike},
 };
+use sqlparser::ast::Action;
 
 use crate::{
     PgDieselDatabase,
@@ -116,6 +120,40 @@ impl TableLike for PgTable {
 
     fn partition_strategy(&self) -> Option<PartitionStrategy> {
         PgTable::partition_strategy(self)
+    }
+
+    fn partition_bound(&self) -> Option<PartitionBound> {
+        PgTable::partition_bound(self).cloned()
+    }
+
+    fn is_unlogged(&self) -> bool {
+        PgTable::unlogged(self)
+    }
+
+    fn storage_parameters(&self) -> impl Iterator<Item = (Cow<'_, str>, Cow<'_, str>)> {
+        PgTable::storage_parameters(self)
+            .iter()
+            .map(|(name, value)| (Cow::Borrowed(name.as_str()), Cow::Borrowed(value.as_str())))
+    }
+
+    fn toast_storage_parameters(&self) -> impl Iterator<Item = (Cow<'_, str>, Cow<'_, str>)> {
+        PgTable::toast_storage_parameters(self)
+            .iter()
+            .map(|(name, value)| (Cow::Borrowed(name.as_str()), Cow::Borrowed(value.as_str())))
+    }
+
+    fn foreign_source<'db>(
+        &self,
+        database: &'db Self::DB,
+    ) -> Result<Option<&'db ForeignTableSource>, LookupError> {
+        Ok(metadata(self, database)?.foreign_source())
+    }
+
+    fn owner_privileges<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<impl Iterator<Item = &'db Action>, LookupError> {
+        Ok(metadata(self, database)?.owner_privileges().iter())
     }
 
     fn indices<'db>(

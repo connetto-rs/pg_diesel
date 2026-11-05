@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+use diesel::dsl::sql;
+use diesel::sql_types::Text;
 use diesel::{PgConnection, QueryDsl, RunQueryDsl, SelectableHelper};
 
 use crate::models::PgType;
@@ -15,6 +17,9 @@ use crate::models::PgType;
 pub struct CatalogCache {
     /// Every type, by the OID `pg_type` records it under.
     types: HashMap<u32, PgType>,
+    /// The name `format_type` resolves each type to in the reading session,
+    /// by OID.
+    type_names: HashMap<u32, String>,
     /// Every role name, by the OID `pg_roles` records it under.
     roles: HashMap<u32, String>,
     /// Every schema name, by the OID `pg_namespace` records it under.
@@ -42,6 +47,14 @@ impl CatalogCache {
             .load::<PgType>(conn)?
             .into_iter()
             .map(|pg_type| (pg_type.oid, pg_type))
+            .collect();
+
+        // The name a type reads as is the session's own print of it, no type
+        // modifier.
+        let type_names = pg_type::table
+            .select((pg_type::oid, sql::<Text>("format_type(oid, NULL)")))
+            .load::<(u32, String)>(conn)?
+            .into_iter()
             .collect();
 
         let roles = pg_roles::table
@@ -78,6 +91,7 @@ impl CatalogCache {
 
         Ok(Self {
             types,
+            type_names,
             roles,
             namespaces,
             languages,
@@ -89,6 +103,13 @@ impl CatalogCache {
     #[must_use]
     pub fn pg_type(&self, oid: u32) -> Option<&PgType> {
         self.types.get(&oid)
+    }
+
+    /// Returns the name `format_type` resolves the type under `oid` to in
+    /// the reading session.
+    #[must_use]
+    pub fn type_name(&self, oid: u32) -> Option<&str> {
+        self.type_names.get(&oid).map(String::as_str)
     }
 
     /// Returns the role recorded under `oid`.

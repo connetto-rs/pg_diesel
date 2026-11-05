@@ -1,6 +1,19 @@
 //! Referential constraint model.
 
 use diesel::{Queryable, QueryableByName, Selectable};
+use sqlparser::ast::ReferentialAction;
+
+/// Reads the rule `PostgreSQL` stores for a referential action.
+fn referential_action(rule: &str) -> ReferentialAction {
+    match rule.to_uppercase().as_str() {
+        "NO ACTION" => ReferentialAction::NoAction,
+        "RESTRICT" => ReferentialAction::Restrict,
+        "CASCADE" => ReferentialAction::Cascade,
+        "SET NULL" => ReferentialAction::SetNull,
+        "SET DEFAULT" => ReferentialAction::SetDefault,
+        other => unreachable!("unexpected referential action: {other}"),
+    }
+}
 
 #[derive(Queryable, QueryableByName, Selectable, PartialEq, Eq, Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -28,10 +41,18 @@ pub struct ReferentialConstraint {
 }
 
 impl ReferentialConstraint {
-    /// Returns true if the referential constraint has an ON DELETE CASCADE rule
+    /// Returns the action the constraint takes on its referencing rows when a
+    /// referenced row is deleted.
     #[must_use]
-    pub fn on_delete_cascade(&self) -> bool {
-        self.delete_rule.eq_ignore_ascii_case("CASCADE")
+    pub fn on_delete(&self) -> sqlparser::ast::ReferentialAction {
+        referential_action(&self.delete_rule)
+    }
+
+    /// Returns the action the constraint takes on its referencing rows when a
+    /// referenced key is updated.
+    #[must_use]
+    pub fn on_update(&self) -> sqlparser::ast::ReferentialAction {
+        referential_action(&self.update_rule)
     }
 
     /// Returns the match kind of the referential constraint
@@ -65,15 +86,26 @@ mod tests {
     }
 
     #[test]
-    fn test_on_delete_cascade() {
+    fn test_referential_actions() {
         let mut constraint = dummy_referential_constraint();
-        assert!(!constraint.on_delete_cascade());
+        assert_eq!(constraint.on_delete(), ReferentialAction::NoAction);
+        assert_eq!(constraint.on_update(), ReferentialAction::NoAction);
 
-        constraint.delete_rule = "CASCADE".to_string();
-        assert!(constraint.on_delete_cascade());
+        for (rule, action) in [
+            ("NO ACTION", ReferentialAction::NoAction),
+            ("RESTRICT", ReferentialAction::Restrict),
+            ("CASCADE", ReferentialAction::Cascade),
+            ("SET NULL", ReferentialAction::SetNull),
+            ("SET DEFAULT", ReferentialAction::SetDefault),
+        ] {
+            constraint.delete_rule = rule.to_string();
+            constraint.update_rule = rule.to_string();
+            assert_eq!(constraint.on_delete(), action);
+            assert_eq!(constraint.on_update(), action);
+        }
 
         constraint.delete_rule = "cascade".to_string();
-        assert!(constraint.on_delete_cascade());
+        assert_eq!(constraint.on_delete(), ReferentialAction::Cascade);
     }
 
     #[test]

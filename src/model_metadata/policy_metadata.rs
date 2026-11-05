@@ -1,16 +1,18 @@
 //! `PolicyMetadata` struct.
 
-use crate::model_metadata::PgFunction;
+use sql_traits::structs::metadata::ExpressionCalls;
 use sqlparser::ast::{Expr, Owner};
-use std::sync::Arc;
+
+use crate::model_metadata::PgFunction;
 
 #[derive(Debug, Clone)]
 /// Metadata for a policy.
 pub struct PolicyMetadata {
-    /// Functions used in USING expression.
-    pub using_functions: Vec<Arc<PgFunction>>,
-    /// Functions used in WITH CHECK expression.
-    pub check_functions: Vec<Arc<PgFunction>>,
+    /// The functions each call of the USING expression may reach, resolved
+    /// under the search path in force where the policy was written.
+    pub using_calls: ExpressionCalls<PgFunction>,
+    /// The functions each call of the WITH CHECK expression may reach.
+    pub check_calls: ExpressionCalls<PgFunction>,
     /// Parsed USING expression.
     pub using_expression: Option<Expr>,
     /// Parsed WITH CHECK expression.
@@ -23,29 +25,41 @@ impl PolicyMetadata {
     /// Creates a new `PolicyMetadata`.
     #[must_use]
     pub fn new(
-        using_functions: Vec<Arc<PgFunction>>,
-        check_functions: Vec<Arc<PgFunction>>,
+        using_calls: ExpressionCalls<PgFunction>,
+        check_calls: ExpressionCalls<PgFunction>,
         using_expression: Option<Expr>,
         check_expression: Option<Expr>,
         roles: Vec<Owner>,
     ) -> Self {
         Self {
-            using_functions,
-            check_functions,
+            using_calls,
+            check_calls,
             using_expression,
             check_expression,
             roles,
         }
     }
 
-    /// Returns using functions.
-    pub fn using_functions(&self) -> impl Iterator<Item = &Arc<PgFunction>> {
-        self.using_functions.iter()
+    /// Returns the call record of the USING expression.
+    #[must_use]
+    pub fn using_calls(&self) -> &ExpressionCalls<PgFunction> {
+        &self.using_calls
     }
 
-    /// Returns check functions.
-    pub fn check_functions(&self) -> impl Iterator<Item = &Arc<PgFunction>> {
-        self.check_functions.iter()
+    /// Returns the call record of the WITH CHECK expression.
+    #[must_use]
+    pub fn check_calls(&self) -> &ExpressionCalls<PgFunction> {
+        &self.check_calls
+    }
+
+    /// Returns the functions the USING expression may reach, each once.
+    pub fn using_functions(&self) -> impl Iterator<Item = &PgFunction> {
+        self.using_calls.functions()
+    }
+
+    /// Returns the functions the WITH CHECK expression may reach, each once.
+    pub fn check_functions(&self) -> impl Iterator<Item = &PgFunction> {
+        self.check_calls.functions()
     }
 
     /// Returns the using expression.

@@ -4,7 +4,6 @@ use diesel::{PgConnection, Queryable, QueryableByName, Selectable};
 
 mod cached_queries;
 pub(crate) use cached_queries::*;
-use sql_traits::traits::ColumnLike;
 use sqlparser::parser::Parser;
 
 use crate::models::{Column, Table};
@@ -87,7 +86,7 @@ impl PgIndex {
             "({})",
             self.columns(conn)?
                 .iter()
-                .map(|column| column.column_name().to_owned())
+                .map(|column| column.column_name.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")
         );

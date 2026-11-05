@@ -28,6 +28,18 @@ pub struct PgAttribute {
     /// Type-specific data about the column (e.g., precision for numeric types).
     pub atttypmod: i32,
     /// The number of dimensions if the column is an array type.
+    #[cfg(not(any(
+        feature = "postgres-16",
+        feature = "postgres-17",
+        feature = "postgres-18"
+    )))]
+    pub attndims: i32,
+    /// The number of dimensions if the column is an array type.
+    #[cfg(any(
+        feature = "postgres-16",
+        feature = "postgres-17",
+        feature = "postgres-18"
+    ))]
     pub attndims: i16,
     /// Whether the column is passed by value.
     pub attbyval: bool,
@@ -66,7 +78,21 @@ pub struct PgAttribute {
     pub attinhcount: i16,
     /// The collation of the column.
     pub attcollation: u32,
-    /// The statistics target for the column (if any).
+    /// The statistics target for the column.
+    #[cfg(not(any(
+        feature = "postgres-16",
+        feature = "postgres-17",
+        feature = "postgres-18"
+    )))]
+    pub attstattarget: i32,
+    /// The statistics target for the column.
+    #[cfg(all(
+        feature = "postgres-16",
+        not(any(feature = "postgres-17", feature = "postgres-18"))
+    ))]
+    pub attstattarget: i16,
+    /// The statistics target for the column, if one is set.
+    #[cfg(any(feature = "postgres-17", feature = "postgres-18"))]
     pub attstattarget: Option<i16>,
     /// The column options (if any).
     pub attoptions: Option<Vec<String>>,

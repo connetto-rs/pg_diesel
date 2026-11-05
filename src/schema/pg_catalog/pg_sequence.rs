@@ -22,3 +22,9 @@ diesel::table! {
         seqcycle -> Bool,
     }
 }
+
+use super::pg_class::pg_class;
+diesel::allow_tables_to_appear_in_same_query!(pg_sequence, pg_class);
+
+use super::pg_namespace::pg_namespace;
+diesel::allow_tables_to_appear_in_same_query!(pg_sequence, pg_namespace);

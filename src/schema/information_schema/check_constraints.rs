@@ -23,3 +23,6 @@ diesel::allow_tables_to_appear_in_same_query!(check_constraints, constraint_colu
 
 use super::columns::columns;
 diesel::allow_tables_to_appear_in_same_query!(check_constraints, columns);
+
+use crate::schema::pg_catalog::pg_constraint::pg_constraint;
+diesel::allow_tables_to_appear_in_same_query!(check_constraints, pg_constraint);

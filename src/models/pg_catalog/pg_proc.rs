@@ -5,6 +5,7 @@ use diesel::{PgConnection, Queryable, QueryableByName, Selectable};
 use crate::models::PgExtension;
 
 mod cached_queries;
+pub use cached_queries::ProcAclEntry;
 
 /// Represents the `pg_proc` system catalog table in `PostgreSQL`.
 /// This table stores information about functions and procedures.
@@ -93,15 +94,49 @@ impl PgProc {
         cached_queries::extension(self, conn)
     }
 
-    /// Loads all the functions from the `pg_proc` table, excluding procedures,
-    /// aggregates, non-strict functions, set-returning functions, and functions
-    /// returning "void".
+    /// Loads every `pg_proc` row except the procedures.
     ///
     /// # Errors
     ///
     /// * If the database query fails.
     pub fn load_all(conn: &mut PgConnection) -> Result<Vec<PgProc>, diesel::result::Error> {
         cached_queries::load_all(conn)
+    }
+
+    /// Loads one entry per `EXECUTE` grant `pg_proc.proacl` records, for
+    /// every function [`load_all`](Self::load_all) holds.
+    ///
+    /// # Errors
+    ///
+    /// * If the database query fails.
+    pub fn load_all_execute_grants(
+        conn: &mut PgConnection,
+    ) -> Result<Vec<ProcAclEntry>, diesel::result::Error> {
+        cached_queries::load_all_execute_grants(conn)
+    }
+
+    /// Loads the definition `pg_get_functiondef` prints for every function
+    /// whose body `PostgreSQL` bound at creation, beside its OID.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `diesel::result::Error` if the query fails.
+    pub fn load_bound_definitions(
+        conn: &mut PgConnection,
+    ) -> Result<Vec<(u32, String)>, diesel::result::Error> {
+        cached_queries::load_bound_definitions(conn)
+    }
+
+    /// Loads `(function, reached)` OID pairs, one per function a bound body
+    /// reached.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `diesel::result::Error` if the query fails.
+    pub fn load_bound_dependencies(
+        conn: &mut PgConnection,
+    ) -> Result<Vec<(u32, u32)>, diesel::result::Error> {
+        cached_queries::load_bound_dependencies(conn)
     }
 }
 

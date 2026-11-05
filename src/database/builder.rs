@@ -1,17 +1,18 @@
 //! Builder pattern for constructing a [`PgDieselDatabase`] instance.
 
-use std::{collections::HashMap, ops::ControlFlow, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
-use diesel::PgConnection;
+use diesel::{
+    ExpressionMethods, JoinOnDsl, PgConnection, QueryDsl, RunQueryDsl,
+    dsl::sql,
+    sql_types::{Array, Text},
+};
 use sql_traits::{
-    errors::LookupError, structs::generic_db::GenericDBBuilder, traits::FunctionLike,
-    utils::identifier_resolution::identifiers_match,
+    errors::LookupError,
+    structs::{IdentifierCase, generic_db::GenericDBBuilder, metadata::ExpressionCalls},
 };
 use sqlparser::{
-    ast::{
-        Expr, Grantee, GranteeName, GranteesType, Ident, ObjectName, ObjectNamePart, Owner,
-        visit_expressions,
-    },
+    ast::{Expr, Grantee, GranteeName, GranteesType, Ident, ObjectName, ObjectNamePart, Owner},
     dialect::PostgreSqlDialect,
     parser::Parser,
 };
@@ -22,52 +23,139 @@ use crate::{
     dialect::PostgresDialect,
     impls::{RoleColumnGrantsMetadata, RoleTableGrantsMetadata, string_to_action},
     model_metadata::{
-        PgFunction, PgPolicy, PgTable, PgViewDefinition, TriggerMetadata, UnknownPartitionStrategy,
-        ViewDefinitionError,
+        DomainDefinitionError, PgColumn, PgDomainEntry, PgExtensionEntry, PgFunction, PgPolicy,
+        PgRoleMembership, PgRuleEntry, PgSequenceEntry, PgTable, PgTableError, PgViewDefinition,
+        RuleDefinitionError, TriggerMetadata, ViewDefinitionError,
     },
     models::{
-        Column, PgMatview, PgProc, PgRole, PgView, RoleColumnGrants, RoleTableGrants, Schemata,
-        Table,
+        PgMatview, PgProc, PgRole, PgView, RoleColumnGrants, RoleTableGrants, Schemata, Table,
     },
 };
 
-/// Returns the loaded functions `expression` calls, each once.
+/// Returns the schemas the reading session resolves unqualified names in,
+/// which is the path `pg_get_expr` leaves names unqualified under.
 ///
-/// A call is matched on the last part of its name, so a call written with a
-/// schema qualifier and one written without resolve to the same function.
-fn called_functions(
+/// # Errors
+///
+/// Returns a `diesel::result::Error` if the query fails.
+fn session_search_path(
+    connection: &mut PgConnection,
+) -> Result<Vec<(String, bool)>, diesel::result::Error> {
+    let schemas: Vec<String> = diesel::select(sql::<Array<Text>>("current_schemas(false)::text[]"))
+        .get_result(connection)?;
+    Ok(schemas.into_iter().map(|schema| (schema, true)).collect())
+}
+
+/// The grantee one `aclexplode` entry names, `PUBLIC` for the pseudo-role.
+fn acl_grantee(name: &str) -> Grantee {
+    if name.eq_ignore_ascii_case("PUBLIC") {
+        Grantee {
+            grantee_type: GranteesType::Public,
+            name: None,
+        }
+    } else {
+        Grantee {
+            grantee_type: GranteesType::None,
+            name: Some(GranteeName::ObjectName(ObjectName(vec![
+                ObjectNamePart::Identifier(Ident::new(name)),
+            ]))),
+        }
+    }
+}
+
+/// Returns `expression`'s calls resolved against `functions` under
+/// `search_path`, or no calls for an absent expression.
+fn expression_calls(
     expression: Option<&Expr>,
     functions: &[Arc<PgFunction>],
-) -> Vec<Arc<PgFunction>> {
-    let Some(expression) = expression else {
-        return Vec::new();
-    };
+    search_path: &[(&str, bool)],
+) -> ExpressionCalls<PgFunction> {
+    expression.map_or_else(ExpressionCalls::default, |expression| {
+        ExpressionCalls::resolve(
+            expression,
+            functions,
+            search_path,
+            IdentifierCase::AsWritten,
+        )
+    })
+}
 
-    let mut called: Vec<Arc<PgFunction>> = Vec::new();
-    let _: ControlFlow<()> = visit_expressions(expression, |expr| {
-        if let Expr::Function(function) = expr
-            && let Some(ObjectNamePart::Identifier(ident)) = function.name.0.last()
-        {
-            called.extend(
-                functions
-                    .iter()
-                    .filter(|candidate| {
-                        identifiers_match(
-                            candidate.name(),
-                            candidate.name_is_quoted(),
-                            &ident.value,
-                            ident.quote_style.is_some(),
-                        )
-                    })
-                    .cloned(),
-            );
+/// The first OID `PostgreSQL` hands to an object created after `initdb`.
+///
+/// Objects below it are pinned, and the server records no `pg_depend` row on
+/// a pinned object, so a bound body's calls to built-in functions leave no
+/// trace there.
+const FIRST_NORMAL_OBJECT_ID: u32 = 16384;
+
+/// Returns the pinned functions the calls of the bound body `definition`
+/// reach, resolved against `functions` under `search_path`, the path
+/// `pg_get_functiondef` printed the definition under.
+///
+/// # Errors
+///
+/// Returns the parser's complaint when `definition` does not parse.
+fn bound_calls(
+    definition: &str,
+    functions: &[Arc<PgFunction>],
+    search_path: &[(&str, bool)],
+) -> Result<Vec<u32>, String> {
+    let statements =
+        Parser::parse_sql(&PostgreSqlDialect {}, definition).map_err(|error| error.to_string())?;
+    let calls = ExpressionCalls::resolve(
+        &statements,
+        functions,
+        search_path,
+        IdentifierCase::AsWritten,
+    );
+    let mut pinned: Vec<u32> = Vec::new();
+    for function in calls.functions() {
+        if function.oid() < FIRST_NORMAL_OBJECT_ID && !pinned.contains(&function.oid()) {
+            pinned.push(function.oid());
         }
-        ControlFlow::Continue(())
-    });
+    }
+    Ok(pinned)
+}
 
-    called.sort_unstable_by_key(|function| function.oid());
-    called.dedup_by_key(|function| function.oid());
-    called
+/// Returns the `pg_class.reloptions` of every view and materialized view in
+/// the schemas, keyed by the schema and name `pg_class` records the relation
+/// under.
+///
+/// # Errors
+///
+/// Returns a `diesel::result::Error` if the query fails.
+fn relation_options(
+    connection: &mut PgConnection,
+    schemas: &[String],
+) -> Result<HashMap<(String, String), Vec<String>>, diesel::result::Error> {
+    use crate::schema::pg_catalog::{pg_class::pg_class, pg_namespace::pg_namespace};
+
+    let rows = pg_class::table
+        .inner_join(pg_namespace::table.on(pg_namespace::oid.eq(pg_class::relnamespace)))
+        .filter(pg_namespace::nspname.eq_any(schemas))
+        .filter(pg_class::relkind.eq_any(&["v", "m"]))
+        .select((
+            pg_namespace::nspname,
+            pg_class::relname,
+            pg_class::reloptions,
+        ))
+        .load::<(String, String, Option<Vec<String>>)>(connection)?;
+    Ok(rows
+        .into_iter()
+        .map(|(schema, name, options)| ((schema, name), options.unwrap_or_default()))
+        .collect())
+}
+
+/// Returns the `pg_class.reloptions` the relation of the given schema and
+/// name carries, empty when the relation left none.
+fn relation_options_for<'a>(
+    options: &'a HashMap<(String, String), Vec<String>>,
+    schema: Option<&str>,
+    name: Option<&str>,
+) -> &'a [String] {
+    schema
+        .zip(name)
+        .and_then(|(schema, name)| options.get(&(schema.to_owned(), name.to_owned())))
+        .map_or_default(Vec::as_slice)
 }
 
 #[derive(Default)]
@@ -95,15 +183,29 @@ pub enum PgDatabaseBuildError {
     #[error("Duplicate denylisted type: {0}")]
     /// A deny-listed type was inserted multiple times.
     DuplicateDenylistedType(String),
-    #[error("Unknown partitioning strategy: {0}")]
-    /// A table reported a partitioning strategy this crate does not know.
-    UnknownPartitionStrategy(#[from] UnknownPartitionStrategy),
+    #[error("Table definition: {0}")]
+    /// A table could not be read from the catalogs.
+    TableDefinition(#[from] PgTableError),
     #[error("View definition: {0}")]
     /// A view could not be read from the catalogs.
     ViewDefinition(#[from] ViewDefinitionError),
+    #[error("Rule definition: {0}")]
+    /// A rule's definition could not be read from the catalogs.
+    RuleDefinition(#[from] RuleDefinitionError),
+    #[error("Domain definition: {0}")]
+    /// A domain could not be read from the catalogs.
+    DomainDefinition(#[from] DomainDefinitionError),
     #[error("Lookup error: {0}")]
     /// Adding an object left the database unable to resolve a name.
     Lookup(#[from] LookupError),
+    #[error("The privilege {privilege} on {object} has no sqlparser action")]
+    /// The catalog grants a privilege `sqlparser::ast::Action` cannot spell.
+    UnrepresentablePrivilege {
+        /// The relation or column the privilege is granted on.
+        object: String,
+        /// The privilege as `PostgreSQL` names it.
+        privilege: String,
+    },
 }
 
 impl<'conn> PgDieselDatabaseBuilder<'conn> {
@@ -202,6 +304,11 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
         }
 
         let cache = CatalogCache::load(connection)?;
+        let search_path = session_search_path(connection)?;
+        let search_path: Vec<(&str, bool)> = search_path
+            .iter()
+            .map(|(schema, quoted)| (schema.as_str(), *quoted))
+            .collect();
 
         let roles: Vec<Arc<PgRole>> = PgRole::load_all(connection)?
             .into_iter()
@@ -209,24 +316,79 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
             .collect();
 
         // Functions come first: other objects reference them.
+        let mut function_acls = PgProc::load_all_execute_grants(connection)?
+            .into_iter()
+            .fold(
+                HashMap::<u32, Vec<crate::models::ProcAclEntry>>::new(),
+                |mut acls, entry| {
+                    acls.entry(entry.function_oid).or_default().push(entry);
+                    acls
+                },
+            );
+        let mut bound_definitions: HashMap<u32, String> =
+            PgProc::load_bound_definitions(connection)?
+                .into_iter()
+                .collect();
+        let mut bound_dependencies = PgProc::load_bound_dependencies(connection)?
+            .into_iter()
+            .fold(
+                HashMap::<u32, Vec<u32>>::new(),
+                |mut reached, (function, called)| {
+                    reached.entry(function).or_default().push(called);
+                    reached
+                },
+            );
+        let mut loaded = Vec::new();
         for function in PgProc::load_all(connection)? {
-            let metadata = crate::database::PgProcMetadata::new(&function, &cache);
+            let acls = function_acls.remove(&function.oid);
+            let metadata = crate::database::PgProcMetadata::new(&function, &cache, acls.as_deref());
             let schema = cache
                 .namespace(function.pronamespace)
                 .unwrap_or_default()
                 .to_owned();
             let language = cache.language(function.prolang).map(ToOwned::to_owned);
-            generic_builder = generic_builder.add_function(
-                Arc::new(PgFunction::new(function, schema, language)),
-                metadata,
-            );
+            let definition = bound_definitions.remove(&function.oid);
+            let mut pg_function = PgFunction::new(function, schema, language);
+            if let Some(definition) = definition {
+                pg_function = pg_function.with_bound_definition(definition);
+            }
+            loaded.push((Arc::new(pg_function), metadata));
+        }
+        let functions: Vec<Arc<PgFunction>> = loaded
+            .iter()
+            .map(|(function, _)| Arc::clone(function))
+            .collect();
+        for (function, metadata) in loaded {
+            let recorded = bound_dependencies
+                .remove(&function.oid())
+                .unwrap_or_default();
+            let metadata = match function.bound_definition() {
+                Some(definition) => metadata.with_bound_functions(
+                    bound_calls(definition, &functions, &search_path).map(|pinned| {
+                        let mut reached = recorded;
+                        for oid in pinned {
+                            if !reached.contains(&oid) {
+                                reached.push(oid);
+                            }
+                        }
+                        reached
+                    }),
+                ),
+                None => metadata,
+            };
+            generic_builder = generic_builder.add_function(function, metadata);
         }
 
         let mut tables = Vec::new();
         for table_schema in &table_schemas {
             for row in Table::load_all(connection, &table_catalog, table_schema)? {
+                let facts = row.table_facts(connection)?;
                 let partition_strategy = row.partition_strategy(connection)?;
-                tables.push(Arc::new(PgTable::new(row, partition_strategy.as_deref())?));
+                tables.push(Arc::new(PgTable::new(
+                    row,
+                    partition_strategy.as_deref(),
+                    &facts,
+                )?));
             }
         }
 
@@ -235,7 +397,7 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
         });
 
         let mut tables_by_schema_name: HashMap<(String, String), Arc<PgTable>> = HashMap::new();
-        let mut columns_by_table_column: HashMap<(String, String, String), Arc<Column>> =
+        let mut columns_by_table_column: HashMap<(String, String, String), Arc<PgColumn>> =
             HashMap::new();
         let mut policies_by_role: HashMap<String, Vec<Arc<PgPolicy>>> = HashMap::new();
 
@@ -252,13 +414,13 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
                     (
                         table.schema().to_string(),
                         table.name().to_string(),
-                        column.column_name.clone(),
+                        column.column_name().to_string(),
                     ),
                     Arc::clone(column),
                 );
 
                 let metadata = table_metadata
-                    .column_metadata(&column.column_name)
+                    .column_metadata(column.column_name())
                     .expect("a column of the table carries the metadata read with it")
                     .clone();
                 generic_builder = generic_builder.add_column(Arc::clone(column), metadata);
@@ -266,11 +428,10 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
 
             for check_constraint in table_metadata.check_constraint_arcs() {
                 let metadata = check_constraint.metadata(
-                    Arc::clone(&table),
                     &table_metadata,
                     generic_builder.function_arc_vec().as_slice(),
-                    connection,
-                )?;
+                    &search_path,
+                );
                 generic_builder =
                     generic_builder.add_check_constraint(Arc::clone(check_constraint), metadata);
             }
@@ -294,11 +455,12 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
                 );
             }
 
-            for (trigger, function_oid) in table_metadata.triggers() {
+            for (trigger, function_name, update_columns) in table_metadata.triggers() {
                 let metadata = TriggerMetadata::new(
-                    trigger.as_ref().clone(),
+                    (**trigger).clone(),
                     Arc::clone(&table),
-                    *function_oid,
+                    function_name.clone(),
+                    update_columns.clone(),
                 );
                 generic_builder = generic_builder.add_trigger(Arc::new(metadata), ());
             }
@@ -333,8 +495,8 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
 
                 let functions = generic_builder.function_arc_vec();
                 let metadata = crate::model_metadata::PolicyMetadata::new(
-                    called_functions(using_expression.as_ref(), &functions),
-                    called_functions(check_expression.as_ref(), &functions),
+                    expression_calls(using_expression.as_ref(), &functions, &search_path),
+                    expression_calls(check_expression.as_ref(), &functions, &search_path),
                     using_expression,
                     check_expression,
                     roles,
@@ -346,13 +508,42 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
             generic_builder = generic_builder.add_table(table, table_metadata)?;
         }
 
+        let view_options = relation_options(connection, &table_schemas)?;
         for view in PgView::load_all(&table_schemas, connection)? {
+            let options = relation_options_for(
+                &view_options,
+                view.schemaname.as_deref(),
+                view.viewname.as_deref(),
+            );
             generic_builder =
-                generic_builder.add_view(Arc::new(PgViewDefinition::plain(view)?), ());
+                generic_builder.add_view(Arc::new(PgViewDefinition::plain(view, options)?), ());
         }
         for view in PgMatview::load_all(&table_schemas, connection)? {
-            generic_builder = generic_builder
-                .add_materialized_view(Arc::new(PgViewDefinition::materialized(view)?), ());
+            let options = relation_options_for(
+                &view_options,
+                view.schemaname.as_deref(),
+                view.matviewname.as_deref(),
+            );
+            generic_builder = generic_builder.add_materialized_view(
+                Arc::new(PgViewDefinition::materialized(view, options)?),
+                (),
+            );
+        }
+
+        for sequence in PgSequenceEntry::load_all(&table_schemas, connection)? {
+            generic_builder = generic_builder.add_sequence(Arc::new(sequence), ());
+        }
+
+        for row in PgRuleEntry::load_rows(&table_schemas, connection)? {
+            generic_builder = generic_builder.add_rule(Arc::new(PgRuleEntry::new(row)?), ());
+        }
+
+        for extension in PgExtensionEntry::load_all(connection)? {
+            generic_builder = generic_builder.add_extension(Arc::new(extension), ());
+        }
+
+        for domain in PgDomainEntry::load_all(&table_schemas, &cache, connection)? {
+            generic_builder = generic_builder.add_domain(Arc::new(domain), ());
         }
 
         let mut role_memberships: std::collections::HashMap<u32, Vec<u32>> =
@@ -367,8 +558,7 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
                 roles_map.insert(role_oid, Arc::clone(&role_rc));
 
                 let member_of_oids =
-                    crate::models::pg_role::cached_queries::member_of(&role, connection)
-                        .unwrap_or_default();
+                    crate::models::pg_role::cached_queries::member_of(&role, connection)?;
 
                 role_memberships.insert(role_oid, member_of_oids);
             }
@@ -394,58 +584,75 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
             generic_builder = generic_builder.add_role(Arc::clone(role_rc), metadata);
         }
 
-        let table_grants = RoleTableGrants::load_all(&table_catalog, &table_schemas, connection)?;
-        for grant in table_grants {
-            let table_rc = tables_by_schema_name
-                .get(&(
-                    grant.table_schema.clone().unwrap_or_default(),
-                    grant.table_name.clone().unwrap_or_default(),
-                ))
-                .cloned();
-
-            let privilege = grant.privilege_type.as_deref().map(string_to_action);
-
-            let grantee = grant.grantee.as_deref().map(|name| Grantee {
-                grantee_type: GranteesType::None,
-                name: Some(GranteeName::ObjectName(ObjectName(vec![
-                    ObjectNamePart::Identifier(Ident::new(name)),
-                ]))),
-            });
-
-            let metadata = RoleTableGrantsMetadata::new(privilege, grantee, table_rc);
-            generic_builder = generic_builder.add_table_grant(Arc::new(grant), metadata);
+        for membership in PgRoleMembership::load_all(&cache, connection)? {
+            generic_builder = generic_builder.add_role_membership(Arc::new(membership), ());
         }
 
-        let column_grants = RoleColumnGrants::load_all(&table_catalog, &table_schemas, connection)?;
-        for grant in column_grants {
+        for grant in RoleTableGrants::load_acl(&table_schemas, connection)? {
+            let action = string_to_action(&grant.privilege_type).ok_or_else(|| {
+                PgDatabaseBuildError::UnrepresentablePrivilege {
+                    object: format!("{}.{}", grant.table_schema, grant.table_name),
+                    privilege: grant.privilege_type.clone(),
+                }
+            })?;
             let table_rc = tables_by_schema_name
+                .get(&(grant.table_schema.clone(), grant.table_name.clone()))
+                .cloned();
+            let metadata = RoleTableGrantsMetadata::new(
+                Some(action),
+                Some(acl_grantee(&grant.grantee)),
+                table_rc,
+            );
+            let model = RoleTableGrants {
+                grantor: Some(grant.grantor),
+                grantee: Some(grant.grantee),
+                table_catalog: Some(table_catalog.clone()),
+                table_schema: Some(grant.table_schema),
+                table_name: Some(grant.table_name),
+                privilege_type: Some(grant.privilege_type),
+                is_grantable: Some(if grant.is_grantable { "YES" } else { "NO" }.to_owned()),
+                with_hierarchy: None,
+            };
+            generic_builder = generic_builder.add_table_grant(Arc::new(model), metadata);
+        }
+
+        for grant in RoleColumnGrants::load_acl(&table_schemas, connection)? {
+            let action = string_to_action(&grant.privilege_type).ok_or_else(|| {
+                PgDatabaseBuildError::UnrepresentablePrivilege {
+                    object: format!(
+                        "{}.{}.{}",
+                        grant.table_schema, grant.table_name, grant.column_name
+                    ),
+                    privilege: grant.privilege_type.clone(),
+                }
+            })?;
+            let table_rc = tables_by_schema_name
+                .get(&(grant.table_schema.clone(), grant.table_name.clone()))
+                .cloned();
+            let column_rc = columns_by_table_column
                 .get(&(
-                    grant.table_schema.clone().unwrap_or_default(),
-                    grant.table_name.clone().unwrap_or_default(),
+                    grant.table_schema.clone(),
+                    grant.table_name.clone(),
+                    grant.column_name.clone(),
                 ))
                 .cloned();
-
-            let column_rc = table_rc.as_ref().and_then(|t| {
-                columns_by_table_column
-                    .get(&(
-                        t.schema().to_string(),
-                        t.name().to_string(),
-                        grant.column_name.clone().unwrap_or_default(),
-                    ))
-                    .cloned()
-            });
-
-            let privilege = grant.privilege_type.as_deref().map(string_to_action);
-
-            let grantee = grant.grantee.as_deref().map(|name| Grantee {
-                grantee_type: GranteesType::None,
-                name: Some(GranteeName::ObjectName(ObjectName(vec![
-                    ObjectNamePart::Identifier(Ident::new(name)),
-                ]))),
-            });
-
-            let metadata = RoleColumnGrantsMetadata::new(privilege, grantee, table_rc, column_rc);
-            generic_builder = generic_builder.add_column_grant(Arc::new(grant), metadata);
+            let metadata = RoleColumnGrantsMetadata::new(
+                Some(action),
+                Some(acl_grantee(&grant.grantee)),
+                table_rc,
+                column_rc,
+            );
+            let model = RoleColumnGrants {
+                grantor: Some(grant.grantor),
+                grantee: Some(grant.grantee),
+                table_catalog: Some(table_catalog.clone()),
+                table_schema: Some(grant.table_schema),
+                table_name: Some(grant.table_name),
+                column_name: Some(grant.column_name),
+                privilege_type: Some(grant.privilege_type),
+                is_grantable: Some(if grant.is_grantable { "YES" } else { "NO" }.to_owned()),
+            };
+            generic_builder = generic_builder.add_column_grant(Arc::new(model), metadata);
         }
 
         Ok(generic_builder.into())

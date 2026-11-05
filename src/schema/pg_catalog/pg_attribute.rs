@@ -28,6 +28,10 @@ diesel::table! {
         /// -1 if not applicable.
         atttypmod -> Integer,
         /// Number of array dimensions, if the column is an array; 0 if not.
+        #[cfg(not(any(feature = "postgres-16", feature = "postgres-17", feature = "postgres-18")))]
+        attndims -> Integer,
+        /// Number of array dimensions, if the column is an array; 0 if not.
+        #[cfg(any(feature = "postgres-16", feature = "postgres-17", feature = "postgres-18"))]
         attndims -> SmallInt,
         /// `true` if the column's type is passed by value.
         attbyval -> Bool,
@@ -68,7 +72,19 @@ diesel::table! {
         /// OID of the collation of the column, or 0 if not collatable.
         attcollation -> Oid,
         /// Target number of statistics samples for `ANALYZE`;
-        /// -1 uses default setting; `NULL` if not set.
+        /// -1 uses default setting.
+        #[cfg(not(any(feature = "postgres-16", feature = "postgres-17", feature = "postgres-18")))]
+        attstattarget -> Integer,
+        /// Target number of statistics samples for `ANALYZE`;
+        /// -1 uses default setting.
+        #[cfg(all(
+            feature = "postgres-16",
+            not(any(feature = "postgres-17", feature = "postgres-18"))
+        ))]
+        attstattarget -> SmallInt,
+        /// Target number of statistics samples for `ANALYZE`;
+        /// `NULL` uses the default setting.
+        #[cfg(any(feature = "postgres-17", feature = "postgres-18"))]
         attstattarget -> Nullable<SmallInt>,
         /// Column-level options (e.g., for storage parameters); `NULL` if none.
         attoptions -> Nullable<Array<Text>>,

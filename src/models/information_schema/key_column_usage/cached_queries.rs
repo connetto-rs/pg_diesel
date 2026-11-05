@@ -6,7 +6,7 @@ use diesel::{
     SelectableHelper,
 };
 
-use crate::models::{Column, KeyColumnUsage, ReferentialConstraint, Table};
+use crate::models::{KeyColumnUsage, ReferentialConstraint, Table};
 
 /// Returns the referential constraint associated with this key column usage.
 pub(super) fn referential_constraint(
@@ -24,11 +24,12 @@ pub(super) fn referential_constraint(
         .first::<ReferentialConstraint>(conn)
 }
 
-/// Returns the columns referenced by this foreign key.
+/// Returns the names of the columns this foreign key references, in the
+/// order the referenced table declares them.
 pub(super) fn referenced_columns(
     key_column_usage: &KeyColumnUsage,
     conn: &mut PgConnection,
-) -> Result<Vec<Column>, diesel::result::Error> {
+) -> Result<Vec<String>, diesel::result::Error> {
     use crate::schema::information_schema::{
         columns::columns, constraint_column_usage::constraint_column_usage,
     };
@@ -61,15 +62,16 @@ pub(super) fn referenced_columns(
                 .and(columns::column_name.eq(constraint_column_usage::column_name))),
         )
         .order_by(columns::ordinal_position.asc())
-        .select(Column::as_select())
-        .load::<Column>(conn)
+        .select(columns::column_name)
+        .load(conn)
 }
 
-/// Returns the host columns for this key column usage.
+/// Returns the names of the host columns of this key column usage, in the
+/// order the constraint declares them.
 pub(crate) fn host_columns(
     key_column_usage: &KeyColumnUsage,
     conn: &mut PgConnection,
-) -> Result<Vec<Column>, diesel::result::Error> {
+) -> Result<Vec<String>, diesel::result::Error> {
     use crate::schema::information_schema::{columns::columns, key_column_usage::key_column_usage};
     key_column_usage::table
         .filter(key_column_usage::constraint_name.eq(&key_column_usage.constraint_name))
@@ -83,8 +85,8 @@ pub(crate) fn host_columns(
                 .and(columns::column_name.eq(key_column_usage::column_name))),
         )
         .order_by(key_column_usage::ordinal_position.asc())
-        .select(Column::as_select())
-        .load::<Column>(conn)
+        .select(columns::column_name)
+        .load(conn)
 }
 
 /// Returns the referenced table associated with this key column usage
