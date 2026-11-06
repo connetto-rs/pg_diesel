@@ -6,7 +6,7 @@ use sql_traits::{
     errors::{LookupError, ObjectKind},
     structs::{FunctionBody, FunctionKind, PrivilegeHolder, TargetName},
     traits::{DatabaseLike, FunctionLike, Metadata, RoleLike},
-    utils::identifier_resolution::SearchPath,
+    utils::{identifier_resolution::SearchPath, postgres_null_returning_arguments},
 };
 use sqlparser::ast::{
     ArgMode, FunctionBehavior, FunctionCalledOnNull, FunctionDefinitionSetParam, FunctionSecurity,
@@ -195,19 +195,23 @@ impl FunctionLike for PgFunction {
         Ok(metadata(self, database)?.owner())
     }
 
-    fn returns_null_on_null_argument(&self, _database: &Self::DB, index: usize) -> bool {
-        if !self.model().proisstrict {
-            return false;
-        }
-        // A `VARIADIC` argument collects into a set, so strictness does not settle what it yields.
-        let Some(mode) = self
+    fn returns_null_on_null_argument(&self, database: &Self::DB, index: usize) -> bool {
+        let inputs: Vec<(ArgMode, Cow<'_, str>)> = self
             .argument_modes()
-            .filter(|mode| !matches!(mode, ArgMode::Out))
-            .nth(index)
-        else {
+            .zip(self.argument_type_names(database))
+            .filter(|(mode, _)| !matches!(mode, ArgMode::Out))
+            .collect();
+        let Some((mode, _)) = inputs.get(index) else {
             return false;
         };
-        !matches!(mode, ArgMode::Variadic)
+        if self.model().proisstrict {
+            // A `VARIADIC` argument collects into a set, so strictness does not settle what it yields.
+            return !matches!(mode, ArgMode::Variadic);
+        }
+        // `pg_proc` records no per-argument behaviour for a non-strict function,
+        // which sql-traits keeps for the PostgreSQL builtins that have one.
+        let types: Vec<&str> = inputs.iter().map(|(_, name)| name.as_ref()).collect();
+        postgres_null_returning_arguments(self.schema(), self.name(), &types).contains(&index)
     }
 
     fn is_executable_by_public(&self, database: &Self::DB) -> Result<bool, LookupError> {
