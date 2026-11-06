@@ -19,17 +19,16 @@ use sqlparser::{
 
 use crate::{
     PgDieselDatabase,
-    database::CatalogCache,
+    database::{AclTableGrant, CatalogCache, FIRST_NORMAL_OBJECT_ID},
     dialect::PostgresDialect,
     impls::{RoleColumnGrantsMetadata, RoleTableGrantsMetadata, string_to_action},
     model_metadata::{
         DomainDefinitionError, PgColumn, PgDomainEntry, PgExtensionEntry, PgFunction, PgPolicy,
-        PgRoleMembership, PgRuleEntry, PgSequenceEntry, PgTable, PgTableError, PgViewDefinition,
-        RuleDefinitionError, TriggerMetadata, ViewDefinitionError,
+        PgRoleMembership, PgRuleEntry, PgSchema, PgSequenceEntry, PgTable, PgTableError,
+        PgUserDefinedType, PgViewDefinition, RuleDefinitionError, TriggerMetadata,
+        ViewDefinitionError,
     },
-    models::{
-        PgMatview, PgProc, PgRole, PgView, RoleColumnGrants, RoleTableGrants, Schemata, Table,
-    },
+    models::{PgMatview, PgProc, PgRole, PgView, RoleColumnGrants, RoleTableGrants, Table},
 };
 
 /// Returns the schemas the reading session resolves unqualified names in,
@@ -44,6 +43,52 @@ fn session_search_path(
     let schemas: Vec<String> = diesel::select(sql::<Array<Text>>("current_schemas(false)::text[]"))
         .get_result(connection)?;
     Ok(schemas.into_iter().map(|schema| (schema, true)).collect())
+}
+
+/// The privileges `GRANT ALL` on a plain or partitioned table hands over,
+/// the full set the server materializes for it.
+#[cfg(not(any(feature = "postgres-17", feature = "postgres-18")))]
+const TABLE_ALL_PRIVILEGES: [&str; 7] = [
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "TRUNCATE",
+    "REFERENCES",
+    "TRIGGER",
+];
+
+/// The privileges `GRANT ALL` on a plain or partitioned table hands over,
+/// the full set the server materializes for it.
+#[cfg(any(feature = "postgres-17", feature = "postgres-18"))]
+const TABLE_ALL_PRIVILEGES: [&str; 8] = [
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "TRUNCATE",
+    "REFERENCES",
+    "TRIGGER",
+    "MAINTAIN",
+];
+
+/// The privileges `GRANT ALL` on a view, materialized view or foreign table
+/// hands over, the full set the server materializes for it.
+const VIEW_ALL_PRIVILEGES: [&str; 4] = ["SELECT", "INSERT", "UPDATE", "DELETE"];
+
+/// The privileges `GRANT ALL` on a sequence hands over, the full set the
+/// server materializes for it.
+const SEQUENCE_ALL_PRIVILEGES: [&str; 3] = ["USAGE", "SELECT", "UPDATE"];
+
+/// The full privilege set a `GRANT ALL` on a relation of kind `relkind`
+/// materializes, empty when the kind is no relation the grant reaches.
+fn all_privileges_for(relkind: &str) -> &'static [&'static str] {
+    match relkind {
+        "r" | "p" => &TABLE_ALL_PRIVILEGES,
+        "v" | "m" | "f" => &VIEW_ALL_PRIVILEGES,
+        "S" => &SEQUENCE_ALL_PRIVILEGES,
+        _ => &[],
+    }
 }
 
 /// The grantee one `aclexplode` entry names, `PUBLIC` for the pseudo-role.
@@ -79,13 +124,6 @@ fn expression_calls(
         )
     })
 }
-
-/// The first OID `PostgreSQL` hands to an object created after `initdb`.
-///
-/// Objects below it are pinned, and the server records no `pg_depend` row on
-/// a pinned object, so a bound body's calls to built-in functions leave no
-/// trace there.
-const FIRST_NORMAL_OBJECT_ID: u32 = 16384;
 
 /// Returns the pinned functions the calls of the bound body `definition`
 /// reach, resolved against `functions` under `search_path`, the path
@@ -299,7 +337,7 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
 
         let mut generic_builder = GenericDBBuilder::new(table_catalog.clone(), PostgresDialect);
 
-        for schema in Schemata::load_all(&table_catalog, &table_schemas, connection)? {
+        for schema in PgSchema::load_all(&table_catalog, &table_schemas, connection)? {
             generic_builder = generic_builder.add_schema(Arc::new(schema), ());
         }
 
@@ -546,6 +584,11 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
             generic_builder = generic_builder.add_domain(Arc::new(domain), ());
         }
 
+        for user_defined_type in PgUserDefinedType::load_all(&table_schemas, connection)? {
+            generic_builder =
+                generic_builder.add_user_defined_type(Arc::new(user_defined_type), ());
+        }
+
         let mut role_memberships: std::collections::HashMap<u32, Vec<u32>> =
             std::collections::HashMap::new();
         let mut roles_map: std::collections::HashMap<u32, Arc<PgRole>> =
@@ -588,32 +631,78 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
             generic_builder = generic_builder.add_role_membership(Arc::new(membership), ());
         }
 
-        for grant in RoleTableGrants::load_acl(&table_schemas, connection)? {
-            let action = string_to_action(&grant.privilege_type).ok_or_else(|| {
-                PgDatabaseBuildError::UnrepresentablePrivilege {
-                    object: format!("{}.{}", grant.table_schema, grant.table_name),
-                    privilege: grant.privilege_type.clone(),
-                }
-            })?;
-            let table_rc = tables_by_schema_name
-                .get(&(grant.table_schema.clone(), grant.table_name.clone()))
-                .cloned();
-            let metadata = RoleTableGrantsMetadata::new(
-                Some(action),
-                Some(acl_grantee(&grant.grantee)),
-                table_rc,
-            );
-            let model = RoleTableGrants {
-                grantor: Some(grant.grantor),
-                grantee: Some(grant.grantee),
-                table_catalog: Some(table_catalog.clone()),
-                table_schema: Some(grant.table_schema),
-                table_name: Some(grant.table_name),
-                privilege_type: Some(grant.privilege_type),
-                is_grantable: Some(if grant.is_grantable { "YES" } else { "NO" }.to_owned()),
-                with_hierarchy: None,
-            };
-            generic_builder = generic_builder.add_table_grant(Arc::new(model), metadata);
+        // The server expands `GRANT ALL` into one `aclexplode` row per
+        // privilege, so the rows of one relation and grantee group back into
+        // the grant the DDL wrote.
+        let mut grants_by_relation: std::collections::BTreeMap<
+            (String, String, String),
+            Vec<AclTableGrant>,
+        > = std::collections::BTreeMap::new();
+        for grant in AclTableGrant::load(&table_schemas, connection)? {
+            grants_by_relation
+                .entry((
+                    grant.table_schema.clone(),
+                    grant.table_name.clone(),
+                    grant.grantee.clone(),
+                ))
+                .or_default()
+                .push(grant);
+        }
+        for ((table_schema, table_name, grantee), rows) in grants_by_relation {
+            let held: std::collections::BTreeSet<String> = rows
+                .iter()
+                .map(|row| row.privilege_type.to_uppercase())
+                .collect();
+            let full: &'static [&'static str] = all_privileges_for(&rows[0].relkind);
+            let full_set: std::collections::BTreeSet<String> =
+                full.iter().copied().map(ToString::to_string).collect();
+            if !full_set.is_empty() && held == full_set {
+                let grantable = rows.iter().all(|row| row.is_grantable);
+                let table_rc = tables_by_schema_name
+                    .get(&(table_schema.clone(), table_name.clone()))
+                    .cloned();
+                let metadata =
+                    RoleTableGrantsMetadata::new(None, Some(acl_grantee(&grantee)), table_rc);
+                let model = RoleTableGrants {
+                    grantor: Some(rows[0].grantor.clone()),
+                    grantee: Some(grantee),
+                    table_catalog: Some(table_catalog.clone()),
+                    table_schema: Some(table_schema),
+                    table_name: Some(table_name),
+                    privilege_type: Some("ALL".to_owned()),
+                    is_grantable: Some(if grantable { "YES" } else { "NO" }.to_owned()),
+                    with_hierarchy: None,
+                };
+                generic_builder = generic_builder.add_table_grant(Arc::new(model), metadata);
+                continue;
+            }
+            for grant in rows {
+                let action = string_to_action(&grant.privilege_type).ok_or_else(|| {
+                    PgDatabaseBuildError::UnrepresentablePrivilege {
+                        object: format!("{}.{}", grant.table_schema, grant.table_name),
+                        privilege: grant.privilege_type.clone(),
+                    }
+                })?;
+                let table_rc = tables_by_schema_name
+                    .get(&(grant.table_schema.clone(), grant.table_name.clone()))
+                    .cloned();
+                let metadata = RoleTableGrantsMetadata::new(
+                    Some(action),
+                    Some(acl_grantee(&grant.grantee)),
+                    table_rc,
+                );
+                let model = RoleTableGrants {
+                    grantor: Some(grant.grantor),
+                    grantee: Some(grant.grantee),
+                    table_catalog: Some(table_catalog.clone()),
+                    table_schema: Some(grant.table_schema),
+                    table_name: Some(grant.table_name),
+                    privilege_type: Some(grant.privilege_type),
+                    is_grantable: Some(if grant.is_grantable { "YES" } else { "NO" }.to_owned()),
+                    with_hierarchy: None,
+                };
+                generic_builder = generic_builder.add_table_grant(Arc::new(model), metadata);
+            }
         }
 
         for grant in RoleColumnGrants::load_acl(&table_schemas, connection)? {

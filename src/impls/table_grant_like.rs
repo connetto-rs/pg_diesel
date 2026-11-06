@@ -251,6 +251,7 @@ pub fn string_to_action(privilege: &str) -> Option<Action> {
         "REFERENCES" => Action::References { columns: None },
         "TRIGGER" => Action::Trigger,
         "USAGE" => Action::Usage,
+        "MAINTAIN" => Action::Maintain,
         _ => return None,
     })
 }

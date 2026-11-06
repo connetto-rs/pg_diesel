@@ -36,6 +36,25 @@ pub const EXPECTED: &[Expected] = &[
                 && difference.live == Some(Value::Text("None".to_owned()))
         },
     },
+    Expected {
+        name: "MAINTAIN absent before PostgreSQL 17",
+        reason: "ParserDB models PostgreSQL 18, whose owners hold MAINTAIN, a relation privilege an older server does not have",
+        matches: |difference| {
+            let (Some(Value::Text(source)), Some(Value::Text(live))) =
+                (&difference.source, &difference.live)
+            else {
+                return false;
+            };
+            !cfg!(any(feature = "postgres-17", feature = "postgres-18"))
+                && difference.fact.ends_with(" / owner privileges")
+                && source
+                    .split(", ")
+                    .filter(|privilege| *privilege != "MAINTAIN")
+                    .collect::<Vec<_>>()
+                    .join(", ")
+                    == *live
+        },
+    },
 ];
 
 /// Returns the entry accepting `difference`, if any.

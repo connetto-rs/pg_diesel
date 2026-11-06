@@ -22,6 +22,7 @@ pub(crate) use cached_queries::*;
 
 /// The table privileges `PostgreSQL` hands the owner of a table, in the
 /// order the server lists them, which a `REVOKE` naming the owner takes from.
+#[cfg(not(any(feature = "postgres-17", feature = "postgres-18")))]
 const OWNER_PRIVILEGES: [&str; 7] = [
     "SELECT",
     "INSERT",
@@ -30,6 +31,20 @@ const OWNER_PRIVILEGES: [&str; 7] = [
     "TRUNCATE",
     "REFERENCES",
     "TRIGGER",
+];
+
+/// The table privileges `PostgreSQL` hands the owner of a table, in the
+/// order the server lists them, which a `REVOKE` naming the owner takes from.
+#[cfg(any(feature = "postgres-17", feature = "postgres-18"))]
+const OWNER_PRIVILEGES: [&str; 8] = [
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "TRUNCATE",
+    "REFERENCES",
+    "TRIGGER",
+    "MAINTAIN",
 ];
 
 /// The table-level privileges the owner's own `pg_class.relacl` entry holds,

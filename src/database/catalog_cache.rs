@@ -4,9 +4,15 @@ use std::collections::HashMap;
 
 use diesel::dsl::sql;
 use diesel::sql_types::Text;
-use diesel::{PgConnection, QueryDsl, RunQueryDsl, SelectableHelper};
+use diesel::{ExpressionMethods, PgConnection, QueryDsl, RunQueryDsl, SelectableHelper};
 
-use crate::models::PgType;
+use crate::models::{PgAttribute, PgType};
+
+/// The first OID `PostgreSQL` hands to an object created after `initdb`.
+///
+/// Objects below it are built in and pinned, so the server records no
+/// `pg_depend` row on one and no user-defined type lives under it.
+pub const FIRST_NORMAL_OBJECT_ID: u32 = 16384;
 
 /// The catalog rows a build resolves by OID, loaded once.
 ///
@@ -28,6 +34,14 @@ pub struct CatalogCache {
     languages: HashMap<u32, String>,
     /// Whether a collation compares deterministically, by schema and name.
     collations: HashMap<(String, String), bool>,
+    /// The subtype a range or multirange type holds, by the OID
+    /// `pg_range` records the range or the multirange under.
+    range_subtypes: HashMap<u32, u32>,
+    /// The live attributes of every composite type's relation, by the OID
+    /// `pg_type` records the relation under, in `attnum` order, each as the
+    /// OID of its type, the typmod it holds and the array dimensions it
+    /// declares.
+    composite_attributes: HashMap<u32, Vec<(u32, i32, i32)>>,
 }
 
 impl CatalogCache {
@@ -38,8 +52,8 @@ impl CatalogCache {
     /// * If one of the catalogs cannot be read.
     pub fn load(conn: &mut PgConnection) -> Result<Self, diesel::result::Error> {
         use crate::schema::pg_catalog::{
-            pg_collation::pg_collation, pg_language::pg_language, pg_namespace::pg_namespace,
-            pg_roles::pg_roles, pg_type::pg_type,
+            pg_attribute::pg_attribute, pg_collation::pg_collation, pg_language::pg_language,
+            pg_namespace::pg_namespace, pg_range::pg_range, pg_roles::pg_roles, pg_type::pg_type,
         };
 
         let types = pg_type::table
@@ -89,6 +103,58 @@ impl CatalogCache {
             })
             .collect();
 
+        // A range type and the multirange it brings both hold the subtype.
+        let range_subtypes: HashMap<u32, u32> = pg_range::table
+            .select((
+                pg_range::rngtypid,
+                pg_range::rngsubtype,
+                pg_range::rngmultitypid,
+            ))
+            .load::<(u32, u32, u32)>(conn)?
+            .into_iter()
+            .flat_map(|(range, subtype, multirange)| [(range, subtype), (multirange, subtype)])
+            .collect();
+
+        // A composite type sends each live attribute of its relation, in
+        // `attnum` order.
+        let composite_attributes: HashMap<u32, Vec<(u32, i32, i32)>> = pg_attribute::table
+            .filter(pg_attribute::attisdropped.eq(false))
+            .filter(pg_attribute::attnum.gt(0))
+            .filter(
+                pg_attribute::attrelid.eq_any(
+                    pg_type::table
+                        .filter(pg_type::typtype.eq("c"))
+                        .filter(pg_type::typrelid.ne(0))
+                        .select(pg_type::typrelid),
+                ),
+            )
+            .order(pg_attribute::attnum.asc())
+            .select(PgAttribute::as_select())
+            .load::<PgAttribute>(conn)?
+            .into_iter()
+            .map(|attribute| {
+                #[cfg(not(any(
+                    feature = "postgres-16",
+                    feature = "postgres-17",
+                    feature = "postgres-18"
+                )))]
+                let ndims = attribute.attndims;
+                #[cfg(any(
+                    feature = "postgres-16",
+                    feature = "postgres-17",
+                    feature = "postgres-18"
+                ))]
+                let ndims = i32::from(attribute.attndims);
+                (
+                    attribute.attrelid,
+                    (attribute.atttypid, attribute.atttypmod, ndims),
+                )
+            })
+            .fold(HashMap::new(), |mut attributes, (relation, field)| {
+                attributes.entry(relation).or_default().push(field);
+                attributes
+            });
+
         Ok(Self {
             types,
             type_names,
@@ -96,6 +162,8 @@ impl CatalogCache {
             namespaces,
             languages,
             collations,
+            range_subtypes,
+            composite_attributes,
         })
     }
 
@@ -136,5 +204,20 @@ impl CatalogCache {
         self.collations
             .get(&(schema.to_owned(), name.to_owned()))
             .copied()
+    }
+
+    /// Returns the OID `pg_range` records the range or multirange type under
+    /// `oid` holds as its subtype.
+    #[must_use]
+    pub fn range_subtype(&self, oid: u32) -> Option<u32> {
+        self.range_subtypes.get(&oid).copied()
+    }
+
+    /// Returns the live attributes of the relation `pg_type` records under
+    /// `oid`, in `attnum` order, each as the OID of its type, the typmod it
+    /// holds and the array dimensions it declares.
+    #[must_use]
+    pub fn composite_attributes(&self, oid: u32) -> Option<&[(u32, i32, i32)]> {
+        self.composite_attributes.get(&oid).map(Vec::as_slice)
     }
 }

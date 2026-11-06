@@ -33,7 +33,7 @@ use pg_diesel::{
     database::PgDieselDatabaseBuilder,
     schema::pg_catalog::{
         pg_class::pg_class, pg_depend::pg_depend, pg_namespace::pg_namespace, pg_proc::pg_proc,
-        pg_roles::pg_roles,
+        pg_roles::pg_roles, pg_type::pg_type,
     },
     sql_traits::structs::ParserDB,
     sqlparser::dialect::PostgreSqlDialect,
@@ -102,8 +102,9 @@ enum Outcome {
     Failed(String),
 }
 
-/// Returns the `(schema, name)` of every function and relation an extension
-/// script created, which `pg_depend` ties to the extension with deptype `e`.
+/// Returns the `(schema, name)` of every function, relation and type an
+/// extension script created, which `pg_depend` ties to the extension with
+/// deptype `e`.
 fn extension_members(connection: &mut PgConnection) -> BTreeSet<(String, String)> {
     let functions: Vec<(String, String)> = pg_depend::table
         .inner_join(pg_proc::table.on(pg_proc::oid.eq(pg_depend::objid)))
@@ -121,7 +122,19 @@ fn extension_members(connection: &mut PgConnection) -> BTreeSet<(String, String)
         .select((pg_namespace::nspname, pg_class::relname))
         .load(connection)
         .expect("the extension relations are listed");
-    functions.into_iter().chain(relations).collect()
+    let types: Vec<(String, String)> = pg_depend::table
+        .inner_join(pg_type::table.on(pg_type::oid.eq(pg_depend::objid)))
+        .inner_join(pg_namespace::table.on(pg_namespace::oid.eq(pg_type::typnamespace)))
+        .filter(pg_depend::deptype.eq("e"))
+        .filter(pg_depend::classid.eq(sql::<Oid>("'pg_type'::regclass")))
+        .select((pg_namespace::nspname, pg_type::typname))
+        .load(connection)
+        .expect("the extension types are listed");
+    functions
+        .into_iter()
+        .chain(relations)
+        .chain(types)
+        .collect()
 }
 
 /// Applies `ddl` to the database `database`, then describes and compares the

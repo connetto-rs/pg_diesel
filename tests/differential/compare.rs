@@ -26,10 +26,11 @@ use pg_diesel::{
     sql_traits::{
         errors::LookupError,
         traits::{
-            CheckConstraintLike, ColumnGrantLike, ColumnLike, DataTypeLike, DatabaseLike,
-            DomainLike, ExtensionLike, ForeignKeyLike, FunctionLike, GrantLike, IndexLike,
-            PolicyLike, Relation, RoleLike, RuleLike, SchemaLike, SequenceLike, SequenceOwner,
-            TableGrantLike, TableLike, TriggerLike, UniqueIndexLike, ViewLike,
+            BinarySend, CheckConstraintLike, ColumnGrantLike, ColumnLike, DataTypeLike,
+            DatabaseLike, DomainLike, ExtensionLike, ForeignKeyLike, FunctionLike, GrantLike,
+            IndexLike, PolicyLike, Relation, RoleLike, RuleLike, SchemaLike, SequenceLike,
+            SequenceOwner, TableGrantLike, TableLike, TriggerLike, UniqueIndexLike,
+            UserDefinedTypeLike, ViewLike,
         },
         utils::identifier_resolution::normalize_identifier,
     },
@@ -446,15 +447,25 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         self.rules()?;
         self.extensions();
         self.domains();
+        self.user_defined_types();
         Ok(())
     }
 
-    /// Records the schemas in scope.
+    /// Records the schemas in scope, with the `USAGE` each holds before any
+    /// `GRANT`.
     fn schemas(&mut self) {
         for schema in self.database.schemas() {
             let name = schema.stored_name().into_owned();
             if self.scope.covers(&name) {
                 self.text(format!("schema {name}"), "present");
+                self.text(
+                    format!("schema {name} / public holds usage"),
+                    schema.public_holds_usage().to_string(),
+                );
+                self.text(
+                    format!("schema {name} / owner holds usage"),
+                    schema.owner_holds_usage().to_string(),
+                );
             }
         }
     }
@@ -628,6 +639,17 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         self.text(
             format!("{subject} / vector"),
             format!("{:?}", data_type.vector(database)),
+        );
+        self.text(
+            format!("{subject} / binary send"),
+            match data_type.binary_send(database) {
+                BinarySend::Binary => "Binary".to_owned(),
+                BinarySend::Text => "Text".to_owned(),
+                BinarySend::Fails(type_) => format!("Fails({})", type_.normalized_name(database)),
+                BinarySend::Unknown(type_) => {
+                    format!("Unknown({})", type_.normalized_name(database))
+                }
+            },
         );
         self.text(
             format!("{subject} / binary length"),
@@ -1264,6 +1286,22 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             }
             let subject = format!("domain {schema}.{}", domain.stored_name());
             self.data_type(&format!("{subject} / type"), domain.data_type(database));
+        }
+    }
+
+    /// Records the user-defined types in scope and the form each takes.
+    fn user_defined_types(&mut self) {
+        let database = self.database;
+        for type_ in database.user_defined_types() {
+            let schema = self.scope.schema(type_.stored_schema()).into_owned();
+            let name = type_.stored_name().into_owned();
+            if !self.scope.covers_object(&schema, &name) {
+                continue;
+            }
+            self.text(
+                format!("user-defined type {schema}.{name} / kind"),
+                format!("{:?}", type_.kind()),
+            );
         }
     }
 }

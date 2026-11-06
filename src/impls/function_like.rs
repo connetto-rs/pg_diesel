@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 use sql_traits::{
     errors::{LookupError, ObjectKind},
-    structs::{FunctionBody, FunctionKind, TargetName},
+    structs::{FunctionBody, FunctionKind, PrivilegeHolder, TargetName},
     traits::{DatabaseLike, FunctionLike, Metadata, RoleLike},
     utils::identifier_resolution::SearchPath,
 };
@@ -12,7 +12,11 @@ use sqlparser::ast::{
     ArgMode, FunctionBehavior, FunctionCalledOnNull, FunctionDefinitionSetParam, FunctionSecurity,
 };
 
-use crate::{PgDieselDatabase, database::PgProcMetadata, model_metadata::PgFunction};
+use crate::{
+    PgDieselDatabase,
+    database::{ExecuteHolder, PgProcMetadata},
+    model_metadata::PgFunction,
+};
 
 impl Metadata for PgFunction {
     type Meta = PgProcMetadata;
@@ -221,5 +225,20 @@ impl FunctionLike for PgFunction {
         let execute = metadata(self, database)?;
         let mut holders = std::iter::once(role).chain(role.inherited_roles(database));
         Ok(holders.any(|holder| execute.can_grant_execute(holder.oid)))
+    }
+
+    fn execute_holders<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<impl Iterator<Item = PrivilegeHolder<'db>>, LookupError> {
+        let holders = metadata(self, database)?.execute_holders();
+        Ok(holders.filter_map(move |holder| match holder {
+            ExecuteHolder::Public => Some(PrivilegeHolder::Public),
+            ExecuteHolder::Role(oid) => database
+                .roles()
+                .find(|role| role.oid == Some(oid))
+                .and_then(|role| role.rolname.as_deref())
+                .map(|name| PrivilegeHolder::Role(Cow::Borrowed(name))),
+        }))
     }
 }

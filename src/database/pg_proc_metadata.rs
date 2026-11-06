@@ -69,6 +69,15 @@ impl ExecutePrivileges {
     }
 }
 
+/// One holder of `EXECUTE` a function's access list names directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecuteHolder {
+    /// Every role, through the `PUBLIC` pseudo-role.
+    Public,
+    /// A role, by the OID `pg_roles` records it under.
+    Role(u32),
+}
+
 #[derive(Debug, Clone)]
 /// Struct collecting metadata about a `PostgreSQL` function represented by a
 /// [`PgProc`] entry.
@@ -156,6 +165,30 @@ impl PgProcMetadata {
     /// prints for the bound body does not parse.
     pub fn bound_functions(&self) -> Result<&[u32], &str> {
         self.bound_functions.as_deref().map_err(String::as_str)
+    }
+
+    /// The entries the `EXECUTE` access list holds, `PUBLIC` first while it
+    /// holds the privilege, then the owner while its own entry holds, then every
+    /// other grantee in the order first granted, each role once.
+    pub fn execute_holders(&self) -> impl Iterator<Item = ExecuteHolder> {
+        let owner = self
+            .execute
+            .owner
+            .then_some(ExecuteHolder::Role(self.owner_oid));
+        let mut held = std::collections::HashSet::new();
+        let grantees: Vec<ExecuteHolder> = self
+            .execute
+            .grants
+            .iter()
+            .filter_map(|(grantee, _)| held.insert(*grantee).then_some(*grantee))
+            .map(ExecuteHolder::Role)
+            .collect();
+        self.execute
+            .public
+            .then_some(ExecuteHolder::Public)
+            .into_iter()
+            .chain(owner)
+            .chain(grantees)
     }
 
     /// The return type the function declares, the `SETOF` marker included.

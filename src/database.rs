@@ -7,16 +7,18 @@ use sql_traits::structs::{GenericDB, SchemaProfile};
 use crate::dialect::PostgresDialect;
 use crate::model_metadata::{
     PgCheckConstraint, PgColumn, PgDataType, PgDomainEntry, PgExtensionEntry, PgForeignKey,
-    PgFunction, PgIndexEntry, PgPolicy, PgRoleMembership, PgRuleEntry, PgSequenceEntry, PgTable,
-    PgViewDefinition, TableMetadata, TriggerMetadata,
+    PgFunction, PgIndexEntry, PgPolicy, PgRoleMembership, PgRuleEntry, PgSchema, PgSequenceEntry,
+    PgTable, PgUserDefinedType, PgViewDefinition, TableMetadata, TriggerMetadata,
 };
-use crate::models::{PgRole, RoleColumnGrants, RoleTableGrants, Schemata};
+use crate::models::{PgRole, RoleColumnGrants, RoleTableGrants};
 mod key_column_usage_metadata;
 pub use key_column_usage_metadata::KeyColumnUsageMetadata;
 mod pg_proc_metadata;
-pub use pg_proc_metadata::PgProcMetadata;
+pub use pg_proc_metadata::{ExecuteHolder, PgProcMetadata};
+mod acl_table_grant;
+pub use acl_table_grant::AclTableGrant;
 mod catalog_cache;
-pub use catalog_cache::CatalogCache;
+pub use catalog_cache::{CatalogCache, FIRST_NORMAL_OBJECT_ID};
 
 mod builder;
 pub use builder::{PgDatabaseBuildError, PgDieselDatabaseBuilder};
@@ -44,12 +46,13 @@ impl SchemaProfile for PgDieselProfile {
     type Role = PgRole;
     type RoleMembership = PgRoleMembership;
     type Rule = PgRuleEntry;
-    type Schema = Schemata;
+    type Schema = PgSchema;
     type Sequence = PgSequenceEntry;
     type Table = PgTable;
     type TableGrant = RoleTableGrants;
     type Trigger = TriggerMetadata;
     type UniqueIndex = PgIndexEntry;
+    type UserDefinedType = PgUserDefinedType;
     type View = PgViewDefinition;
 
     fn default_ingestion(_dialect: &Self::Dialect) -> Self::Ingestion {}

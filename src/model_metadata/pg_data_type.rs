@@ -29,6 +29,14 @@ pub struct PgDataType {
     interval_fields: Option<IntervalFields>,
     /// The pgvector type and its dimension, when the type is one.
     vector: Option<VectorType>,
+    /// Whether the type has a binary send function of its own, as
+    /// `pg_type.typsend` records it, the base type's answer for a domain.
+    send_function: Option<bool>,
+    /// The subtype of the range type, or of the ranges a multirange type
+    /// holds.
+    range_subtype: Option<Box<PgDataType>>,
+    /// The attributes of the composite type, in order.
+    composite_fields: Option<Vec<PgDataType>>,
 }
 
 impl PgDataType {
@@ -48,9 +56,23 @@ impl PgDataType {
         cache: &CatalogCache,
         ndims: i32,
     ) -> Option<PgDataType> {
+        Self::from_type_through(pg_type, typmod, cache, ndims, &[])
+    }
+
+    /// Builds the type under `pg_type`, where `in_progress` holds the OIDs of
+    /// the composite types whose attributes are being read, so a composite
+    /// that reaches itself through an array or a domain reads its own
+    /// attributes once and stops.
+    fn from_type_through(
+        pg_type: &PgType,
+        typmod: i32,
+        cache: &CatalogCache,
+        ndims: i32,
+        in_progress: &[u32],
+    ) -> Option<PgDataType> {
         if pg_type.typcategory == "A" {
             let element_type = cache.pg_type(pg_type.typelem)?;
-            let element = Self::from_type(element_type, typmod, cache, 0)?;
+            let element = Self::from_type_through(element_type, typmod, cache, 0, in_progress)?;
             let dimensions = declared_dimensions(ndims);
             let name = cache.type_name(pg_type.oid).map_or_else(
                 || array_name(&element, dimensions.map_or(1, NonZeroU32::get)),
@@ -66,11 +88,15 @@ impl PgDataType {
                 fractional_seconds_precision: None,
                 interval_fields: None,
                 vector: None,
+                send_function: Some(pg_type.typsend != 0),
+                range_subtype: None,
+                composite_fields: None,
             });
         }
         if pg_type.typtype == "d" {
             let (base, effective_typmod) = final_base(pg_type, cache)?;
-            let base_type = Self::from_type(base, effective_typmod, cache, 0)?;
+            let base_type = Self::from_type_through(base, effective_typmod, cache, 0, in_progress)?;
+            let send_function = base_type.send_function;
             return Some(PgDataType {
                 name: cache
                     .type_name(pg_type.oid)
@@ -83,9 +109,14 @@ impl PgDataType {
                 fractional_seconds_precision: None,
                 interval_fields: None,
                 vector: None,
+                // `PostgreSQL` copies the send function into the domain, so
+                // the domain answers its base type's.
+                send_function,
+                range_subtype: None,
+                composite_fields: None,
             });
         }
-        Some(scalar(pg_type, typmod, cache))
+        Some(scalar(pg_type, typmod, cache, in_progress))
     }
 
     /// Whether `typname` names one of the integer types a serial column
@@ -132,7 +163,7 @@ fn final_base<'a>(mut domain: &'a PgType, cache: &'a CatalogCache) -> Option<(&'
 }
 
 /// The facts of a scalar type, with its type modifier decoded.
-fn scalar(pg_type: &PgType, typmod: i32, cache: &CatalogCache) -> PgDataType {
+fn scalar(pg_type: &PgType, typmod: i32, cache: &CatalogCache, in_progress: &[u32]) -> PgDataType {
     let name = cache
         .type_name(pg_type.oid)
         .unwrap_or(&pg_type.typname)
@@ -151,6 +182,9 @@ fn scalar(pg_type: &PgType, typmod: i32, cache: &CatalogCache) -> PgDataType {
             _ => (None, None, None, None),
         };
     PgDataType {
+        send_function: Some(pg_type.typsend != 0),
+        range_subtype: range_subtype(pg_type, cache, in_progress),
+        composite_fields: composite_fields(pg_type, cache, in_progress),
         name,
         element: None,
         base_type: None,
@@ -161,6 +195,61 @@ fn scalar(pg_type: &PgType, typmod: i32, cache: &CatalogCache) -> PgDataType {
         interval_fields,
         vector: vector_type(&pg_type.typname, typmod),
     }
+}
+
+/// The subtype a range or multirange type holds, read from `pg_range`, or
+/// `None` for a type that is neither.
+fn range_subtype(
+    pg_type: &PgType,
+    cache: &CatalogCache,
+    in_progress: &[u32],
+) -> Option<Box<PgDataType>> {
+    if !(pg_type.typtype == "r" || pg_type.typtype == "m") {
+        return None;
+    }
+    let subtype = cache.range_subtype(pg_type.oid)?;
+    let subtype_type = cache.pg_type(subtype)?;
+    Some(Box::new(PgDataType::from_type_through(
+        subtype_type,
+        -1,
+        cache,
+        0,
+        in_progress,
+    )?))
+}
+
+/// The attributes of a composite type, in order, read from the live
+/// attributes of the relation `pg_type` records under `typrelid`, or `None`
+/// for a type that is no composite, one whose relation the cache does not
+/// hold, and one whose own attributes are being read, which a composite
+/// reaching itself through an array or a domain reads once and stops.
+fn composite_fields(
+    pg_type: &PgType,
+    cache: &CatalogCache,
+    in_progress: &[u32],
+) -> Option<Vec<PgDataType>> {
+    if !(pg_type.typtype == "c" && pg_type.typrelid != 0) {
+        return None;
+    }
+    if in_progress.contains(&pg_type.oid) {
+        return None;
+    }
+    let attributes = cache.composite_attributes(pg_type.typrelid)?;
+    let mut with_self = in_progress.to_vec();
+    with_self.push(pg_type.oid);
+    attributes
+        .iter()
+        .map(|(type_oid, field_typmod, field_ndims)| {
+            let field_type = cache.pg_type(*type_oid)?;
+            PgDataType::from_type_through(
+                field_type,
+                *field_typmod,
+                cache,
+                *field_ndims,
+                &with_self,
+            )
+        })
+        .collect()
 }
 
 /// The most characters a value of a length-modified type can hold, or `None`
@@ -295,6 +384,21 @@ impl DataTypeLike for PgDataType {
 
     fn base_type<'db>(&'db self, _database: &'db Self::DB) -> Option<&'db Self> {
         self.base_type.as_deref()
+    }
+
+    fn send_function(&self, _database: &Self::DB) -> Option<bool> {
+        self.send_function
+    }
+
+    fn range_subtype<'db>(&'db self, _database: &'db Self::DB) -> Option<&'db Self> {
+        self.range_subtype.as_deref()
+    }
+
+    fn composite_fields<'db>(
+        &'db self,
+        _database: &'db Self::DB,
+    ) -> Option<impl Iterator<Item = &'db Self>> {
+        self.composite_fields.as_deref().map(<[_]>::iter)
     }
 }
 

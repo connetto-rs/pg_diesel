@@ -19,6 +19,7 @@ mod sequence_like;
 mod table_grant_like;
 mod table_like;
 mod trigger_like;
+mod user_defined_type_like;
 mod view_like;
 
 pub use column_grant_like::RoleColumnGrantsMetadata;
