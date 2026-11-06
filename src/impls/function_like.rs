@@ -89,12 +89,19 @@ impl FunctionLike for PgFunction {
         &'db self,
         _database: &'db Self::DB,
     ) -> impl Iterator<Item = Option<TargetName<'db>>> {
-        // `proargnames` holds an empty string for an unnamed argument.
-        self.model()
-            .proargnames
-            .iter()
+        // `proargnames` holds an empty string for an unnamed argument, and is
+        // `NULL` when no argument has a name.
+        let names = self.model().proargnames.as_deref();
+        let unnamed = if names.is_some() {
+            0
+        } else {
+            self.argument_modes().count()
+        };
+        names
+            .into_iter()
             .flatten()
             .map(|name| (!name.is_empty()).then(|| TargetName::new(name, true)))
+            .chain(std::iter::repeat_n(None, unnamed))
     }
 
     fn argument_type_names<'db>(
