@@ -166,11 +166,11 @@ impl std::hash::Hash for PgProc {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn dummy_pg_proc(oid: u32) -> PgProc {
-        PgProc {
+impl PgProc {
+    /// Returns a strict, immutable `pg_proc` row without arguments, for tests
+    /// to adjust.
+    pub(crate) fn fixture(oid: u32) -> Self {
+        Self {
             oid,
             proname: "func".to_string(),
             pronamespace: 1,
@@ -208,6 +208,15 @@ mod tests {
             prosqlbody: None,
             proconfig: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_pg_proc(oid: u32) -> PgProc {
+        PgProc::fixture(oid)
     }
 
     #[test]

@@ -14,6 +14,7 @@ use sqlparser::ast::{Action, Grantee};
 
 use crate::{
     PgDieselDatabase,
+    impls::table_grant_like::relation_target,
     model_metadata::{PgColumn, PgTable},
     models::RoleColumnGrants,
 };
@@ -113,14 +114,7 @@ impl GrantLike for RoleColumnGrants {
     }
 
     fn target(&self) -> GrantTarget<impl Iterator<Item = TargetName<'_>>> {
-        let name = self.table_name.as_deref().map(|name| {
-            let target = TargetName::new(name, true);
-            match self.table_schema.as_deref() {
-                Some(schema) => target.with_schema(schema, true),
-                None => target,
-            }
-        });
-        GrantTarget::Tables(name.into_iter())
+        relation_target(self.table_schema.as_deref(), self.table_name.as_deref())
     }
 
     fn with_grant_option(&self) -> bool {

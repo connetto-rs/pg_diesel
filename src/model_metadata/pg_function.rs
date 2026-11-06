@@ -195,44 +195,7 @@ mod tests {
     use super::*;
 
     fn dummy_pg_proc() -> PgProc {
-        PgProc {
-            oid: 1,
-            proname: "func".to_string(),
-            pronamespace: 1,
-            proowner: 1,
-            prolang: 1,
-            procost: 1.0,
-            prorows: 1.0,
-            provariadic: 0,
-            prosupport: 0,
-            prokind: "f".to_string(),
-            prosecdef: false,
-            proleakproof: false,
-            proisstrict: true,
-            proretset: false,
-            provolatile: "i".to_string(),
-            proparallel: "s".to_string(),
-            pronargs: 0,
-            pronargdefaults: 0,
-            prorettype: 0,
-            proargtypes: vec![],
-            proallargtypes: None,
-            proargmodes: None,
-            proargnames: None,
-            proargdefaults: None,
-            protrftypes: None,
-            prosrc: "src".to_string(),
-            probin: None,
-            #[cfg(any(
-                feature = "postgres-14",
-                feature = "postgres-15",
-                feature = "postgres-16",
-                feature = "postgres-17",
-                feature = "postgres-18"
-            ))]
-            prosqlbody: None,
-            proconfig: None,
-        }
+        PgProc::fixture(1)
     }
 
     fn function(proconfig: &[&str]) -> PgFunction {
