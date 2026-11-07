@@ -19,12 +19,20 @@ pub struct Expected {
 /// Every accepted difference.
 pub const EXPECTED: &[Expected] = &[
     Expected {
-        name: "owner unknown to the parser",
-        reason: "the DDL does not say which role ran it, so ParserDB answers no owner where the catalog records the role that created the object",
+        name: "extension version chosen by the server",
+        reason: "a CREATE EXTENSION without VERSION installs the default version the server ships, which the DDL does not name",
         matches: |difference| {
-            difference.fact.ends_with(" / owner")
+            difference.fact.ends_with(" / version")
+                && difference.fact.starts_with("extension ")
                 && difference.source == Some(Value::Text("None".to_owned()))
-                && difference.live.is_some()
+        },
+    },
+    Expected {
+        name: "SQL comment kept as documentation",
+        reason: "ParserDB reads the comment written before a CREATE as the object's documentation, which PostgreSQL discards, so the catalog holds no description",
+        matches: |difference| {
+            difference.fact.ends_with(" / comment")
+                && difference.live == Some(Value::Text("None".to_owned()))
         },
     },
     Expected {

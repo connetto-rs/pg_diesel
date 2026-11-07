@@ -43,7 +43,7 @@ use pg_diesel::{
         pg_class::pg_class, pg_depend::pg_depend, pg_namespace::pg_namespace, pg_proc::pg_proc,
         pg_roles::pg_roles, pg_type::pg_type,
     },
-    sql_traits::structs::ParserDB,
+    sql_traits::structs::ParseOptions,
     sqlparser::dialect::PostgreSqlDialect,
 };
 use test_utils::{establish_connection, reference_docker};
@@ -155,7 +155,12 @@ fn compare_document(database: &str, ddl: &str, server_major: u32) -> Outcome {
     if let Err(error) = connection.batch_execute(ddl) {
         return Outcome::Failed(format!("PostgreSQL refused the document: {error}"));
     }
-    let source = match ParserDB::parse::<PostgreSqlDialect>(ddl) {
+    // The document runs as the container's superuser, which owns what it
+    // creates.
+    let source = match ParseOptions::default()
+        .with_session_role(SUPERUSER)
+        .parse::<PostgreSqlDialect>(ddl)
+    {
         Ok(source) => source,
         Err(error) => return Outcome::Failed(format!("ParserDB refused the document: {error}")),
     };
