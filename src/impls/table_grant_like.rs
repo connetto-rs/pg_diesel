@@ -74,7 +74,8 @@ fn names_relation(
 }
 
 /// Returns the grant target of a privilege `aclexplode` read from one
-/// relation, the relation recorded under `schema` and `name`.
+/// relation, the relation recorded under `schema` and `name`, or from one
+/// schema, recorded under `schema` and no name.
 ///
 /// The server expands `ON ALL TABLES IN SCHEMA` into an entry per relation,
 /// so a grant read from the catalog names the one relation it reached.
@@ -82,14 +83,21 @@ pub(crate) fn relation_target<'a>(
     schema: Option<&'a str>,
     name: Option<&'a str>,
 ) -> GrantTarget<std::option::IntoIter<TargetName<'a>>> {
-    let target = name.map(|name| {
-        let target = TargetName::new(name, true);
-        match schema {
-            Some(schema) => target.with_schema(schema, true),
-            None => target,
+    match (schema, name) {
+        (Some(schema), None) => {
+            GrantTarget::Schemas(Some(TargetName::new(schema, true)).into_iter())
         }
-    });
-    GrantTarget::Tables(target.into_iter())
+        (schema, name) => {
+            let target = name.map(|name| {
+                let target = TargetName::new(name, true);
+                match schema {
+                    Some(schema) => target.with_schema(schema, true),
+                    None => target,
+                }
+            });
+            GrantTarget::Tables(target.into_iter())
+        }
+    }
 }
 
 impl GrantLike for RoleTableGrants {
