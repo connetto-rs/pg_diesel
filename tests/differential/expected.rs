@@ -63,6 +63,25 @@ pub const EXPECTED: &[Expected] = &[
         },
     },
     Expected {
+        name: "public owned by the bootstrap superuser before PostgreSQL 15",
+        reason: "ParserDB models PostgreSQL 18, where pg_database_owner owns public, while an older server makes the bootstrap superuser its owner",
+        matches: |difference, context| {
+            !cfg!(any(
+                feature = "postgres-15",
+                feature = "postgres-16",
+                feature = "postgres-17",
+                feature = "postgres-18"
+            )) && difference.fact == "schema public / owner"
+                && difference.source
+                    == Some(Value::Text(format!("{:?}", Some("pg_database_owner"))))
+                && difference.live
+                    == Some(Value::Text(format!(
+                        "{:?}",
+                        Some(&context.bootstrap_superuser)
+                    )))
+        },
+    },
+    Expected {
         name: "extension version chosen by the server",
         reason: "a CREATE EXTENSION without VERSION installs the default version the server ships, which the DDL does not name",
         matches: |difference, _| {
