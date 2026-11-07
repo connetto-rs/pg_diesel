@@ -1,5 +1,7 @@
 //! Implementation of [`IndexLike`] for [`PgIndexEntry`].
 
+use std::borrow::Cow;
+
 use sql_traits::{
     errors::{LookupError, ObjectKind},
     structs::metadata::UniqueIndexMetadata,
@@ -20,6 +22,10 @@ impl IndexLike for PgIndexEntry {
         Some(PgIndexEntry::name(self))
     }
 
+    fn is_unique(&self) -> bool {
+        PgIndexEntry::model(self).indisunique
+    }
+
     fn name_is_quoted(&self) -> bool {
         // Catalog names are stored names: folding again would rename them.
         true
@@ -33,13 +39,20 @@ impl IndexLike for PgIndexEntry {
         true
     }
 
+    fn constraint_name<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<Option<Cow<'db, str>>, LookupError> {
+        let _ = metadata(self, database)?;
+        Ok(PgIndexEntry::constraint_name(self).map(Cow::Borrowed))
+    }
+
     fn table<'db>(&'db self, database: &'db Self::DB) -> &'db <Self::DB as DatabaseLike>::Table
     where
         Self: 'db,
     {
-        database
-            .index_metadata(self)
-            .expect("Index must exist in database")
+        metadata(self, database)
+            .expect("an index the database lists carries its metadata")
             .table()
     }
 
@@ -47,16 +60,25 @@ impl IndexLike for PgIndexEntry {
     where
         Self: 'db,
     {
-        Ok(database
-            .index_metadata(self)
-            .ok_or_else(|| LookupError::ObjectNotInDatabase {
-                object_kind: ObjectKind::Index,
-                object: format!(
-                    "{}.{}",
-                    PgIndexEntry::schema(self),
-                    PgIndexEntry::name(self)
-                ),
-            })?
-            .expression())
+        Ok(metadata(self, database)?.expression())
     }
+}
+
+/// Returns the metadata `database` holds for `index`, which one entry type
+/// serves for both the index and the unique index collections.
+fn metadata<'db>(
+    index: &PgIndexEntry,
+    database: &'db PgDieselDatabase,
+) -> Result<&'db UniqueIndexMetadata<PgIndexEntry>, LookupError> {
+    database
+        .index_metadata(index)
+        .or_else(|| database.unique_index_metadata(index))
+        .ok_or_else(|| LookupError::ObjectNotInDatabase {
+            object_kind: ObjectKind::Index,
+            object: format!(
+                "{}.{}",
+                PgIndexEntry::schema(index),
+                PgIndexEntry::name(index)
+            ),
+        })
 }

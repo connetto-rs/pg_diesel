@@ -1,20 +1,13 @@
 //! Check constraint model.
 
-use std::{
-    fmt::{Debug, Display},
-    sync::Arc,
-};
+use std::fmt::{Debug, Display};
 
 use diesel::{
     BoolExpressionMethods, ExpressionMethods, JoinOnDsl, OptionalExtension, PgConnection, QueryDsl,
     Queryable, QueryableByName, Selectable, SelectableHelper,
 };
-use sql_traits::{structs::metadata::CheckMetadata, utils::columns_in_expression};
 
-use crate::{
-    model_metadata::TableMetadata,
-    models::{PgConstraint, PgOperator, PgProc, Table, TableConstraint},
-};
+use crate::models::{PgConstraint, PgOperator, PgProc, Table, TableConstraint};
 
 mod cached_queries;
 
@@ -124,51 +117,6 @@ impl CheckConstraint {
     /// * If an error occurs while querying the database
     pub fn table(&self, conn: &mut PgConnection) -> Result<Table, diesel::result::Error> {
         self.table_constraint(conn)?.table(conn)
-    }
-
-    /// Returns the metadata for this check constraint
-    ///
-    /// # Errors
-    ///
-    /// * If there is an error while querying the database.
-    pub fn metadata(
-        &self,
-        table: Arc<crate::model_metadata::PgTable>,
-        table_metadata: &TableMetadata,
-        functions: &[Arc<crate::model_metadata::PgFunction>],
-        conn: &mut PgConnection,
-    ) -> Result<CheckMetadata<CheckConstraint>, diesel::result::Error> {
-        use sqlparser::parser::Parser;
-        let expression = Parser::new(&sqlparser::dialect::PostgreSqlDialect {})
-            .try_with_sql(self.check_clause.as_str())
-            .expect("Failed to parse unique constraint expression")
-            .parse_expr()
-            .expect("No expression found in parsed unique constraint");
-
-        let target = sql_traits::structs::TargetName::new(table.name(), true)
-            .with_schema(table.schema(), true);
-        let columns = columns_in_expression(
-            &expression,
-            table.catalog(),
-            &target,
-            table_metadata.column_arc_slice(),
-        )
-        .expect("The check clause of a catalog constraint names only its own columns");
-
-        Ok(CheckMetadata::new(
-            expression,
-            table,
-            columns,
-            self.functions(conn)?
-                .into_iter()
-                .filter_map(|func| {
-                    functions
-                        .iter()
-                        .find(|candidate| candidate.model().proname == func.proname)
-                        .cloned()
-                })
-                .collect(),
-        ))
     }
 }
 

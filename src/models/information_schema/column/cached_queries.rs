@@ -62,6 +62,10 @@ pub(super) fn foreign_keys(
 }
 
 /// Returns the check constraints that apply to this column.
+///
+/// `information_schema.check_constraints` also carries the not-null
+/// constraints, so only the rows a `pg_constraint` row of type `c` backs
+/// are check constraints.
 pub(super) fn check_constraints(
     column: &Column,
     conn: &mut PgConnection,
@@ -69,7 +73,9 @@ pub(super) fn check_constraints(
     use crate::schema::information_schema::{
         check_constraints::check_constraints, constraint_column_usage::constraint_column_usage,
     };
-    check_constraints::table
+    use crate::schema::pg_catalog::{pg_constraint::pg_constraint, pg_namespace::pg_namespace};
+
+    let constraints = check_constraints::table
         .inner_join(
             constraint_column_usage::table.on(constraint_column_usage::constraint_name
                 .eq(check_constraints::constraint_name)
@@ -96,7 +102,19 @@ pub(super) fn check_constraints(
                 ),
         )
         .select(CheckConstraint::as_select())
-        .load(conn)
+        .load::<CheckConstraint>(conn)?;
+
+    let backed: Vec<String> = pg_constraint::table
+        .inner_join(pg_namespace::table.on(pg_constraint::connamespace.eq(pg_namespace::oid)))
+        .filter(pg_namespace::nspname.eq(&column.table_schema))
+        .filter(pg_constraint::contype.eq("c"))
+        .select(pg_constraint::conname)
+        .load::<String>(conn)?;
+
+    Ok(constraints
+        .into_iter()
+        .filter(|constraint| backed.contains(&constraint.constraint_name))
+        .collect())
 }
 
 /// Returns the table that contains this column.

@@ -6,18 +6,21 @@ use std::collections::BTreeSet;
 
 use diesel::{PgConnection, connection::SimpleConnection};
 use pg_diesel::sqlparser::ast::{
-    FunctionCalledOnNull, FunctionSecurity, TriggerEvent, TriggerObject, TriggerObjectKind,
-    TriggerPeriod,
+    ArgMode, FunctionCalledOnNull, FunctionSecurity, ReferentialAction, TriggerEvent,
+    TriggerObject, TriggerObjectKind, TriggerPeriod,
 };
 use pg_diesel::{
     PgDieselDatabase,
     database::PgDieselDatabaseBuilder,
     model_metadata::PgTable,
-    sql_traits::traits::{
-        CheckConstraintLike, ColumnCollation, ColumnGrantLike, ColumnLike, DatabaseLike,
-        ForeignKeyLike, FunctionLike, GrantLike, IndexLike, PartitionStrategy, PolicyLike,
-        RoleLike, SchemaLike, TableGrantLike, TableLike, TriggerLike, ViewLike,
-        grant::GrantRelation,
+    sql_traits::{
+        structs::FunctionKind,
+        traits::{
+            CheckConstraintLike, ColumnCollation, ColumnGrantLike, ColumnLike, DatabaseLike,
+            ForeignKeyLike, FunctionLike, GrantLike, IndexLike, PartitionStrategy, PolicyLike,
+            Relation, RoleLike, SchemaLike, TableGrantLike, TableLike, TriggerLike, ViewLike,
+            grant::GrantTarget,
+        },
     },
 };
 use test_utils::{establish_connection, reference_docker};
@@ -256,13 +259,13 @@ async fn test_database_build() {
             .name(),
         "parents"
     );
-    assert!(foreign_key.on_delete_cascade(&database));
+    assert_eq!(foreign_key.on_delete(&database), ReferentialAction::Cascade);
 
     // Check constraints resolve their columns.
     let check = table(&database, "children")
         .check_constraints(&database)
         .expect("in database")
-        .find(|constraint| constraint.constraint_name == "children_id_is_positive")
+        .find(|constraint| constraint.name() == "children_id_is_positive")
         .expect("the check constraint is recorded");
     let checked: Vec<&str> = CheckConstraintLike::columns(check, &database)
         .expect("in database")
@@ -352,10 +355,10 @@ async fn test_database_build() {
                 && grant.table_name.as_deref() == Some("children")
         })
         .expect("the grant is recorded");
-    let targets: Vec<String> = grant
-        .target_table_names()
-        .map(|name| name.to_string())
-        .collect();
+    let GrantTarget::Tables(names) = grant.target() else {
+        panic!("a relation grant names its table");
+    };
+    let targets: Vec<String> = names.map(|name| name.to_string()).collect();
     // A catalog name is reported quoted, the spelling that resolves back.
     assert_eq!(targets, vec![r#""app"."children""#.to_string()]);
     assert_eq!(grant.relations(&database).count(), 1);
@@ -381,7 +384,7 @@ async fn test_database_build() {
     assert_eq!(granted, vec!["parent_id"]);
     assert!(matches!(
         column_grant.relation(&database),
-        Some(GrantRelation::Table(_))
+        Some(Relation::Table(_))
     ));
 
     // Functions carry the facts `pg_proc` records only as OIDs or raw text.
@@ -396,11 +399,42 @@ async fn test_database_build() {
         Some("app_owner")
     );
     assert_eq!(function.security_mode(), FunctionSecurity::Definer);
-    assert_eq!(
-        function.null_input_behavior(),
-        FunctionCalledOnNull::ReturnsNullOnNullInput
-    );
+    assert_eq!(function.null_input_behavior(), FunctionCalledOnNull::Strict);
     assert!(!function.returns_set());
+    assert_eq!(
+        function.kind(&database).expect("in database"),
+        FunctionKind::Normal
+    );
+    let modes: Vec<ArgMode> = function.argument_modes().collect();
+    assert_eq!(modes, vec![ArgMode::In]);
+    assert_eq!(function.argument_default_count(), 0);
+    assert!(
+        function
+            .is_executable_by_public(&database)
+            .expect("in database"),
+        "no `REVOKE` took `EXECUTE` from `PUBLIC`"
+    );
+    let app_owner = database.role("app_owner").expect("the role is recorded");
+    assert!(
+        function
+            .can_execute(app_owner, &database)
+            .expect("in database")
+    );
+    assert!(
+        function
+            .can_grant_execute(app_owner, &database)
+            .expect("in database"),
+        "the owner may grant whatever its own entry says"
+    );
+    // A body written as a string literal is parsed only when the function runs.
+    assert!(
+        !function.body_is_bound(),
+        "a string-literal SQL body leaves `prosqlbody` empty"
+    );
+    assert_eq!(
+        function.search_path(&database).expect("in database"),
+        Some(vec![("app".into(), false)])
+    );
     let argument_names: Vec<String> = function
         .argument_names(&database)
         .map(|name| name.expect("the argument is named").name().to_string())
@@ -410,10 +444,10 @@ async fn test_database_build() {
         .argument_type_names(&database)
         .map(std::borrow::Cow::into_owned)
         .collect();
-    assert_eq!(argument_types, vec!["int4".to_string()]);
+    assert_eq!(argument_types, vec!["integer".to_string()]);
     assert_eq!(
         function.return_type_name(&database).as_deref(),
-        Some("int4")
+        Some("integer")
     );
     assert!(
         function

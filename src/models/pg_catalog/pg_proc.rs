@@ -5,6 +5,7 @@ use diesel::{PgConnection, Queryable, QueryableByName, Selectable};
 use crate::models::PgExtension;
 
 mod cached_queries;
+pub use cached_queries::ProcAclEntry;
 
 /// Represents the `pg_proc` system catalog table in `PostgreSQL`.
 /// This table stores information about functions and procedures.
@@ -93,15 +94,49 @@ impl PgProc {
         cached_queries::extension(self, conn)
     }
 
-    /// Loads all the functions from the `pg_proc` table, excluding procedures,
-    /// aggregates, non-strict functions, set-returning functions, and functions
-    /// returning "void".
+    /// Loads every `pg_proc` row except the procedures.
     ///
     /// # Errors
     ///
     /// * If the database query fails.
     pub fn load_all(conn: &mut PgConnection) -> Result<Vec<PgProc>, diesel::result::Error> {
         cached_queries::load_all(conn)
+    }
+
+    /// Loads one entry per `EXECUTE` grant `pg_proc.proacl` records, for
+    /// every function [`load_all`](Self::load_all) holds.
+    ///
+    /// # Errors
+    ///
+    /// * If the database query fails.
+    pub fn load_all_execute_grants(
+        conn: &mut PgConnection,
+    ) -> Result<Vec<ProcAclEntry>, diesel::result::Error> {
+        cached_queries::load_all_execute_grants(conn)
+    }
+
+    /// Loads the definition `pg_get_functiondef` prints for every function
+    /// whose body `PostgreSQL` bound at creation, beside its OID.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `diesel::result::Error` if the query fails.
+    pub fn load_bound_definitions(
+        conn: &mut PgConnection,
+    ) -> Result<Vec<(u32, String)>, diesel::result::Error> {
+        cached_queries::load_bound_definitions(conn)
+    }
+
+    /// Loads `(function, reached)` OID pairs, one per function a bound body
+    /// reached.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `diesel::result::Error` if the query fails.
+    pub fn load_bound_dependencies(
+        conn: &mut PgConnection,
+    ) -> Result<Vec<(u32, u32)>, diesel::result::Error> {
+        cached_queries::load_bound_dependencies(conn)
     }
 }
 
@@ -131,11 +166,11 @@ impl std::hash::Hash for PgProc {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn dummy_pg_proc(oid: u32) -> PgProc {
-        PgProc {
+impl PgProc {
+    /// Returns a strict, immutable `pg_proc` row without arguments, for tests
+    /// to adjust.
+    pub(crate) fn fixture(oid: u32) -> Self {
+        Self {
             oid,
             proname: "func".to_string(),
             pronamespace: 1,
@@ -173,6 +208,15 @@ mod tests {
             prosqlbody: None,
             proconfig: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_pg_proc(oid: u32) -> PgProc {
+        PgProc::fixture(oid)
     }
 
     #[test]

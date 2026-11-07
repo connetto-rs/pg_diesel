@@ -14,7 +14,7 @@ ipnetwork = { version = "0.21.1", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"], optional = true }
 bigdecimal = { version = "0.4", features = ["serde"] }
 sql-traits = { git = "https://github.com/connetto-rs/sql-traits", branch = "main" }
-sqlparser = { version = "0.63", features = ["serde", "visitor"] }
+sqlparser = { version = "0.64", features = ["serde", "visitor"] }
 thiserror = "2.0.17"
 
 [dev-dependencies]

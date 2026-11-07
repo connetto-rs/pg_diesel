@@ -2,13 +2,40 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use sql_traits::structs::ForeignTableSource;
+use sqlparser::ast::Action;
+
 use crate::{
-    model_metadata::{ColumnMetadata, PgForeignKey, PgIndexEntry, PgPolicy, PgTable},
-    models::{CheckConstraint, Column, PgDescription, Triggers},
+    model_metadata::{
+        ColumnMetadata, PgCheckConstraint, PgColumn, PgForeignKey, PgIndexEntry, PgPolicy, PgTable,
+    },
+    models::{PgDescription, PgTrigger},
 };
 
 /// The schema and name a table is recorded under, as the catalogs spell them.
 pub type TableIdentity = (String, String);
+
+/// The `PostgreSQL` catalog facts `TableMetadata` records around its core
+/// metadata, each loaded by a separate catalog read.
+#[derive(Clone, Debug)]
+pub struct TableMetadataDetails {
+    /// The description of the table, if any.
+    pub description: Option<PgDescription>,
+    /// The triggers `pg_trigger` records for the table, each with the name
+    /// the engine records the function it executes under and the columns an
+    /// `UPDATE` event fires it on.
+    pub triggers: Vec<(Arc<PgTrigger>, String, Vec<String>)>,
+    /// The policies defined on the table.
+    pub policies: Vec<Arc<PgPolicy>>,
+    /// The tables this one inherits from through `INHERITS`.
+    pub parents: Vec<TableIdentity>,
+    /// The partitioned table this one is a partition of.
+    pub partition_root: Option<TableIdentity>,
+    /// The metadata of each column, by the name the column is recorded under.
+    pub column_metadata: HashMap<String, ColumnMetadata>,
+    /// The table-level privileges the owner's own entry holds.
+    pub owner_privileges: Vec<Action>,
+}
 
 #[derive(Clone, Debug)]
 /// Rich metadata about a `PostgreSQL` table.
@@ -17,8 +44,10 @@ pub struct TableMetadata {
     metadata: sql_traits::structs::TableMetadata<PgTable>,
     /// The description of the table, if any.
     description: Option<PgDescription>,
-    /// The triggers defined on the table, along with the OID of the function they call.
-    triggers: Vec<(Arc<Triggers>, Option<u32>)>,
+    /// The triggers `pg_trigger` records for the table, each with the name
+    /// the engine records the function it executes under and the columns an
+    /// `UPDATE` event fires it on.
+    triggers: Vec<(Arc<PgTrigger>, String, Vec<String>)>,
     /// The policies defined on the table.
     policies: Vec<Arc<PgPolicy>>,
     /// The tables this one inherits from through `INHERITS`.
@@ -27,6 +56,8 @@ pub struct TableMetadata {
     partition_root: Option<TableIdentity>,
     /// The metadata of each column, by the name the column is recorded under.
     column_metadata: HashMap<String, ColumnMetadata>,
+    /// The table-level privileges the owner's own entry holds.
+    owner_privileges: Vec<Action>,
 }
 
 impl TableMetadata {
@@ -34,21 +65,17 @@ impl TableMetadata {
     #[must_use]
     pub fn new(
         metadata: sql_traits::structs::TableMetadata<PgTable>,
-        description: Option<PgDescription>,
-        triggers: Vec<(Arc<Triggers>, Option<u32>)>,
-        policies: Vec<Arc<PgPolicy>>,
-        parents: Vec<TableIdentity>,
-        partition_root: Option<TableIdentity>,
-        column_metadata: HashMap<String, ColumnMetadata>,
+        details: TableMetadataDetails,
     ) -> Self {
         Self {
             metadata,
-            description,
-            triggers,
-            policies,
-            parents,
-            partition_root,
-            column_metadata,
+            description: details.description,
+            triggers: details.triggers,
+            policies: details.policies,
+            parents: details.parents,
+            partition_root: details.partition_root,
+            column_metadata: details.column_metadata,
+            owner_privileges: details.owner_privileges,
         }
     }
 
@@ -59,33 +86,33 @@ impl TableMetadata {
     }
 
     /// Returns an iterator over the references of columns of the table.
-    pub fn columns(&self) -> impl Iterator<Item = &Column> {
+    pub fn columns(&self) -> impl Iterator<Item = &PgColumn> {
         self.metadata.columns()
     }
 
     /// Returns an iterator over the columns the table declares itself.
-    pub fn local_columns(&self) -> impl Iterator<Item = &Column> {
+    pub fn local_columns(&self) -> impl Iterator<Item = &PgColumn> {
         self.metadata.local_columns()
     }
 
     /// Returns an iterator over the Arc of columns of the table.
-    pub fn column_arcs(&self) -> impl Iterator<Item = &Arc<Column>> {
+    pub fn column_arcs(&self) -> impl Iterator<Item = &Arc<PgColumn>> {
         self.metadata.column_arcs()
     }
 
     /// Returns a slice of Arc of columns of the table.
     #[must_use]
-    pub fn column_arc_slice(&self) -> &[Arc<Column>] {
+    pub fn column_arc_slice(&self) -> &[Arc<PgColumn>] {
         self.metadata.column_arc_slice()
     }
 
     /// Returns an iterator over the check constraints of the table.
-    pub fn check_constraints(&self) -> impl Iterator<Item = &CheckConstraint> {
+    pub fn check_constraints(&self) -> impl Iterator<Item = &PgCheckConstraint> {
         self.metadata.check_constraints()
     }
 
     /// Returns an iterator over the Arc of check constraints of the table.
-    pub fn check_constraint_arcs(&self) -> impl Iterator<Item = &Arc<CheckConstraint>> {
+    pub fn check_constraint_arcs(&self) -> impl Iterator<Item = &Arc<PgCheckConstraint>> {
         self.metadata.check_constraint_arcs()
     }
 
@@ -121,7 +148,7 @@ impl TableMetadata {
 
     /// Returns an iterator over the columns composing the primary key of the
     /// table.
-    pub fn primary_key_columns(&self) -> impl Iterator<Item = &Column> {
+    pub fn primary_key_columns(&self) -> impl Iterator<Item = &PgColumn> {
         self.metadata.primary_key_columns()
     }
 
@@ -132,7 +159,7 @@ impl TableMetadata {
     }
 
     /// Returns an iterator over the triggers of the table.
-    pub fn triggers(&self) -> impl Iterator<Item = &(Arc<Triggers>, Option<u32>)> {
+    pub fn triggers(&self) -> impl Iterator<Item = &(Arc<PgTrigger>, String, Vec<String>)> {
         self.triggers.iter()
     }
 
@@ -168,5 +195,18 @@ impl TableMetadata {
     #[must_use]
     pub fn partition_root(&self) -> Option<&TableIdentity> {
         self.partition_root.as_ref()
+    }
+
+    /// Returns the table-level privileges the owner's own entry holds.
+    #[must_use]
+    pub fn owner_privileges(&self) -> &[Action] {
+        &self.owner_privileges
+    }
+
+    /// Returns the server the table reads through, when it is a foreign
+    /// table.
+    #[must_use]
+    pub fn foreign_source(&self) -> Option<&ForeignTableSource> {
+        self.metadata.foreign_source()
     }
 }

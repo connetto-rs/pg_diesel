@@ -5,8 +5,8 @@ use std::sync::Arc;
 use sql_traits::{
     structs::TargetName,
     traits::{
-        DatabaseLike, GrantLike, Metadata, RoleLike, TableGrantLike, TableLike, ViewLike,
-        grant::GrantRelation,
+        DatabaseLike, GrantLike, Metadata, Relation, RoleLike, SequenceLike, TableGrantLike,
+        TableLike, ViewLike, grant::GrantTarget,
     },
 };
 use sqlparser::ast::{Action, Grantee};
@@ -73,6 +73,25 @@ fn names_relation(
     schema == relation_schema && name == Some(relation_name)
 }
 
+/// Returns the grant target of a privilege `aclexplode` read from one
+/// relation, the relation recorded under `schema` and `name`.
+///
+/// The server expands `ON ALL TABLES IN SCHEMA` into an entry per relation,
+/// so a grant read from the catalog names the one relation it reached.
+pub(crate) fn relation_target<'a>(
+    schema: Option<&'a str>,
+    name: Option<&'a str>,
+) -> GrantTarget<std::option::IntoIter<TargetName<'a>>> {
+    let target = name.map(|name| {
+        let target = TargetName::new(name, true);
+        match schema {
+            Some(schema) => target.with_schema(schema, true),
+            None => target,
+        }
+    });
+    GrantTarget::Tables(target.into_iter())
+}
+
 impl GrantLike for RoleTableGrants {
     type DB = PgDieselDatabase;
 
@@ -108,22 +127,8 @@ impl GrantLike for RoleTableGrants {
             .is_some_and(|grantee| grantee.eq_ignore_ascii_case("PUBLIC"))
     }
 
-    fn target_table_names(&self) -> impl Iterator<Item = TargetName<'_>> {
-        self.table_name
-            .as_deref()
-            .map(|name| {
-                let target = TargetName::new(name, true);
-                match self.table_schema.as_deref() {
-                    Some(schema) => target.with_schema(schema, true),
-                    None => target,
-                }
-            })
-            .into_iter()
-    }
-
-    fn target_schema_names(&self) -> impl Iterator<Item = TargetName<'_>> {
-        // The server expands `ON ALL TABLES IN SCHEMA` into a grant per table.
-        core::iter::empty()
+    fn target(&self) -> GrantTarget<impl Iterator<Item = TargetName<'_>>> {
+        relation_target(self.table_schema.as_deref(), self.table_name.as_deref())
     }
 
     fn with_grant_option(&self) -> bool {
@@ -141,7 +146,7 @@ impl GrantLike for RoleTableGrants {
     }
 
     fn applies_to_role(&self, role: &<Self::DB as DatabaseLike>::Role) -> bool {
-        self.grantee.as_deref().is_some_and(|g| g == role.name())
+        self.applies_to_public() || self.grantee.as_deref().is_some_and(|g| g == role.name())
     }
 }
 
@@ -163,31 +168,70 @@ impl TableGrantLike for RoleTableGrants {
     fn relations<'a>(
         &'a self,
         database: &'a Self::DB,
-    ) -> impl Iterator<Item = GrantRelation<'a, Self::DB>> {
-        let tables = self.tables(database).map(GrantRelation::Table);
-        let views = database
-            .views()
-            .filter(move |view| {
+    ) -> impl Iterator<Item = Relation<'a, Self::DB>> {
+        database
+            .tables()
+            .filter(move |table| {
                 names_relation(
                     self.table_schema.as_deref(),
                     self.table_name.as_deref(),
-                    view.view_schema(),
-                    view.view_name(),
+                    table.table_schema(),
+                    table.table_name(),
                 )
             })
-            .map(GrantRelation::View);
-        let materialized = database
-            .materialized_views()
-            .filter(move |view| {
-                names_relation(
-                    self.table_schema.as_deref(),
-                    self.table_name.as_deref(),
-                    view.view_schema(),
-                    view.view_name(),
-                )
-            })
-            .map(GrantRelation::MaterializedView);
-        tables.chain(views).chain(materialized)
+            .map(Relation::Table)
+            .chain(
+                database
+                    .foreign_tables()
+                    .filter(move |table| {
+                        names_relation(
+                            self.table_schema.as_deref(),
+                            self.table_name.as_deref(),
+                            table.table_schema(),
+                            table.table_name(),
+                        )
+                    })
+                    .map(Relation::ForeignTable),
+            )
+            .chain(
+                database
+                    .views()
+                    .filter(move |view| {
+                        names_relation(
+                            self.table_schema.as_deref(),
+                            self.table_name.as_deref(),
+                            view.view_schema(),
+                            view.view_name(),
+                        )
+                    })
+                    .map(Relation::View),
+            )
+            .chain(
+                database
+                    .materialized_views()
+                    .filter(move |view| {
+                        names_relation(
+                            self.table_schema.as_deref(),
+                            self.table_name.as_deref(),
+                            view.view_schema(),
+                            view.view_name(),
+                        )
+                    })
+                    .map(Relation::MaterializedView),
+            )
+            .chain(
+                database
+                    .sequences()
+                    .filter(move |sequence| {
+                        names_relation(
+                            self.table_schema.as_deref(),
+                            self.table_name.as_deref(),
+                            sequence.sequence_schema(),
+                            sequence.sequence_name(),
+                        )
+                    })
+                    .map(Relation::Sequence),
+            )
     }
 
     fn applies_to_table(
@@ -204,10 +248,11 @@ impl TableGrantLike for RoleTableGrants {
     }
 }
 
-/// Convert a privilege type string to an `Action`.
+/// Returns the action `PostgreSQL`'s spelling of a relation or column
+/// privilege names, or `None` for a privilege the AST has no action for.
 #[must_use]
-pub fn string_to_action(privilege: &str) -> Action {
-    match privilege.to_uppercase().as_str() {
+pub fn string_to_action(privilege: &str) -> Option<Action> {
+    Some(match privilege.to_uppercase().as_str() {
         "SELECT" => Action::Select { columns: None },
         "INSERT" => Action::Insert { columns: None },
         "UPDATE" => Action::Update { columns: None },
@@ -215,6 +260,8 @@ pub fn string_to_action(privilege: &str) -> Action {
         "TRUNCATE" => Action::Truncate,
         "REFERENCES" => Action::References { columns: None },
         "TRIGGER" => Action::Trigger,
-        _ => Action::Usage,
-    }
+        "USAGE" => Action::Usage,
+        "MAINTAIN" => Action::Maintain,
+        _ => return None,
+    })
 }

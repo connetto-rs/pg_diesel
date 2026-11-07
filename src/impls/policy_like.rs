@@ -5,7 +5,7 @@ use sql_traits::{
     structs::TargetName,
     traits::{DatabaseLike, Metadata, PolicyLike},
 };
-use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Expr, Owner};
+use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Expr, Function, Owner};
 
 use crate::{
     database::PgDieselDatabase,
@@ -102,17 +102,30 @@ impl PolicyLike for PgPolicy {
         &'db self,
         database: &'db Self::DB,
     ) -> Result<impl Iterator<Item = &'db <Self::DB as DatabaseLike>::Function>, LookupError> {
-        Ok(metadata(self, database)?
-            .using_functions()
-            .map(AsRef::as_ref))
+        Ok(metadata(self, database)?.using_functions())
     }
 
     fn check_functions<'db>(
         &'db self,
         database: &'db Self::DB,
     ) -> Result<impl Iterator<Item = &'db <Self::DB as DatabaseLike>::Function>, LookupError> {
-        Ok(metadata(self, database)?
-            .check_functions()
-            .map(AsRef::as_ref))
+        Ok(metadata(self, database)?.check_functions())
+    }
+
+    fn functions_reached_by<'db>(
+        &'db self,
+        call: &Function,
+        database: &'db Self::DB,
+    ) -> Result<impl Iterator<Item = &'db <Self::DB as DatabaseLike>::Function>, LookupError> {
+        let metadata = metadata(self, database)?;
+        self.using_expression(database)
+            .and_then(|using| metadata.using_calls().reached_by(using, call))
+            .or_else(|| {
+                self.check_expression(database)
+                    .and_then(|check| metadata.check_calls().reached_by(check, call))
+            })
+            .ok_or_else(|| LookupError::CallNotInExpression {
+                call: call.to_string(),
+            })
     }
 }
