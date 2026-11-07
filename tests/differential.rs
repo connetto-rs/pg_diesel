@@ -40,16 +40,16 @@ use pg_diesel::{
     PgDieselDatabase,
     database::PgDieselDatabaseBuilder,
     schema::pg_catalog::{
-        pg_class::pg_class, pg_depend::pg_depend, pg_namespace::pg_namespace, pg_proc::pg_proc,
-        pg_roles::pg_roles, pg_type::pg_type,
+        pg_authid::pg_authid, pg_class::pg_class, pg_depend::pg_depend, pg_namespace::pg_namespace,
+        pg_proc::pg_proc, pg_range::pg_range, pg_roles::pg_roles, pg_type::pg_type,
     },
-    sql_traits::structs::ParseOptions,
+    sql_traits::{structs::ParseOptions, traits::DatabaseLike},
     sqlparser::dialect::PostgreSqlDialect,
 };
 use test_utils::{establish_connection, reference_docker};
 
 use crate::{
-    compare::{AlreadyStored, Scope, contradictions, describe, differences},
+    compare::{AlreadyStored, Scope, contradictions, describe, differences, function_key},
     deparse::ThroughPostgres,
     server::{server_role_privileges, server_row_security, server_table_privileges},
 };
@@ -147,6 +147,46 @@ fn extension_members(connection: &mut PgConnection) -> BTreeSet<(String, String)
         .collect()
 }
 
+/// Returns the bootstrap superuser of the database `live` was read from,
+/// with the keys of its range and multirange constructor functions, which
+/// PostgreSQL names after the type they return.
+fn expected_context(
+    connection: &mut PgConnection,
+    live: &PgDieselDatabase,
+    scope: &Scope,
+) -> expected::Context {
+    let bootstrap_superuser: String = pg_authid::table
+        .filter(pg_authid::oid.eq(10))
+        .select(pg_authid::rolname)
+        .first(connection)
+        .expect("the bootstrap superuser is listed");
+    let range_types: Vec<u32> = pg_range::table
+        .select((pg_range::rngtypid, pg_range::rngmultitypid))
+        .load::<(u32, u32)>(connection)
+        .expect("the range types are listed")
+        .into_iter()
+        .flat_map(|(range, multirange)| [range, multirange])
+        .collect();
+    let constructors: BTreeSet<u32> = pg_proc::table
+        .inner_join(pg_type::table.on(pg_type::oid.eq(pg_proc::prorettype)))
+        .filter(pg_proc::proname.eq(pg_type::typname))
+        .filter(pg_proc::pronamespace.eq(pg_type::typnamespace))
+        .filter(pg_type::oid.eq_any(range_types))
+        .select(pg_proc::oid)
+        .load::<u32>(connection)
+        .expect("the range constructors are listed")
+        .into_iter()
+        .collect();
+    expected::Context {
+        bootstrap_superuser,
+        range_constructors: live
+            .functions()
+            .filter(|function| constructors.contains(&function.oid()))
+            .map(|function| function_key(scope, live, function))
+            .collect(),
+    }
+}
+
 /// Applies `ddl` to the database `database` on a server of major version
 /// `server_major`, then describes and compares the two models.
 fn compare_document(database: &str, ddl: &str, server_major: u32) -> Outcome {
@@ -223,18 +263,21 @@ fn compare_document(database: &str, ddl: &str, server_major: u32) -> Outcome {
             return Outcome::Failed(format!("probing row-level security failed: {error}"));
         }
     }
+    let context = expected_context(&mut connection, &live, &scope);
     let mut found: Vec<String> = differences(&source_facts, &live_facts)
         .into_iter()
-        .filter(|difference| match expected::accepted(difference) {
-            Some(accepted) => {
-                eprintln!(
-                    "{database}: {difference} accepted as {}, {}",
-                    accepted.name, accepted.reason
-                );
-                false
-            }
-            None => true,
-        })
+        .filter(
+            |difference| match expected::accepted(difference, &context) {
+                Some(accepted) => {
+                    eprintln!(
+                        "{database}: {difference} accepted as {}, {}",
+                        accepted.name, accepted.reason
+                    );
+                    false
+                }
+                None => true,
+            },
+        )
         .map(|difference| difference.to_string())
         .collect();
     found.extend(
