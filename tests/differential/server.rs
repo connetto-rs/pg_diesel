@@ -245,8 +245,8 @@ fn checked_kinds(statement: RowStatement) -> &'static [&'static str] {
             "WCO_RLS_CONFLICT_CHECK",
             "WCO_RLS_UPDATE_CHECK",
         ],
-        RowStatement::MergeUpdate => &["WCO_RLS_MERGE_UPDATE_CHECK", "WCO_RLS_UPDATE_CHECK"],
-        RowStatement::MergeDelete => &["WCO_RLS_MERGE_DELETE_CHECK"],
+        RowStatement::MergeUpdate { .. } => &["WCO_RLS_MERGE_UPDATE_CHECK", "WCO_RLS_UPDATE_CHECK"],
+        RowStatement::MergeDelete { .. } => &["WCO_RLS_MERGE_DELETE_CHECK"],
         RowStatement::Select
         | RowStatement::SelectLocking
         | RowStatement::Delete { .. }
@@ -258,8 +258,9 @@ fn checked_kinds(statement: RowStatement) -> &'static [&'static str] {
 /// `None` where the table or a server of `server_major` cannot take one.
 ///
 /// The statements change only the first column, set to its default, and
-/// read it where the shape reads the table. A `MERGE` joins on that column,
-/// as a `MERGE` reads its target in its join condition.
+/// read it where the shape reads the table. A `MERGE` that reads its target
+/// joins on that column and one that does not joins on `true`, and its
+/// `RETURNING` names no column.
 fn probe_statement(
     statement: RowStatement,
     table: &ProbedTable,
@@ -268,11 +269,14 @@ fn probe_statement(
     let target = format!("{}.{}", quoted(&table.schema), quoted(&table.name));
     let column = table.column.as_deref();
     let insert = format!("INSERT INTO {target} DEFAULT VALUES");
-    let merge = |action: &str| {
-        let column = column?;
-        (server_major >= 15).then(|| {
-            format!("MERGE INTO {target} USING (SELECT) AS source ON {column} IS NULL {action}")
-        })
+    let merge = |reads: bool, action: &str| {
+        let join = if reads {
+            format!("{} IS NULL", column?)
+        } else {
+            "true".to_owned()
+        };
+        (server_major >= 15)
+            .then(|| format!("MERGE INTO {target} USING (SELECT) AS source ON {join} {action}"))
     };
     match statement {
         RowStatement::Select => Some(format!("SELECT FROM {target}")),
@@ -307,21 +311,22 @@ fn probe_statement(
                 "{insert} ON CONFLICT ({arbiter}) DO UPDATE SET {column} = DEFAULT"
             ))
         }
-        RowStatement::MergeInsert { returning: false } => {
-            merge("WHEN NOT MATCHED THEN INSERT DEFAULT VALUES")
-        }
-        RowStatement::MergeInsert { returning: true } => {
+        RowStatement::MergeInsert { reads, returning } => {
+            let action = "WHEN NOT MATCHED THEN INSERT DEFAULT VALUES";
+            if !returning {
+                return merge(reads, action);
+            }
             if server_major < 17 {
                 return None;
             }
-            merge("WHEN NOT MATCHED THEN INSERT DEFAULT VALUES RETURNING *")
+            merge(reads, &format!("{action} RETURNING merge_action()"))
         }
-        RowStatement::MergeUpdate => merge(&format!(
-            "WHEN MATCHED THEN UPDATE SET {} = DEFAULT",
-            column?
-        )),
-        RowStatement::MergeDelete => merge("WHEN MATCHED THEN DELETE"),
-        RowStatement::MergeDoNothing => merge("WHEN MATCHED THEN DO NOTHING"),
+        RowStatement::MergeUpdate { reads } => merge(
+            reads,
+            &format!("WHEN MATCHED THEN UPDATE SET {} = DEFAULT", column?),
+        ),
+        RowStatement::MergeDelete { reads } => merge(reads, "WHEN MATCHED THEN DELETE"),
+        RowStatement::MergeDoNothing => merge(true, "WHEN MATCHED THEN DO NOTHING"),
     }
 }
 
