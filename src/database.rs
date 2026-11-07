@@ -15,6 +15,8 @@ mod key_column_usage_metadata;
 pub use key_column_usage_metadata::KeyColumnUsageMetadata;
 mod pg_proc_metadata;
 pub use pg_proc_metadata::{ExecuteHolder, PgProcMetadata};
+mod acl_schema_grant;
+pub use acl_schema_grant::AclSchemaGrant;
 mod acl_table_grant;
 pub use acl_table_grant::AclTableGrant;
 mod catalog_cache;
