@@ -28,8 +28,8 @@ use pg_diesel::{
         traits::{
             BinarySend, CheckConstraintLike, ColumnGrantLike, ColumnLike, DataTypeLike,
             DatabaseLike, DomainLike, ExtensionLike, ForeignKeyLike, FunctionLike, GrantLike,
-            IndexLike, PolicyLike, Relation, RoleLike, RuleLike, SchemaLike, SequenceLike,
-            SequenceOwner, TableGrantLike, TableLike, TriggerLike, UniqueIndexLike,
+            IndexLike, PolicyLike, Relation, RoleLike, RolePrivilege, RuleLike, SchemaLike,
+            SequenceLike, SequenceOwner, TableGrantLike, TableLike, TriggerLike, UniqueIndexLike,
             UserDefinedTypeLike, ViewLike,
         },
         utils::identifier_resolution::normalize_identifier,
@@ -260,20 +260,30 @@ pub struct Difference {
     pub live: Option<Value>,
 }
 
+impl Difference {
+    /// Returns the difference printed with `source` and `live` naming its two
+    /// sides.
+    pub fn labelled<'a>(&'a self, source: &'a str, live: &'a str) -> impl fmt::Display + 'a {
+        fmt::from_fn(move |formatter| {
+            let side = |value: &Option<Value>| {
+                value
+                    .as_ref()
+                    .map_or_else(|| "absent".to_owned(), ToString::to_string)
+            };
+            write!(
+                formatter,
+                "{}: {source} `{}`, {live} `{}`",
+                self.fact,
+                side(&self.source),
+                side(&self.live)
+            )
+        })
+    }
+}
+
 impl fmt::Display for Difference {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let side = |value: &Option<Value>| {
-            value
-                .as_ref()
-                .map_or_else(|| "absent".to_owned(), ToString::to_string)
-        };
-        write!(
-            formatter,
-            "{}: source `{}`, live `{}`",
-            self.fact,
-            side(&self.source),
-            side(&self.live)
-        )
+        self.labelled("source", "live").fmt(formatter)
     }
 }
 
@@ -301,6 +311,37 @@ pub fn differences(source: &Facts, live: &Facts) -> Vec<Difference> {
     }
     found.sort_by(|left, right| left.fact.cmp(&right.fact));
     found
+}
+
+/// Returns the facts `reference` states that `live` states differently or
+/// not at all, ordered by name.
+#[must_use]
+pub fn contradictions(reference: &Facts, live: &Facts) -> Vec<Difference> {
+    reference
+        .iter()
+        .filter(|(fact, value)| live.get(*fact) != Some(*value))
+        .map(|(fact, value)| Difference {
+            fact: fact.clone(),
+            source: Some(value.clone()),
+            live: live.get(fact).cloned(),
+        })
+        .collect()
+}
+
+/// Every privilege one role can hold on another, with the keyword
+/// `pg_has_role` takes for it.
+pub const ROLE_PRIVILEGES: [(RolePrivilege, &str); 4] = [
+    (RolePrivilege::Member, "MEMBER"),
+    (RolePrivilege::Usage, "USAGE"),
+    (RolePrivilege::Set, "SET"),
+    (RolePrivilege::Admin, "MEMBER WITH ADMIN OPTION"),
+];
+
+/// Returns the name of the fact stating whether the role `member` holds the
+/// privilege `keyword` on the role `target`.
+#[must_use]
+pub fn role_privilege_fact(member: &str, keyword: &str, target: &str) -> String {
+    format!("role {member} / {keyword} on role {target}")
 }
 
 /// The objects a description covers.
@@ -343,6 +384,15 @@ impl Scope {
     /// Returns whether the role is described.
     fn covers_role(&self, role: &str) -> bool {
         !role.starts_with("pg_") && !self.ignored_roles.iter().any(|ignored| ignored == role)
+    }
+
+    /// Returns the stored names of the roles of `database` that are described.
+    pub fn roles<DB: DatabaseLike>(&self, database: &DB) -> Vec<String> {
+        database
+            .roles()
+            .map(|role| role.stored_name().into_owned())
+            .filter(|name| self.covers_role(name))
+            .collect()
     }
 }
 
@@ -442,6 +492,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         self.functions()?;
         self.roles();
         self.memberships();
+        self.role_privileges();
         self.grants()?;
         self.sequences();
         self.rules()?;
@@ -1107,6 +1158,27 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                     role.connection_limit(),
                 ),
             );
+        }
+    }
+
+    /// Records whether each role in scope holds each privilege on each role
+    /// in scope, itself included.
+    fn role_privileges(&mut self) {
+        let database = self.database;
+        let roles: Vec<(String, &DB::Role)> = database
+            .roles()
+            .map(|role| (role.stored_name().into_owned(), role))
+            .filter(|(name, _)| self.scope.covers_role(name))
+            .collect();
+        for (member_name, member) in &roles {
+            for (target_name, target) in &roles {
+                for (privilege, keyword) in ROLE_PRIVILEGES {
+                    self.text(
+                        role_privilege_fact(member_name, keyword, target_name),
+                        member.has_role(target, privilege, database).to_string(),
+                    );
+                }
+            }
         }
     }
 

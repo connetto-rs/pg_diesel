@@ -4,7 +4,9 @@
 //! `PostgreSQL` database, read back through [`PgDieselDatabaseBuilder`], and
 //! parsed by `ParserDB`. The two models are described through the
 //! `sql-traits` traits and compared fact by fact. A difference fails the test
-//! unless [`expected::EXPECTED`] names it.
+//! unless [`expected::EXPECTED`] names it. The privileges the live model
+//! answers one role holds on another are also checked against `pg_has_role`
+//! on the same server.
 
 mod test_utils;
 
@@ -14,6 +16,8 @@ mod compare;
 mod deparse;
 #[path = "differential/expected.rs"]
 mod expected;
+#[path = "differential/role_privileges.rs"]
+mod role_privileges;
 
 use std::{
     collections::BTreeSet,
@@ -41,8 +45,9 @@ use pg_diesel::{
 use test_utils::{establish_connection, reference_docker};
 
 use crate::{
-    compare::{AlreadyStored, Difference, Scope, describe, differences},
+    compare::{AlreadyStored, Scope, contradictions, describe, differences},
     deparse::ThroughPostgres,
+    role_privileges::server_role_privileges,
 };
 
 /// The port the differential container listens on.
@@ -96,8 +101,9 @@ fn drop_document_roles(maintenance: &mut PgConnection) {
 
 /// What one document produced.
 enum Outcome {
-    /// Both models were described, with these unexplained differences.
-    Compared(Vec<Difference>),
+    /// Both models were described, with these unexplained differences, each
+    /// printed as one line.
+    Compared(Vec<String>),
     /// The document could not be compared, for this reason.
     Failed(String),
 }
@@ -137,9 +143,9 @@ fn extension_members(connection: &mut PgConnection) -> BTreeSet<(String, String)
         .collect()
 }
 
-/// Applies `ddl` to the database `database`, then describes and compares the
-/// two models.
-fn compare_document(database: &str, ddl: &str) -> Outcome {
+/// Applies `ddl` to the database `database` on a server of major version
+/// `server_major`, then describes and compares the two models.
+fn compare_document(database: &str, ddl: &str, server_major: u32) -> Outcome {
     let mut connection: PgConnection =
         establish_connection(PORT, database).expect("the document database accepts connections");
     if let Err(error) = connection.batch_execute(ddl) {
@@ -185,21 +191,31 @@ fn compare_document(database: &str, ddl: &str) -> Outcome {
             return Outcome::Failed(format!("describing the source model failed: {error}"));
         }
     };
-    Outcome::Compared(
-        differences(&source_facts, &live_facts)
-            .into_iter()
-            .filter(|difference| match expected::accepted(difference) {
-                Some(accepted) => {
-                    eprintln!(
-                        "{database}: {difference} accepted as {}, {}",
-                        accepted.name, accepted.reason
-                    );
-                    false
-                }
-                None => true,
-            })
-            .collect(),
-    )
+    let server_facts =
+        match server_role_privileges(&mut connection, &scope.roles(&live), server_major) {
+            Ok(facts) => facts,
+            Err(error) => return Outcome::Failed(format!("pg_has_role failed: {error}")),
+        };
+    let mut found: Vec<String> = differences(&source_facts, &live_facts)
+        .into_iter()
+        .filter(|difference| match expected::accepted(difference) {
+            Some(accepted) => {
+                eprintln!(
+                    "{database}: {difference} accepted as {}, {}",
+                    accepted.name, accepted.reason
+                );
+                false
+            }
+            None => true,
+        })
+        .map(|difference| difference.to_string())
+        .collect();
+    found.extend(
+        contradictions(&server_facts, &live_facts)
+            .iter()
+            .map(|difference| difference.labelled("pg_has_role", "live").to_string()),
+    );
+    Outcome::Compared(found)
 }
 
 /// Returns the oldest `PostgreSQL` major version a document's DDL needs, from
@@ -248,7 +264,7 @@ async fn parser_and_catalog_agree_on_every_corpus_document() {
         maintenance
             .batch_execute(&format!("CREATE DATABASE {};", quoted(&database)))
             .expect("the document database is created");
-        let outcome = compare_document(&database, &ddl);
+        let outcome = compare_document(&database, &ddl, server_major);
         maintenance
             .batch_execute(&format!(
                 "DROP DATABASE {} WITH (FORCE);",
