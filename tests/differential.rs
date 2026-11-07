@@ -49,9 +49,12 @@ use pg_diesel::{
 use test_utils::{establish_connection, reference_docker};
 
 use crate::{
-    compare::{AlreadyStored, Scope, contradictions, describe, differences, function_key},
+    compare::{AlreadyStored, Facts, Scope, contradictions, describe, differences, function_key},
     deparse::ThroughPostgres,
-    server::{server_role_privileges, server_row_security, server_table_privileges},
+    server::{
+        server_function_privileges, server_role_privileges, server_row_security,
+        server_schema_usage, server_table_privileges,
+    },
 };
 
 /// The port the differential container listens on.
@@ -187,6 +190,48 @@ fn expected_context(
     }
 }
 
+/// Returns what the server itself answers about the roles, tables, functions
+/// and schemas of `scope` in the database `database`, a server of major
+/// version `server_major`, in the facts the describer names.
+///
+/// # Errors
+///
+/// Returns the reason when a server read fails.
+fn server_facts(
+    connection: &mut PgConnection,
+    database: &str,
+    live: &PgDieselDatabase,
+    scope: &Scope,
+    server_major: u32,
+) -> Result<Facts, String> {
+    let roles = scope.roles(live);
+    let tables = scope.tables(live);
+    let functions: Vec<(String, u32)> = scope
+        .functions(live)
+        .into_iter()
+        .map(|function| (function_key(scope, live, function), function.oid()))
+        .collect();
+    let mut facts = server_role_privileges(connection, &roles, server_major)
+        .map_err(|error| format!("pg_has_role failed: {error}"))?;
+    facts.extend(
+        server_table_privileges(connection, &tables, &roles, server_major)
+            .map_err(|error| format!("has_table_privilege failed: {error}"))?,
+    );
+    facts.extend(
+        server_function_privileges(connection, &functions, &roles)
+            .map_err(|error| format!("has_function_privilege failed: {error}"))?,
+    );
+    facts.extend(
+        server_schema_usage(connection, &scope.schemas, &roles)
+            .map_err(|error| format!("has_schema_privilege failed: {error}"))?,
+    );
+    facts.extend(
+        server_row_security(connection, PORT, database, &tables, &roles, server_major)
+            .map_err(|error| format!("probing row-level security failed: {error}"))?,
+    );
+    Ok(facts)
+}
+
 /// Applies `ddl` to the database `database` on a server of major version
 /// `server_major`, then describes and compares the two models.
 fn compare_document(database: &str, ddl: &str, server_major: u32) -> Outcome {
@@ -240,29 +285,10 @@ fn compare_document(database: &str, ddl: &str, server_major: u32) -> Outcome {
             return Outcome::Failed(format!("describing the source model failed: {error}"));
         }
     };
-    let roles = scope.roles(&live);
-    let tables = scope.tables(&live);
-    let mut server_facts = match server_role_privileges(&mut connection, &roles, server_major) {
+    let server_facts = match server_facts(&mut connection, database, &live, &scope, server_major) {
         Ok(facts) => facts,
-        Err(error) => return Outcome::Failed(format!("pg_has_role failed: {error}")),
+        Err(reason) => return Outcome::Failed(reason),
     };
-    match server_table_privileges(&mut connection, &tables, &roles, server_major) {
-        Ok(facts) => server_facts.extend(facts),
-        Err(error) => return Outcome::Failed(format!("has_table_privilege failed: {error}")),
-    }
-    match server_row_security(
-        &mut connection,
-        PORT,
-        database,
-        &tables,
-        &roles,
-        server_major,
-    ) {
-        Ok(facts) => server_facts.extend(facts),
-        Err(error) => {
-            return Outcome::Failed(format!("probing row-level security failed: {error}"));
-        }
-    }
     let context = expected_context(&mut connection, &live, &scope);
     let mut found: Vec<String> = differences(&source_facts, &live_facts)
         .into_iter()
