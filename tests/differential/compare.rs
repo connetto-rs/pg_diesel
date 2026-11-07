@@ -1814,9 +1814,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                             format!(
                                 "grant option={} grantor={:?}",
                                 grant.with_grant_option(),
-                                grant
-                                    .granted_by(database)
-                                    .map(|grantor| grantor.stored_name().into_owned())
+                                grant.granted_by(database)
                             ),
                         );
                     }
@@ -1852,9 +1850,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                             format!(
                                 "grant option={} grantor={:?}",
                                 grant.with_grant_option(),
-                                grant
-                                    .granted_by(database)
-                                    .map(|grantor| grantor.stored_name().into_owned())
+                                grant.granted_by(database)
                             ),
                         );
                     }
