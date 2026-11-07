@@ -84,18 +84,24 @@ impl PolicyLike for PgPolicy {
             .flat_map(PolicyMetadata::roles)
     }
 
-    fn using_expression<'db>(&'db self, database: &'db Self::DB) -> Option<&'db Expr>
+    fn using_expression<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<Option<&'db Expr>, LookupError>
     where
         Self: 'db,
     {
-        metadata(self, database).ok()?.using_expression()
+        Ok(metadata(self, database)?.using_expression())
     }
 
-    fn check_expression<'db>(&'db self, database: &'db Self::DB) -> Option<&'db Expr>
+    fn check_expression<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<Option<&'db Expr>, LookupError>
     where
         Self: 'db,
     {
-        metadata(self, database).ok()?.check_expression()
+        Ok(metadata(self, database)?.check_expression())
     }
 
     fn using_functions<'db>(
@@ -118,10 +124,12 @@ impl PolicyLike for PgPolicy {
         database: &'db Self::DB,
     ) -> Result<impl Iterator<Item = &'db <Self::DB as DatabaseLike>::Function>, LookupError> {
         let metadata = metadata(self, database)?;
-        self.using_expression(database)
+        metadata
+            .using_expression()
             .and_then(|using| metadata.using_calls().reached_by(using, call))
             .or_else(|| {
-                self.check_expression(database)
+                metadata
+                    .check_expression()
                     .and_then(|check| metadata.check_calls().reached_by(check, call))
             })
             .ok_or_else(|| LookupError::CallNotInExpression {

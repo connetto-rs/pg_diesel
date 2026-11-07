@@ -320,11 +320,17 @@ async fn test_database_build() {
         .expect("the policy is recorded");
     assert!(!calling.applies_to_public());
     assert_eq!(
-        calling.using_expression(&database).map(ToString::to_string),
+        calling
+            .using_expression(&database)
+            .expect("in database")
+            .map(ToString::to_string),
         Some("(app.doubled(id) > 0)".to_string())
     );
     assert_eq!(
-        calling.check_expression(&database).map(ToString::to_string),
+        calling
+            .check_expression(&database)
+            .expect("in database")
+            .map(ToString::to_string),
         Some("(app.doubled(id) > 0)".to_string())
     );
     let using: Vec<&str> = calling

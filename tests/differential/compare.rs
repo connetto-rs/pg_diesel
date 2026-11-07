@@ -944,18 +944,24 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                     policy.check_expression(database),
                 ),
             ] {
-                if let Some(expression) = expression {
-                    let stored = self.stored.expression(
-                        schema,
-                        table_name,
-                        slot,
-                        &expression.to_string(),
-                    )?;
-                    self.facts.insert(
-                        format!("{policy_subject} / {label}"),
-                        Value::Expr(Box::new(stored)),
-                    );
-                }
+                let expression = match expression {
+                    Ok(Some(expression)) => expression,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        self.text(
+                            format!("{policy_subject} / {label}"),
+                            format!("unreadable: {error}"),
+                        );
+                        continue;
+                    }
+                };
+                let stored =
+                    self.stored
+                        .expression(schema, table_name, slot, &expression.to_string())?;
+                self.facts.insert(
+                    format!("{policy_subject} / {label}"),
+                    Value::Expr(Box::new(stored)),
+                );
             }
         }
         Ok(())
