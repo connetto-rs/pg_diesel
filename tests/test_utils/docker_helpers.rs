@@ -77,13 +77,18 @@ pub async fn reference_docker(
         .await
 }
 
+/// Returns the URL of the database `database_name` on the container
+/// listening on `database_port`.
+pub fn database_url(database_port: u16, database_name: &str) -> String {
+    format!("postgres://user:password@localhost:{database_port}/{database_name}")
+}
+
 /// Establish a connection to a postgres database.
 pub fn establish_connection<C: Connection>(
     database_port: u16,
     database_name: &str,
 ) -> Result<C, diesel::ConnectionError> {
-    let database_url =
-        format!("postgres://user:password@localhost:{database_port}/{database_name}");
+    let database_url = database_url(database_port, database_name);
 
     let mut number_of_attempts = 0;
 

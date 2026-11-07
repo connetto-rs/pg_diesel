@@ -325,7 +325,8 @@ pub(crate) fn not_null_constraint_names(
         .collect())
 }
 
-/// Returns the policies associated with the table.
+/// Returns the policies associated with the table, ordered by name, the
+/// order `PostgreSQL` applies them in.
 pub(crate) fn policies(
     table_oid: u32,
     conn: &mut PgConnection,
@@ -334,6 +335,7 @@ pub(crate) fn policies(
 
     pg_policy::table
         .filter(pg_policy::polrelid.eq(table_oid))
+        .order(pg_policy::polname)
         .select(crate::models::PgPolicyTable::as_select())
         .load(conn)
 }

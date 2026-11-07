@@ -5,9 +5,10 @@
 //! parsed by `ParserDB`. The two models are described through the
 //! `sql-traits` traits and compared fact by fact. A difference fails the test
 //! unless [`expected::EXPECTED`] names it. The live model's answers on role
-//! membership and table privileges are also checked against what the same
-//! server answers through `pg_has_role`, `has_table_privilege` and
-//! `has_column_privilege`.
+//! membership, table privileges and row-level security are also checked
+//! against what the same server answers through `pg_has_role`,
+//! `has_table_privilege`, `has_column_privilege` and the query its rewriter
+//! produces.
 
 mod test_utils;
 
@@ -17,6 +18,8 @@ mod compare;
 mod deparse;
 #[path = "differential/expected.rs"]
 mod expected;
+#[path = "differential/node_tree.rs"]
+mod node_tree;
 #[path = "differential/server.rs"]
 mod server;
 
@@ -48,7 +51,7 @@ use test_utils::{establish_connection, reference_docker};
 use crate::{
     compare::{AlreadyStored, Scope, contradictions, describe, differences},
     deparse::ThroughPostgres,
-    server::{server_role_privileges, server_table_privileges},
+    server::{server_role_privileges, server_row_security, server_table_privileges},
 };
 
 /// The port the differential container listens on.
@@ -201,6 +204,19 @@ fn compare_document(database: &str, ddl: &str, server_major: u32) -> Outcome {
     match server_table_privileges(&mut connection, &tables, &roles, server_major) {
         Ok(facts) => server_facts.extend(facts),
         Err(error) => return Outcome::Failed(format!("has_table_privilege failed: {error}")),
+    }
+    match server_row_security(
+        &mut connection,
+        PORT,
+        database,
+        &tables,
+        &roles,
+        server_major,
+    ) {
+        Ok(facts) => server_facts.extend(facts),
+        Err(error) => {
+            return Outcome::Failed(format!("probing row-level security failed: {error}"));
+        }
     }
     let mut found: Vec<String> = differences(&source_facts, &live_facts)
         .into_iter()
