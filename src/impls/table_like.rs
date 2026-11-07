@@ -95,11 +95,12 @@ impl TableLike for PgTable {
     where
         Self: 'db,
     {
+        // `pg_inherits.inhseqno` keeps the order the `INHERITS` list wrote.
         let parents = metadata(self, database)?;
-        Ok(database.tables().filter(move |candidate| {
-            parents
-                .parents()
-                .any(|(schema, name)| candidate.schema() == schema && candidate.name() == name)
+        Ok(parents.parents().filter_map(move |(schema, name)| {
+            database
+                .tables()
+                .find(|candidate| candidate.schema() == schema && candidate.name() == name)
         }))
     }
 
