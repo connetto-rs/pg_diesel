@@ -1105,6 +1105,17 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 format!("{check_subject} / no inherit"),
                 check.no_inherit().to_string(),
             );
+            self.text(
+                format!("{check_subject} / columns"),
+                set(check
+                    .columns(database)?
+                    .map(|column| column.stored_column_name().into_owned())),
+            );
+            let functions: Vec<String> = check
+                .functions(database)?
+                .map(|function| self.function_name(function))
+                .collect();
+            self.text(format!("{check_subject} / functions"), set(functions));
             self.facts.insert(
                 format!("{check_subject} / expression"),
                 Value::Expr(Box::new(stored)),
@@ -1199,6 +1210,17 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             self.text(
                 format!("{index_subject} / unique"),
                 index.is_unique().to_string(),
+            );
+            self.text(
+                format!("{index_subject} / schema"),
+                format!(
+                    "{:?}",
+                    index.schema().map(|schema| normalize_identifier(
+                        schema,
+                        index.schema_is_quoted()
+                    )
+                    .into_owned())
+                ),
             );
             self.text(
                 format!("{index_subject} / nulls distinct"),
@@ -1614,6 +1636,20 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                     .member_of(self.database)
                     .map(|parent| parent.stored_name().into_owned())),
             );
+            let policies: Vec<String> = role
+                .policies(self.database)
+                .map(|policy| {
+                    let table = policy.table(self.database).map_or_else(
+                        |_| "unresolved".to_owned(),
+                        |table| {
+                            let (schema, name) = self.table_name(table);
+                            format!("{schema}.{name}")
+                        },
+                    );
+                    format!("{table}.{}", policy.name())
+                })
+                .collect();
+            self.text(format!("{subject} / policies"), set(policies));
         }
     }
 
