@@ -52,7 +52,8 @@ use crate::{
     compare::{AlreadyStored, Facts, Scope, contradictions, describe, differences, function_key},
     deparse::ThroughPostgres,
     server::{
-        RowSecurityProbeError, server_role_privileges, server_row_security, server_table_privileges,
+        RowSecurityProbeError, server_function_privileges, server_role_privileges,
+        server_row_security, server_schema_usage, server_table_privileges,
     },
 };
 
@@ -166,14 +167,20 @@ enum ServerFactsError {
     /// Asking `has_table_privilege` failed.
     #[error("has_table_privilege failed: {0}")]
     TablePrivileges(#[source] diesel::result::Error),
+    /// Asking `has_function_privilege` failed.
+    #[error("has_function_privilege failed: {0}")]
+    FunctionPrivileges(#[source] diesel::result::Error),
+    /// Asking `has_schema_privilege` failed.
+    #[error("has_schema_privilege failed: {0}")]
+    SchemaUsage(#[source] diesel::result::Error),
     /// Probing row-level security failed.
     #[error("probing row-level security failed: {0}")]
     RowSecurity(#[source] RowSecurityProbeError),
 }
 
-/// Returns what the server itself answers about the roles and tables of
-/// `scope` in the database `database`, a server of major version
-/// `server_major`, in the facts the describer names.
+/// Returns what the server itself answers about the roles, tables, functions
+/// and schemas of `scope` in the database `database`, a server of major
+/// version `server_major`, in the facts the describer names.
 ///
 /// # Errors
 ///
@@ -187,11 +194,24 @@ fn server_facts(
 ) -> Result<Facts, ServerFactsError> {
     let roles = scope.roles(live);
     let tables = scope.tables(live);
+    let functions: Vec<(String, u32)> = scope
+        .functions(live)
+        .into_iter()
+        .map(|function| (function_key(scope, live, function), function.oid()))
+        .collect();
     let mut facts = server_role_privileges(connection, &roles, server_major)
         .map_err(ServerFactsError::RolePrivileges)?;
     facts.extend(
         server_table_privileges(connection, &tables, &roles, server_major)
             .map_err(ServerFactsError::TablePrivileges)?,
+    );
+    facts.extend(
+        server_function_privileges(connection, &functions, &roles)
+            .map_err(ServerFactsError::FunctionPrivileges)?,
+    );
+    facts.extend(
+        server_schema_usage(connection, &scope.schemas, &roles)
+            .map_err(ServerFactsError::SchemaUsage)?,
     );
     facts.extend(
         server_row_security(connection, PORT, database, &tables, &roles, server_major)
