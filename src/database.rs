@@ -59,7 +59,9 @@ impl SchemaProfile for PgDieselProfile {
 
     /// The schemas a fresh read of this profile starts with, none, since the
     /// catalog read adds every schema `pg_namespace` holds.
-    fn initial_schemas() -> impl IntoIterator<Item = (Arc<Self::Schema>, ())> {
+    fn initial_schemas(
+        _dialect: &Self::Dialect,
+    ) -> impl IntoIterator<Item = (Arc<Self::Schema>, ())> {
         core::iter::empty()
     }
 
