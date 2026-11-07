@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 use sql_traits::{
     errors::LookupError,
-    structs::{ForeignTableSource, PartitionBound},
+    structs::{ActingRole, ForeignTableSource, PartitionBound, TablePrivileges},
     traits::{DatabaseLike, Metadata, PartitionStrategy, TableLike},
 };
 use sqlparser::ast::Action;
@@ -154,6 +154,19 @@ impl TableLike for PgTable {
         database: &'db Self::DB,
     ) -> Result<impl Iterator<Item = &'db Action>, LookupError> {
         Ok(metadata(self, database)?.owner_privileges().iter())
+    }
+
+    fn possible_privileges<'db>(
+        &'db self,
+        role: impl Into<ActingRole<'db, <Self::DB as DatabaseLike>::Role>>,
+        database: &'db Self::DB,
+    ) -> Result<TablePrivileges<'db, <Self::DB as DatabaseLike>::Column>, LookupError>
+    where
+        Self: 'db,
+    {
+        // The catalog's access control list is complete, so every privilege
+        // it leaves out is one the role lacks.
+        self.privileges(role, database)
     }
 
     fn indices<'db>(
