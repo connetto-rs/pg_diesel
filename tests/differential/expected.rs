@@ -45,8 +45,13 @@ pub const EXPECTED: &[Expected] = &[
             else {
                 return false;
             };
-            !cfg!(any(feature = "postgres-17", feature = "postgres-18"))
-                && difference.fact.ends_with(" / owner privileges")
+            if cfg!(any(feature = "postgres-17", feature = "postgres-18")) {
+                return false;
+            }
+            if difference.fact.contains(" / privilege MAINTAIN / role ") {
+                return source == "true" && live == "false";
+            }
+            difference.fact.ends_with(" / owner privileges")
                 && source
                     .split(", ")
                     .filter(|privilege| *privilege != "MAINTAIN")

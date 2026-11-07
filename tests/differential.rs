@@ -4,9 +4,10 @@
 //! `PostgreSQL` database, read back through [`PgDieselDatabaseBuilder`], and
 //! parsed by `ParserDB`. The two models are described through the
 //! `sql-traits` traits and compared fact by fact. A difference fails the test
-//! unless [`expected::EXPECTED`] names it. The privileges the live model
-//! answers one role holds on another are also checked against `pg_has_role`
-//! on the same server.
+//! unless [`expected::EXPECTED`] names it. The live model's answers on role
+//! membership and table privileges are also checked against what the same
+//! server answers through `pg_has_role`, `has_table_privilege` and
+//! `has_column_privilege`.
 
 mod test_utils;
 
@@ -16,8 +17,8 @@ mod compare;
 mod deparse;
 #[path = "differential/expected.rs"]
 mod expected;
-#[path = "differential/role_privileges.rs"]
-mod role_privileges;
+#[path = "differential/server.rs"]
+mod server;
 
 use std::{
     collections::BTreeSet,
@@ -47,7 +48,7 @@ use test_utils::{establish_connection, reference_docker};
 use crate::{
     compare::{AlreadyStored, Scope, contradictions, describe, differences},
     deparse::ThroughPostgres,
-    role_privileges::server_role_privileges,
+    server::{server_role_privileges, server_table_privileges},
 };
 
 /// The port the differential container listens on.
@@ -214,11 +215,16 @@ fn compare_document(database: &str, ddl: &str, server_major: u32) -> Outcome {
             return Outcome::Failed(format!("describing the source model failed: {error}"));
         }
     };
-    let server_facts =
-        match server_role_privileges(&mut connection, &scope.roles(&live), server_major) {
-            Ok(facts) => facts,
-            Err(error) => return Outcome::Failed(format!("pg_has_role failed: {error}")),
-        };
+    let roles = scope.roles(&live);
+    let tables = scope.tables(&live);
+    let mut server_facts = match server_role_privileges(&mut connection, &roles, server_major) {
+        Ok(facts) => facts,
+        Err(error) => return Outcome::Failed(format!("pg_has_role failed: {error}")),
+    };
+    match server_table_privileges(&mut connection, &tables, &roles, server_major) {
+        Ok(facts) => server_facts.extend(facts),
+        Err(error) => return Outcome::Failed(format!("has_table_privilege failed: {error}")),
+    }
     let mut found: Vec<String> = differences(&source_facts, &live_facts)
         .into_iter()
         .filter(|difference| match expected::accepted(difference) {
@@ -236,7 +242,7 @@ fn compare_document(database: &str, ddl: &str, server_major: u32) -> Outcome {
     found.extend(
         contradictions(&server_facts, &live_facts)
             .iter()
-            .map(|difference| difference.labelled("pg_has_role", "live").to_string()),
+            .map(|difference| difference.labelled("PostgreSQL", "live").to_string()),
     );
     Outcome::Compared(found)
 }
