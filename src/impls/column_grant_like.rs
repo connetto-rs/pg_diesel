@@ -6,8 +6,8 @@ use sql_traits::{
     errors::LookupError,
     structs::TargetName,
     traits::{
-        ColumnGrantLike, DatabaseLike, GrantLike, Metadata, Relation, RoleLike, TableLike,
-        ViewLike, grant::GrantTarget,
+        ColumnGrantLike, DatabaseLike, GrantLike, Metadata, Relation, TableLike, ViewLike,
+        grant::GrantTarget,
     },
 };
 use sqlparser::ast::{Action, Grantee};
@@ -123,12 +123,8 @@ impl GrantLike for RoleColumnGrants {
             .is_some_and(|g| g.eq_ignore_ascii_case("YES"))
     }
 
-    fn granted_by<'a>(
-        &'a self,
-        database: &'a Self::DB,
-    ) -> Option<&'a <Self::DB as DatabaseLike>::Role> {
-        let grantor_name = self.grantor.as_deref()?;
-        database.roles().find(|r| r.name() == grantor_name)
+    fn granted_by<'a>(&'a self, _database: &'a Self::DB) -> Option<&'a str> {
+        self.grantor.as_deref()
     }
 
     fn applies_to_role(&self, role: &<Self::DB as DatabaseLike>::Role) -> bool {
