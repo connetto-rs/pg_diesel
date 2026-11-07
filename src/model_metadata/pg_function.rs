@@ -4,6 +4,7 @@ use std::borrow::Cow;
 
 use sqlparser::ast::{
     ArgMode, Expr, FunctionDefinitionSetParam, FunctionSetValue, Ident, ObjectName, ObjectNamePart,
+    Value,
 };
 
 use crate::models::PgProc;
@@ -28,25 +29,49 @@ pub struct PgFunction {
     bound_definition: Option<String>,
 }
 
-/// Reads one `name=value` `proconfig` entry, each comma-separated part
-/// unquoted by the server's quoting so it renders back to the name the
-/// catalog stored.
+/// The settings `PostgreSQL` flags `GUC_LIST_QUOTE`, whose `proconfig` value
+/// lists entries each quoted like an identifier.
+const LIST_QUOTED_SETTINGS: [&str; 5] = [
+    "search_path",
+    "temp_tablespaces",
+    "session_preload_libraries",
+    "shared_preload_libraries",
+    "local_preload_libraries",
+];
+
+/// Reads one `name=value` `proconfig` entry the way `pg_get_functiondef`
+/// prints it back.
+///
+/// A list-quoted setting such as `search_path` holds identifier-quoted
+/// entries, each unquoted to the name the catalog stored. Every other
+/// setting holds its value verbatim, read as one string literal so that
+/// `64MB` keeps its case.
 fn configuration_parameter(entry: &str) -> Option<FunctionDefinitionSetParam> {
     let (name, value) = entry.split_once('=')?;
-    let values = value
-        .split(',')
-        .map(|part| Expr::Identifier(proconfig_identifier(part.trim())))
-        .collect::<Vec<Expr>>();
+    let name = name.trim();
+    let values = if LIST_QUOTED_SETTINGS
+        .iter()
+        .any(|listed| listed.eq_ignore_ascii_case(name))
+    {
+        value
+            .split(',')
+            .map(|part| Expr::Identifier(proconfig_identifier(part.trim())))
+            .collect::<Vec<Expr>>()
+    } else {
+        vec![Expr::Value(
+            Value::SingleQuotedString(value.to_owned()).with_empty_span(),
+        )]
+    };
     Some(FunctionDefinitionSetParam {
-        name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new(name.trim()))]),
+        name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new(name))]),
         value: FunctionSetValue::Values(values),
     })
 }
 
-/// Reads one value entry of a `proconfig` setting as the identifier the
-/// server stored.
+/// Reads one entry of a list-quoted `proconfig` setting as the identifier
+/// the server stored.
 ///
-/// The server quotes a value the way it quotes an identifier, doubling the
+/// The server quotes an entry the way it quotes an identifier, doubling the
 /// embedded quotes, so `"App"` stores the one schema `App` and `""` the
 /// zero-length name a `SET search_path = ''` records.
 fn proconfig_identifier(part: &str) -> Ident {
@@ -262,6 +287,20 @@ mod tests {
     fn test_own_search_path_reads_the_last_setting() {
         let function = function(&["search_path=app", "search_path=admin"]);
         assert_eq!(entries(&function), Some(vec![("admin".to_string(), false)]));
+    }
+
+    #[test]
+    fn test_configuration_keeps_a_plain_value_verbatim() {
+        let function = function(&["work_mem=64MB", "datestyle=ISO, MDY"]);
+        let printed: Vec<String> = function
+            .configuration()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            printed,
+            ["SET work_mem = '64MB'", "SET datestyle = 'ISO, MDY'"]
+        );
     }
 
     #[test]

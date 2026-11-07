@@ -36,10 +36,13 @@ use pg_diesel::{
             SequenceLike, SequenceOwner, TableGrantLike, TableLike, TriggerLike, UniqueIndexLike,
             UserDefinedTypeLike, ViewLike,
         },
-        utils::identifier_resolution::normalize_identifier,
+        utils::{identifier_resolution::normalize_identifier, normalize_postgres_type},
     },
     sqlparser::{
-        ast::{Action, CreateRule, Expr, Query, Statement},
+        ast::{
+            Action, CreateRule, Expr, FunctionDefinitionSetParam, FunctionSetValue, Query,
+            Statement, Value as SqlValue,
+        },
         dialect::PostgreSqlDialect,
         parser::{Parser, ParserError},
     },
@@ -567,6 +570,24 @@ fn row_security_detail<P: PolicyLike>(security: &RowSecurity<'_, P>) -> String {
         .join("; ")
 }
 
+/// Returns a function's stored schema, name and argument types, as the
+/// facts about it are keyed.
+pub fn function_key<DB: DatabaseLike>(
+    scope: &Scope,
+    database: &DB,
+    function: &DB::Function,
+) -> String {
+    let schema = function
+        .target_name()
+        .schema()
+        .map_or_else(|| scope.default_schema.clone(), str::to_owned);
+    format!(
+        "{schema}.{}({})",
+        function.stored_name(),
+        function.normalized_argument_type_names(database).join(", ")
+    )
+}
+
 /// The objects a description covers.
 #[derive(Debug, Clone)]
 pub struct Scope {
@@ -671,6 +692,31 @@ fn set<I: IntoIterator<Item = String>>(values: I) -> String {
     values.join(", ")
 }
 
+/// Returns a function's `SET` clause as the `name=value` entry `proconfig`
+/// holds, each value by the text it stands for, so a string literal and a
+/// quoted identifier spelling the same text compare equal.
+fn configuration_entry(parameter: &FunctionDefinitionSetParam) -> String {
+    let value = match &parameter.value {
+        FunctionSetValue::Default => "DEFAULT".to_owned(),
+        FunctionSetValue::FromCurrent => "FROM CURRENT".to_owned(),
+        FunctionSetValue::Values(values) => values
+            .iter()
+            .map(|value| match value {
+                Expr::Value(value) => match &value.value {
+                    SqlValue::SingleQuotedString(text) => text.clone(),
+                    other => other.to_string(),
+                },
+                Expr::Identifier(ident) => {
+                    normalize_identifier(&ident.value, ident.quote_style.is_some()).into_owned()
+                }
+                other => other.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+    };
+    format!("{}={value}", parameter.name.to_string().to_lowercase())
+}
+
 impl<'a, DB: DatabaseLike> Describer<'a, DB> {
     /// Returns the roles in scope, each with its stored name.
     fn described_roles(&self) -> Vec<(String, &'a DB::Role)> {
@@ -702,6 +748,18 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         )
     }
 
+    /// Returns the stored schema an index answers, an unqualified one
+    /// resolved to the default schema as a table's is.
+    fn index_schema<I: IndexLike>(&self, index: &I) -> String {
+        self.scope
+            .schema(
+                index
+                    .schema()
+                    .map(|schema| normalize_identifier(schema, index.schema_is_quoted())),
+            )
+            .into_owned()
+    }
+
     /// Returns the stored schema and name of any relation.
     fn relation_parts(&self, relation: &Relation<'_, DB>) -> (String, String) {
         match relation {
@@ -723,6 +781,12 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         format!("{schema}.{name}")
     }
 
+    /// Returns a function's stored schema, name and argument types, as the
+    /// facts about it are keyed.
+    fn function_name(&self, function: &DB::Function) -> String {
+        function_key(self.scope, self.database, function)
+    }
+
     /// Records every fact the model states.
     fn describe(&mut self) -> Result<(), DescribeError> {
         self.schemas();
@@ -740,6 +804,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         self.views()?;
         self.functions()?;
         self.roles();
+        self.role_settings();
         self.memberships();
         self.role_privileges();
         self.grants()?;
@@ -765,6 +830,10 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 self.text(
                     format!("schema {name} / owner holds usage"),
                     schema.owner_holds_usage().to_string(),
+                );
+                self.text(
+                    format!("schema {name} / owner"),
+                    format!("{:?}", schema.authorization()),
                 );
             }
         }
@@ -798,6 +867,12 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 .storage_parameters()
                 .map(|(key, value)| format!("{key}={value}"))),
         );
+        self.text(
+            format!("{subject} / toast storage parameters"),
+            set(table
+                .toast_storage_parameters()
+                .map(|(key, value)| format!("{key}={value}"))),
+        );
         if let Some(bound) = table.partition_bound() {
             self.text(format!("{subject} / partition bound"), format!("{bound:?}"));
         }
@@ -808,14 +883,19 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         if let Some(source) = table.foreign_source(database)? {
             self.text(format!("{subject} / foreign source"), format!("{source:?}"));
         }
-        let parents: Vec<String> = table
-            .extended_tables(database)?
-            .map(|parent| {
-                let (schema, name) = self.table_name(parent);
-                format!("{schema}.{name}")
-            })
-            .collect();
-        self.text(format!("{subject} / parents"), parents.join(", "));
+        self.table_hierarchy(&subject, table)?;
+        self.text(
+            format!("{subject} / comment"),
+            format!("{:?}", table.table_doc(database)?),
+        );
+        self.text(
+            format!("{subject} / local columns"),
+            table
+                .local_columns(database)?
+                .map(|column| column.stored_column_name())
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
 
         let columns: Vec<&DB::Column> = table.columns(database)?.collect();
         self.text(
@@ -846,6 +926,29 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             self.table_privileges(&schema, &name, table)?;
             self.row_security(&schema, &name, table);
         }
+        Ok(())
+    }
+
+    /// Records the tables a table inherits from or is partitioned under.
+    fn table_hierarchy(&mut self, subject: &str, table: &DB::Table) -> Result<(), DescribeError> {
+        let database = self.database;
+        let qualified = |table: &DB::Table| {
+            let (schema, name) = self.table_name(table);
+            format!("{schema}.{name}")
+        };
+        let parents: Vec<String> = table.extended_tables(database)?.map(qualified).collect();
+        let inherits_from: Vec<String> = table.inherits_from(database)?.map(qualified).collect();
+        let root = table.partition_root(database)?.map(qualified);
+        self.text(format!("{subject} / parents"), parents.join(", "));
+        self.text(
+            format!("{subject} / inherits from"),
+            inherits_from.join(", "),
+        );
+        self.text(format!("{subject} / partition root"), format!("{root:?}"));
+        self.text(
+            format!("{subject} / partition strategy"),
+            format!("{:?}", table.partition_strategy()),
+        );
         Ok(())
     }
 
@@ -905,6 +1008,10 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 .foreign_options()
                 .map(|(key, value)| format!("{key}={value}"))),
         );
+        self.text(
+            format!("{subject} / comment"),
+            format!("{:?}", column.column_doc(database)?),
+        );
         Ok(())
     }
 
@@ -959,6 +1066,28 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             format!("{subject} / binary length"),
             format!("{:?}", data_type.fixed_binary_length(database)),
         );
+        self.text(
+            format!("{subject} / send function"),
+            format!("{:?}", data_type.send_function(database)),
+        );
+        self.text(
+            format!("{subject} / range subtype"),
+            format!(
+                "{:?}",
+                data_type
+                    .range_subtype(database)
+                    .map(|subtype| subtype.normalized_name(database))
+            ),
+        );
+        self.text(
+            format!("{subject} / composite fields"),
+            format!(
+                "{:?}",
+                data_type.composite_fields(database).map(|fields| fields
+                    .map(|field| field.normalized_name(database))
+                    .collect::<Vec<_>>())
+            ),
+        );
         if let Some(element) = data_type.array_element(database) {
             self.data_type(&format!("{subject} / element"), element);
         }
@@ -996,6 +1125,17 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 format!("{check_subject} / no inherit"),
                 check.no_inherit().to_string(),
             );
+            self.text(
+                format!("{check_subject} / columns"),
+                set(check
+                    .columns(database)?
+                    .map(|column| column.stored_column_name().into_owned())),
+            );
+            let functions: Vec<String> = check
+                .functions(database)?
+                .map(|function| self.function_name(function))
+                .collect();
+            self.text(format!("{check_subject} / functions"), set(functions));
             self.facts.insert(
                 format!("{check_subject} / expression"),
                 Value::Expr(Box::new(stored)),
@@ -1083,6 +1223,10 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 format!("{index_subject} / primary key"),
                 index.is_primary_key(database)?.to_string(),
             );
+            self.text(
+                format!("{index_subject} / constraint index schema"),
+                self.index_schema(index),
+            );
         }
         for index in table.indices(database)? {
             let name = index.name().unwrap_or("<unnamed>").to_owned();
@@ -1090,6 +1234,10 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             self.text(
                 format!("{index_subject} / unique"),
                 index.is_unique().to_string(),
+            );
+            self.text(
+                format!("{index_subject} / schema"),
+                self.index_schema(index),
             );
             self.text(
                 format!("{index_subject} / nulls distinct"),
@@ -1154,6 +1302,15 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 format!("{trigger_subject} / function"),
                 format!("{:?}", trigger.function_name()),
             );
+            self.text(
+                format!("{trigger_subject} / resolved function"),
+                format!(
+                    "{:?}",
+                    trigger
+                        .function(database)
+                        .map(|function| self.function_name(function))
+                ),
+            );
         }
         Ok(())
     }
@@ -1184,6 +1341,18 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             self.text(
                 format!("{policy_subject} / roles"),
                 set(policy.roles(database).map(ToString::to_string)),
+            );
+            self.text(
+                format!("{policy_subject} / using functions"),
+                set(policy
+                    .using_functions(database)?
+                    .map(|function| self.function_name(function))),
+            );
+            self.text(
+                format!("{policy_subject} / check functions"),
+                set(policy
+                    .check_functions(database)?
+                    .map(|function| self.function_name(function))),
             );
             for (slot, label, expression) in [
                 (
@@ -1345,6 +1514,67 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 format!("{subject} / owner"),
                 format!("{:?}", function.owner(database)?),
             );
+            self.function_details(&subject, function, arguments.len())?;
+        }
+        Ok(())
+    }
+
+    /// Records a function's configuration, result type, null behaviour per
+    /// argument, bound body calls and `EXECUTE` privileges, for a function
+    /// taking `inputs` arguments.
+    fn function_details(
+        &mut self,
+        subject: &str,
+        function: &DB::Function,
+        inputs: usize,
+    ) -> Result<(), DescribeError> {
+        let database = self.database;
+        self.text(
+            format!("{subject} / configuration"),
+            set(function
+                .configuration_parameters()
+                .iter()
+                .map(configuration_entry)),
+        );
+        self.text(
+            format!("{subject} / result type"),
+            format!(
+                "{:?}",
+                function
+                    .result_type_name(database)
+                    .map(|name| normalize_postgres_type(&name).into_owned())
+            ),
+        );
+        self.text(
+            format!("{subject} / null on null arguments"),
+            format!(
+                "{:?}",
+                (0..inputs)
+                    .filter(|index| function.returns_null_on_null_argument(database, *index))
+                    .collect::<Vec<_>>()
+            ),
+        );
+        self.text(
+            format!("{subject} / bound body functions"),
+            set(function
+                .bound_body_functions(database)?
+                .map(|called| self.function_name(called))),
+        );
+        self.text(
+            format!("{subject} / execute holders"),
+            set(function
+                .execute_holders(database)?
+                .map(|holder| format!("{holder:?}"))),
+        );
+        for (role_name, role) in self.described_roles() {
+            self.text(
+                format!("{subject} / execute for role {role_name}"),
+                format!(
+                    "can execute={} can grant={}",
+                    function.can_execute(role, database)?,
+                    function.can_grant_execute(role, database)?
+                ),
+            );
         }
         Ok(())
     }
@@ -1410,6 +1640,45 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                     role.inherits(),
                     role.connection_limit(),
                 ),
+            );
+            self.text(
+                format!("{subject} / member of"),
+                set(role
+                    .member_of(self.database)
+                    .map(|parent| parent.stored_name().into_owned())),
+            );
+            let policies: Vec<String> = role
+                .policies(self.database)
+                .map(|policy| {
+                    let table = policy.table(self.database).map_or_else(
+                        |_| "unresolved".to_owned(),
+                        |table| {
+                            let (schema, name) = self.table_name(table);
+                            format!("{schema}.{name}")
+                        },
+                    );
+                    format!("{table}.{}", policy.name())
+                })
+                .collect();
+            self.text(format!("{subject} / policies"), set(policies));
+        }
+    }
+
+    /// Records the `ALTER ROLE ... SET` entries of the roles in scope, and
+    /// of every role.
+    fn role_settings(&mut self) {
+        for setting in self.database.role_settings() {
+            let role = setting.role().unwrap_or("ALL");
+            if setting.role().is_some() && !self.scope.covers_role(role) {
+                continue;
+            }
+            self.text(
+                format!(
+                    "role setting {} for role {role} in database {}",
+                    setting.name(),
+                    setting.database().unwrap_or("ALL")
+                ),
+                setting.value().to_owned(),
             );
         }
     }
@@ -1536,7 +1805,13 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                     for privilege in &privileges {
                         self.text(
                             format!("grant {privilege} on {relation_name} to {grantee}"),
-                            format!("grant option={}", grant.with_grant_option()),
+                            format!(
+                                "grant option={} grantor={:?}",
+                                grant.with_grant_option(),
+                                grant
+                                    .granted_by(database)
+                                    .map(|grantor| grantor.stored_name().into_owned())
+                            ),
                         );
                     }
                 }
@@ -1568,7 +1843,13 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                     for privilege in &privileges {
                         self.text(
                             format!("grant {privilege} on {relation_name}.{column} to {grantee}"),
-                            format!("grant option={}", grant.with_grant_option()),
+                            format!(
+                                "grant option={} grantor={:?}",
+                                grant.with_grant_option(),
+                                grant
+                                    .granted_by(database)
+                                    .map(|grantor| grantor.stored_name().into_owned())
+                            ),
                         );
                     }
                 }
@@ -1607,6 +1888,10 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 }
             });
             self.text(format!("{subject} / owner"), format!("{owner:?}"));
+            self.text(
+                format!("{subject} / parameters"),
+                format!("{:?}", sequence.parameters()),
+            );
         }
     }
 
@@ -1654,6 +1939,10 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             self.text(
                 format!("extension {}", extension.stored_name()),
                 format!("schema={schema}"),
+            );
+            self.text(
+                format!("extension {} / version", extension.stored_name()),
+                format!("{:?}", extension.version()),
             );
         }
     }
