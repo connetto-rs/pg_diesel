@@ -378,7 +378,7 @@ pub fn column_privilege_value(on_table: bool, columns: &[String]) -> String {
 
 /// Every statement shape row-level security tells apart, with the label the
 /// facts about it carry.
-pub const ROW_STATEMENTS: [(RowStatement, &str); 16] = [
+pub const ROW_STATEMENTS: [(RowStatement, &str); 20] = [
     (RowStatement::Select, "SELECT"),
     (RowStatement::SelectLocking, "SELECT FOR UPDATE"),
     (RowStatement::Insert { returning: false }, "INSERT"),
@@ -406,15 +406,43 @@ pub const ROW_STATEMENTS: [(RowStatement, &str); 16] = [
         "INSERT ON CONFLICT DO UPDATE",
     ),
     (
-        RowStatement::MergeInsert { returning: false },
+        RowStatement::MergeInsert {
+            reads: false,
+            returning: false,
+        },
         "MERGE INSERT",
     ),
     (
-        RowStatement::MergeInsert { returning: true },
+        RowStatement::MergeInsert {
+            reads: false,
+            returning: true,
+        },
         "MERGE INSERT RETURNING",
     ),
-    (RowStatement::MergeUpdate, "MERGE UPDATE"),
-    (RowStatement::MergeDelete, "MERGE DELETE"),
+    (
+        RowStatement::MergeInsert {
+            reads: true,
+            returning: false,
+        },
+        "MERGE INSERT reading the target",
+    ),
+    (
+        RowStatement::MergeInsert {
+            reads: true,
+            returning: true,
+        },
+        "MERGE INSERT RETURNING reading the target",
+    ),
+    (RowStatement::MergeUpdate { reads: false }, "MERGE UPDATE"),
+    (
+        RowStatement::MergeUpdate { reads: true },
+        "MERGE UPDATE reading the target",
+    ),
+    (RowStatement::MergeDelete { reads: false }, "MERGE DELETE"),
+    (
+        RowStatement::MergeDelete { reads: true },
+        "MERGE DELETE reading the target",
+    ),
     (RowStatement::MergeDoNothing, "MERGE DO NOTHING"),
 ];
 
@@ -490,8 +518,8 @@ fn rewritten_form<P: PolicyLike>(security: &RowSecurity<'_, P>, statement: RowSt
             (GateFailure::Raise, RowVersion::Updated) => "WCO_RLS_UPDATE_CHECK",
             (GateFailure::Raise, RowVersion::Existing) => match statement {
                 RowStatement::InsertOnConflictDoUpdate => "WCO_RLS_CONFLICT_CHECK",
-                RowStatement::MergeUpdate => "WCO_RLS_MERGE_UPDATE_CHECK",
-                RowStatement::MergeDelete => "WCO_RLS_MERGE_DELETE_CHECK",
+                RowStatement::MergeUpdate { .. } => "WCO_RLS_MERGE_UPDATE_CHECK",
+                RowStatement::MergeDelete { .. } => "WCO_RLS_MERGE_DELETE_CHECK",
                 _ => "check of the existing row",
             },
         };
