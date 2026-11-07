@@ -5,9 +5,10 @@
 //! parsed by `ParserDB`. The two models are described through the
 //! `sql-traits` traits and compared fact by fact. A difference fails the test
 //! unless [`expected::EXPECTED`] names it. The live model's answers on role
-//! membership and table privileges are also checked against what the same
-//! server answers through `pg_has_role`, `has_table_privilege` and
-//! `has_column_privilege`.
+//! membership, table privileges and row-level security are also checked
+//! against what the same server answers through `pg_has_role`,
+//! `has_table_privilege`, `has_column_privilege` and the query its rewriter
+//! produces.
 
 mod test_utils;
 
@@ -17,6 +18,8 @@ mod compare;
 mod deparse;
 #[path = "differential/expected.rs"]
 mod expected;
+#[path = "differential/node_tree.rs"]
+mod node_tree;
 #[path = "differential/server.rs"]
 mod server;
 
@@ -46,9 +49,11 @@ use pg_diesel::{
 use test_utils::{establish_connection, reference_docker};
 
 use crate::{
-    compare::{AlreadyStored, Scope, contradictions, describe, differences},
+    compare::{AlreadyStored, Facts, Scope, contradictions, describe, differences},
     deparse::ThroughPostgres,
-    server::{server_role_privileges, server_table_privileges},
+    server::{
+        RowSecurityProbeError, server_role_privileges, server_row_security, server_table_privileges,
+    },
 };
 
 /// The port the differential container listens on.
@@ -152,6 +157,49 @@ fn extension_members(connection: &mut PgConnection) -> BTreeSet<(String, String)
         .collect()
 }
 
+/// Why the server could not answer what it knows about a document.
+#[derive(Debug, thiserror::Error)]
+enum ServerFactsError {
+    /// Asking `pg_has_role` failed.
+    #[error("pg_has_role failed: {0}")]
+    RolePrivileges(#[source] diesel::result::Error),
+    /// Asking `has_table_privilege` failed.
+    #[error("has_table_privilege failed: {0}")]
+    TablePrivileges(#[source] diesel::result::Error),
+    /// Probing row-level security failed.
+    #[error("probing row-level security failed: {0}")]
+    RowSecurity(#[source] RowSecurityProbeError),
+}
+
+/// Returns what the server itself answers about the roles and tables of
+/// `scope` in the database `database`, a server of major version
+/// `server_major`, in the facts the describer names.
+///
+/// # Errors
+///
+/// Returns a [`ServerFactsError`] naming the server read that failed.
+fn server_facts(
+    connection: &mut PgConnection,
+    database: &str,
+    live: &PgDieselDatabase,
+    scope: &Scope,
+    server_major: u32,
+) -> Result<Facts, ServerFactsError> {
+    let roles = scope.roles(live);
+    let tables = scope.tables(live);
+    let mut facts = server_role_privileges(connection, &roles, server_major)
+        .map_err(ServerFactsError::RolePrivileges)?;
+    facts.extend(
+        server_table_privileges(connection, &tables, &roles, server_major)
+            .map_err(ServerFactsError::TablePrivileges)?,
+    );
+    facts.extend(
+        server_row_security(connection, PORT, database, &tables, &roles, server_major)
+            .map_err(ServerFactsError::RowSecurity)?,
+    );
+    Ok(facts)
+}
+
 /// Applies `ddl` to the database `database` on a server of major version
 /// `server_major`, then describes and compares the two models.
 fn compare_document(database: &str, ddl: &str, server_major: u32) -> Outcome {
@@ -215,16 +263,10 @@ fn compare_document(database: &str, ddl: &str, server_major: u32) -> Outcome {
             return Outcome::Failed(format!("describing the source model failed: {error}"));
         }
     };
-    let roles = scope.roles(&live);
-    let tables = scope.tables(&live);
-    let mut server_facts = match server_role_privileges(&mut connection, &roles, server_major) {
+    let server_facts = match server_facts(&mut connection, database, &live, &scope, server_major) {
         Ok(facts) => facts,
-        Err(error) => return Outcome::Failed(format!("pg_has_role failed: {error}")),
+        Err(error) => return Outcome::Failed(error.to_string()),
     };
-    match server_table_privileges(&mut connection, &tables, &roles, server_major) {
-        Ok(facts) => server_facts.extend(facts),
-        Err(error) => return Outcome::Failed(format!("has_table_privilege failed: {error}")),
-    }
     let mut found: Vec<String> = differences(&source_facts, &live_facts)
         .into_iter()
         .filter(|difference| match expected::accepted(difference) {

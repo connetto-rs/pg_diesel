@@ -157,12 +157,17 @@ impl StoredForm for ThroughPostgres<'_> {
                 } else {
                     ("WITH CHECK", "pg_get_expr(polwithcheck, polrelid)")
                 };
+                // The scratch policy goes on the table itself, since the print
+                // aliases a subquery's read of the table the policy is on.
                 self.scratch(
-                    &format!("{create} CREATE POLICY {object} ON {scratch} {clause} ({sql_text});"),
+                    &format!(
+                        "CREATE POLICY {object} ON {}.{} {clause} ({sql_text});",
+                        quoted(schema),
+                        quoted(table)
+                    ),
                     |connection| {
-                        let oid = temporary_oid(connection, &scratch)?;
                         pg_policy::table
-                            .filter(pg_policy::polrelid.eq(oid))
+                            .filter(pg_policy::polname.eq(&object))
                             .select(sql::<Nullable<Text>>(print))
                             .first(connection)
                     },
