@@ -12,14 +12,16 @@ use sql_traits::{
     structs::{IdentifierCase, generic_db::GenericDBBuilder, metadata::ExpressionCalls},
 };
 use sqlparser::{
-    ast::{Expr, Grantee, GranteeName, GranteesType, Ident, ObjectName, ObjectNamePart, Owner},
+    ast::{
+        Action, Expr, Grantee, GranteeName, GranteesType, Ident, ObjectName, ObjectNamePart, Owner,
+    },
     dialect::PostgreSqlDialect,
     parser::Parser,
 };
 
 use crate::{
     PgDieselDatabase,
-    database::{AclTableGrant, CatalogCache, FIRST_NORMAL_OBJECT_ID},
+    database::{AclSchemaGrant, AclTableGrant, CatalogCache, FIRST_NORMAL_OBJECT_ID},
     dialect::PostgresDialect,
     impls::{RoleColumnGrantsMetadata, RoleTableGrantsMetadata, string_to_action},
     model_metadata::{
@@ -105,6 +107,16 @@ fn acl_grantee(name: &str) -> Grantee {
                 ObjectNamePart::Identifier(Ident::new(name)),
             ]))),
         }
+    }
+}
+
+/// The action a schema privilege `aclexplode` lists names, or `None` for one
+/// the AST has no action for.
+fn schema_action(privilege: &str) -> Option<Action> {
+    match privilege {
+        "USAGE" => Some(Action::Usage),
+        "CREATE" => Some(Action::Create { obj_type: None }),
+        _ => None,
     }
 }
 
@@ -703,6 +715,30 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
                 };
                 generic_builder = generic_builder.add_table_grant(Arc::new(model), metadata);
             }
+        }
+
+        // A schema grant goes through the table grants as in `ParserDB`,
+        // a grant naming its schema and no relation.
+        for grant in AclSchemaGrant::load(&table_schemas, connection)? {
+            let action = schema_action(&grant.privilege_type).ok_or_else(|| {
+                PgDatabaseBuildError::UnrepresentablePrivilege {
+                    object: grant.schema.clone(),
+                    privilege: grant.privilege_type.clone(),
+                }
+            })?;
+            let metadata =
+                RoleTableGrantsMetadata::new(Some(action), Some(acl_grantee(&grant.grantee)), None);
+            let model = RoleTableGrants {
+                grantor: Some(grant.grantor),
+                grantee: Some(grant.grantee),
+                table_catalog: Some(table_catalog.clone()),
+                table_schema: Some(grant.schema),
+                table_name: None,
+                privilege_type: Some(grant.privilege_type),
+                is_grantable: Some(if grant.is_grantable { "YES" } else { "NO" }.to_owned()),
+                with_hierarchy: None,
+            };
+            generic_builder = generic_builder.add_table_grant(Arc::new(model), metadata);
         }
 
         for grant in RoleColumnGrants::load_acl(&table_schemas, connection)? {
