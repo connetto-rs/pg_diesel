@@ -570,6 +570,24 @@ fn row_security_detail<P: PolicyLike>(security: &RowSecurity<'_, P>) -> String {
         .join("; ")
 }
 
+/// Returns a function's stored schema, name and argument types, as the
+/// facts about it are keyed.
+pub fn function_key<DB: DatabaseLike>(
+    scope: &Scope,
+    database: &DB,
+    function: &DB::Function,
+) -> String {
+    let schema = function
+        .target_name()
+        .schema()
+        .map_or_else(|| scope.default_schema.clone(), str::to_owned);
+    format!(
+        "{schema}.{}({})",
+        function.stored_name(),
+        function.normalized_argument_type_names(database).join(", ")
+    )
+}
+
 /// The objects a description covers.
 #[derive(Debug, Clone)]
 pub struct Scope {
@@ -730,6 +748,18 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         )
     }
 
+    /// Returns the stored schema an index answers, an unqualified one
+    /// resolved to the default schema as a table's is.
+    fn index_schema<I: IndexLike>(&self, index: &I) -> String {
+        self.scope
+            .schema(
+                index
+                    .schema()
+                    .map(|schema| normalize_identifier(schema, index.schema_is_quoted())),
+            )
+            .into_owned()
+    }
+
     /// Returns the stored schema and name of any relation.
     fn relation_parts(&self, relation: &Relation<'_, DB>) -> (String, String) {
         match relation {
@@ -754,17 +784,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
     /// Returns a function's stored schema, name and argument types, as the
     /// facts about it are keyed.
     fn function_name(&self, function: &DB::Function) -> String {
-        let schema = function
-            .target_name()
-            .schema()
-            .map_or_else(|| self.scope.default_schema.clone(), str::to_owned);
-        format!(
-            "{schema}.{}({})",
-            function.stored_name(),
-            function
-                .normalized_argument_type_names(self.database)
-                .join(", ")
-        )
+        function_key(self.scope, self.database, function)
     }
 
     /// Records every fact the model states.
@@ -1203,6 +1223,10 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 format!("{index_subject} / primary key"),
                 index.is_primary_key(database)?.to_string(),
             );
+            self.text(
+                format!("{index_subject} / constraint index schema"),
+                self.index_schema(index),
+            );
         }
         for index in table.indices(database)? {
             let name = index.name().unwrap_or("<unnamed>").to_owned();
@@ -1213,14 +1237,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             );
             self.text(
                 format!("{index_subject} / schema"),
-                format!(
-                    "{:?}",
-                    index.schema().map(|schema| normalize_identifier(
-                        schema,
-                        index.schema_is_quoted()
-                    )
-                    .into_owned())
-                ),
+                self.index_schema(index),
             );
             self.text(
                 format!("{index_subject} / nulls distinct"),
