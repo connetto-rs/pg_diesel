@@ -82,3 +82,51 @@ fn metadata<'db>(
             ),
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{PgDieselDatabase, dialect::PostgresDialect, models::PgIndex};
+
+    #[test]
+    fn an_index_the_database_does_not_hold_is_reported_not_in_the_database() {
+        let index = PgIndexEntry::new(
+            PgIndex {
+                indexrelid: 1,
+                indrelid: 2,
+                indnatts: 1,
+                indnkeyatts: 1,
+                indisunique: false,
+                indkey: vec![1],
+                #[cfg(any(
+                    feature = "postgres-15",
+                    feature = "postgres-16",
+                    feature = "postgres-17",
+                    feature = "postgres-18"
+                ))]
+                indnullsnotdistinct: false,
+                indisprimary: false,
+                indisexclusion: false,
+                indimmediate: true,
+                indisclustered: false,
+                indisvalid: true,
+                indcheckxmin: false,
+                indisready: true,
+                indislive: true,
+                indisreplident: false,
+                indcollation: Vec::new(),
+                indclass: Vec::new(),
+                indoption: Vec::new(),
+                indexprs: None,
+                indpred: None,
+            },
+            "app".to_string(),
+            "absent".to_string(),
+            None,
+        );
+        let database = PgDieselDatabase::new("catalog".to_string(), PostgresDialect).into();
+        let error =
+            IndexLike::constraint_name(&index, &database).expect_err("the database holds no index");
+        assert!(matches!(error, LookupError::ObjectNotInDatabase { .. }));
+    }
+}

@@ -288,4 +288,26 @@ mod tests {
         let collected: Vec<ArgMode> = unnamed.argument_modes().collect();
         assert_eq!(collected, vec![ArgMode::In, ArgMode::In]);
     }
+
+    #[test]
+    fn a_search_path_set_to_default_names_no_schema() {
+        let mut function =
+            PgFunction::new(dummy_pg_proc(), "app".to_string(), Some("sql".to_string()));
+        function.configuration = vec![FunctionDefinitionSetParam {
+            name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("search_path"))]),
+            value: FunctionSetValue::Default,
+        }];
+        assert_eq!(function.own_search_path(), None);
+    }
+
+    #[test]
+    fn a_search_path_value_that_is_no_identifier_keeps_no_schema() {
+        let mut function =
+            PgFunction::new(dummy_pg_proc(), "app".to_string(), Some("sql".to_string()));
+        function.configuration = vec![FunctionDefinitionSetParam {
+            name: ObjectName(vec![ObjectNamePart::Identifier(Ident::new("search_path"))]),
+            value: FunctionSetValue::Values(vec![Expr::CompoundIdentifier(vec![Ident::new("x")])]),
+        }];
+        assert_eq!(function.own_search_path(), Some(Vec::new()));
+    }
 }

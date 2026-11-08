@@ -376,4 +376,10 @@ mod tests {
             SequenceOrigin::Declared
         );
     }
+
+    #[test]
+    #[should_panic(expected = "names no sequence type")]
+    fn an_unknown_sequence_type_panics() {
+        let _ = PgSequenceEntry::sequence_type(25);
+    }
 }

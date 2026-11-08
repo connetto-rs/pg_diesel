@@ -261,3 +261,40 @@ pub fn string_to_action(privilege: &str) -> Option<Action> {
         _ => return None,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_privilege_the_ast_has_no_action_for_is_none() {
+        assert_eq!(
+            string_to_action("SELECT"),
+            Some(Action::Select { columns: None })
+        );
+        assert_eq!(string_to_action("SOMETP"), None);
+    }
+
+    #[test]
+    fn a_grant_that_records_no_schema_targets_the_bare_relation_name() {
+        use sql_traits::traits::GrantLike;
+
+        use crate::models::RoleTableGrants;
+
+        let grant = RoleTableGrants {
+            grantor: None,
+            grantee: Some("app_owner".to_string()),
+            table_catalog: None,
+            table_schema: None,
+            table_name: Some("events".to_string()),
+            privilege_type: Some("SELECT".to_string()),
+            is_grantable: Some("NO".to_string()),
+            with_hierarchy: None,
+        };
+        let GrantTarget::Tables(targets) = GrantLike::target(&grant) else {
+            panic!("a relation grant names its table");
+        };
+        let names: Vec<String> = targets.map(|target| target.to_string()).collect();
+        assert_eq!(names, vec![r#""events""#.to_string()]);
+    }
+}

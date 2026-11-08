@@ -253,3 +253,125 @@ impl FunctionLike for PgFunction {
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::{
+        database::CatalogCache,
+        dialect::PostgresDialect,
+        model_metadata::RoleMetadata,
+        models::{PgProc, PgRole, ProcAclEntry},
+    };
+
+    fn role(oid: u32, name: &str) -> PgRole {
+        PgRole {
+            rolname: Some(name.to_string()),
+            rolsuper: None,
+            rolinherit: None,
+            rolcreaterole: None,
+            rolcreatedb: None,
+            rolcanlogin: None,
+            rolreplication: None,
+            rolconnlimit: None,
+            rolpassword: None,
+            rolvaliduntil: None,
+            rolbypassrls: None,
+            rolconfig: None,
+            oid: Some(oid),
+        }
+    }
+
+    #[test]
+    fn a_refused_bound_body_reports_the_refusal() {
+        let model = PgProc::fixture(1);
+        let function = Arc::new(PgFunction::new(
+            model,
+            "app".to_string(),
+            Some("sql".to_string()),
+        ));
+        let metadata = PgProcMetadata::new(function.model(), &CatalogCache::default(), None)
+            .with_bound_functions(Err("the definition does not parse".to_owned()));
+        let database = PgDieselDatabase::new("catalog".to_string(), PostgresDialect)
+            .add_function(Arc::clone(&function), metadata)
+            .into();
+        let error = function
+            .bound_body_functions(&database)
+            .err()
+            .expect("the parser refused the bound body");
+        assert!(
+            matches!(error, LookupError::FunctionBodyUnparsable { .. }),
+            "the refusal names the function and the reason"
+        );
+    }
+
+    #[test]
+    fn the_execute_holders_map_the_roles_the_access_list_names() {
+        let mut model = PgProc::fixture(1);
+        model.proowner = 500;
+        let function = Arc::new(PgFunction::new(
+            model,
+            "app".to_string(),
+            Some("sql".to_string()),
+        ));
+        let grants = vec![
+            ProcAclEntry {
+                function_oid: 1,
+                grantee: Some(0),
+                grantable: Some(false),
+            },
+            ProcAclEntry {
+                function_oid: 1,
+                grantee: Some(500),
+                grantable: Some(false),
+            },
+            ProcAclEntry {
+                function_oid: 1,
+                grantee: Some(601),
+                grantable: Some(true),
+            },
+            ProcAclEntry {
+                function_oid: 1,
+                grantee: Some(601),
+                grantable: Some(false),
+            },
+            ProcAclEntry {
+                function_oid: 1,
+                grantee: Some(602),
+                grantable: Some(false),
+            },
+        ];
+        let metadata =
+            PgProcMetadata::new(function.model(), &CatalogCache::default(), Some(&grants));
+        let database = PgDieselDatabase::new("catalog".to_string(), PostgresDialect)
+            .add_function(Arc::clone(&function), metadata)
+            .add_role(
+                Arc::new(role(500, "owner")),
+                RoleMetadata::new(Vec::new(), Vec::new()),
+            )
+            .add_role(
+                Arc::new(role(601, "grantee_a")),
+                RoleMetadata::new(Vec::new(), Vec::new()),
+            )
+            .add_role(
+                Arc::new(role(602, "grantee_b")),
+                RoleMetadata::new(Vec::new(), Vec::new()),
+            )
+            .into();
+        let holders: Vec<PrivilegeHolder> = function
+            .execute_holders(&database)
+            .expect("in database")
+            .collect();
+        assert_eq!(
+            holders,
+            vec![
+                PrivilegeHolder::Public,
+                PrivilegeHolder::Role("owner".into()),
+                PrivilegeHolder::Role("grantee_a".into()),
+                PrivilegeHolder::Role("grantee_b".into()),
+            ]
+        );
+    }
+}

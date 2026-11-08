@@ -509,4 +509,24 @@ mod tests {
         assert_eq!(declared_dimensions(1), NonZeroU32::new(1));
         assert_eq!(declared_dimensions(2), NonZeroU32::new(2));
     }
+
+    #[test]
+    fn an_array_name_appends_a_bracket_pair_per_dimension() {
+        let element = PgDataType {
+            name: "integer".to_string(),
+            element: None,
+            base_type: None,
+            dimensions: None,
+            max_character_length: None,
+            numeric_scale: None,
+            fractional_seconds_precision: None,
+            interval_fields: None,
+            vector: None,
+            send_function: None,
+            range_subtype: None,
+            composite_fields: None,
+        };
+        assert_eq!(array_name(&element, 1), "integer[]");
+        assert_eq!(array_name(&element, 3), "integer[][][]");
+    }
 }

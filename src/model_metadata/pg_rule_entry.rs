@@ -197,3 +197,58 @@ impl PgRuleEntry {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(definition: &str) -> RuleRow {
+        RuleRow {
+            oid: 1,
+            rulename: "rule".to_string(),
+            relname: "relation".to_string(),
+            nspname: "app".to_string(),
+            relkind: "v".to_string(),
+            definition: definition.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_definition_the_parser_refuses_is_reported_with_the_complaint() {
+        let error = PgRuleEntry::new(row("not a statement")).expect_err("the text does not parse");
+        assert!(matches!(error, RuleDefinitionError::Unparsable { .. }));
+    }
+
+    #[test]
+    fn a_statement_that_is_no_rule_is_reported_as_the_wrong_shape() {
+        let error = PgRuleEntry::new(row("SELECT 1")).expect_err("the statement is no rule");
+        assert!(matches!(error, RuleDefinitionError::UnexpectedShape { .. }));
+    }
+
+    fn entry_of(relkind: &str) -> PgRuleEntry {
+        let row = RuleRow {
+            relkind: relkind.to_string(),
+            ..row("CREATE RULE keep AS ON SELECT TO app.relation DO INSTEAD NOTHING")
+        };
+        PgRuleEntry::new(row).expect("the definition parses back")
+    }
+
+    #[test]
+    fn a_relation_the_database_does_not_hold_is_reported_not_found() {
+        use sql_traits::{errors::LookupError, traits::RuleLike};
+
+        use crate::PgDieselDatabase;
+        use crate::dialect::PostgresDialect;
+
+        for relkind in ["v", "f", "r"] {
+            let entry = entry_of(relkind);
+            let database = PgDieselDatabase::new("catalog".to_string(), PostgresDialect).into();
+            let error =
+                RuleLike::relation(&entry, &database).expect_err("the database holds no relation");
+            assert!(
+                matches!(error, LookupError::RelationNotFound { .. }),
+                "relkind {relkind} reports the missing relation"
+            );
+        }
+    }
+}

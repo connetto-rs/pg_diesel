@@ -385,4 +385,74 @@ mod tests {
     fn partition_bound_rejects_text_without_a_bound() {
         let _ = parse_partition_bound("PARTITION BY RANGE (id)").unwrap();
     }
+
+    #[test]
+    fn partition_bound_reports_a_second_statement_after_the_bound() {
+        let error = parse_partition_bound("FOR VALUES IN ('eu'); SELECT 1")
+            .expect_err("the wrapped form holds no single table");
+        assert!(
+            matches!(error, PgTableError::UnparsablePartitionBound { .. }),
+            "the wrapped form reports the second statement"
+        );
+    }
+
+    #[test]
+    fn partition_bound_reports_a_form_without_for_values() {
+        let error = parse_partition_bound("").expect_err("the bare form carries no bound");
+        assert!(matches!(
+            error,
+            PgTableError::UnparsablePartitionBound { .. }
+        ));
+    }
+
+    #[test]
+    fn an_unknown_partition_strategy_is_reported() {
+        let table = Table {
+            table_catalog: "catalog".to_string(),
+            table_schema: "app".to_string(),
+            table_name: "bound".to_string(),
+            table_type: "BASE TABLE".to_string(),
+            self_referencing_column_name: None,
+            reference_generation: None,
+            user_defined_type_catalog: None,
+            user_defined_type_schema: None,
+            user_defined_type_name: None,
+            is_insertable_into: "YES".to_string(),
+            is_typed: "NO".to_string(),
+            commit_action: None,
+        };
+        let facts = TableFacts {
+            oid: 1,
+            row_security: false,
+            forced_row_security: false,
+            owner: 1,
+            is_partition: false,
+            unlogged: false,
+            reloptions: Vec::new(),
+            toast_reloptions: Vec::new(),
+            partition_bound: None,
+            server_name: None,
+            server_options: Vec::new(),
+            acl_is_null: true,
+        };
+        let error = PgTable::new(table, Some("x"), &facts)
+            .expect_err("the strategy is no one the catalog records");
+        assert!(
+            matches!(error, PgTableError::UnknownPartitionStrategy(_)),
+            "the strategy the catalog records is named"
+        );
+    }
+
+    #[test]
+    fn range_bound_reads_minvalue_and_maxvalue() {
+        let bound = parse_partition_bound("FOR VALUES FROM (MINVALUE) TO (MAXVALUE)")
+            .expect("the catalog text parses");
+        assert_eq!(
+            bound,
+            PartitionBound::Range {
+                from: vec![RangeDatum::MinValue],
+                to: vec![RangeDatum::MaxValue],
+            },
+        );
+    }
 }

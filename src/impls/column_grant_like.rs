@@ -180,3 +180,14 @@ impl ColumnGrantLike for RoleColumnGrants {
             .map(Relation::MaterializedView)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_grant_metadata_answers_the_column_it_applies_to() {
+        let metadata = RoleColumnGrantsMetadata::new(None, None, None, None);
+        assert!(metadata.column().is_none());
+    }
+}

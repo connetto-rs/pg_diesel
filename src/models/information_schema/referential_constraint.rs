@@ -138,4 +138,12 @@ mod tests {
         constraint.match_option = "INVALID".to_string();
         let _ = constraint.match_kind();
     }
+
+    #[test]
+    #[should_panic(expected = "unexpected referential action: SET FOO")]
+    fn test_referential_action_invalid() {
+        let mut constraint = dummy_referential_constraint();
+        constraint.delete_rule = "SET FOO".to_string();
+        let _ = constraint.on_delete();
+    }
 }
