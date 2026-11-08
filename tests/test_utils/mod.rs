@@ -13,14 +13,12 @@ pub enum FeatureGate {
     Always,
     /// Feature must be enabled.
     Feature(String),
-    /// Feature must NOT be enabled.
-    NotFeature(String),
+    /// The condition must not be met.
+    Not(Box<FeatureGate>),
     /// All conditions must be met.
     All(Vec<FeatureGate>),
     /// Any condition must be met.
     Any(Vec<FeatureGate>),
-    /// None of the conditions must be met (not(any(...))).
-    NotAny(Vec<FeatureGate>),
 }
 
 impl FeatureGate {
@@ -29,109 +27,64 @@ impl FeatureGate {
         match self {
             FeatureGate::Always => true,
             FeatureGate::Feature(f) => active_features.contains(&f.as_str()),
-            FeatureGate::NotFeature(f) => !active_features.contains(&f.as_str()),
+            FeatureGate::Not(gate) => !gate.is_enabled(active_features),
             FeatureGate::All(gates) => gates.iter().all(|g| g.is_enabled(active_features)),
             FeatureGate::Any(gates) => gates.iter().any(|g| g.is_enabled(active_features)),
-            FeatureGate::NotAny(gates) => !gates.iter().any(|g| g.is_enabled(active_features)),
         }
     }
 
     /// Parse a cfg attribute meta into a `FeatureGate`.
     pub fn from_cfg_meta(meta: &syn::Meta) -> Option<Self> {
         match meta {
-            syn::Meta::List(list) if list.path.is_ident("cfg") => {
-                // Parse the tokens inside cfg(...)
-                Self::parse_cfg_predicate(&list.tokens)
-            }
+            syn::Meta::List(list) if list.path.is_ident("cfg") => list
+                .parse_args::<syn::Meta>()
+                .ok()
+                .and_then(|predicate| Self::from_predicate(&predicate)),
             _ => None,
         }
     }
 
-    fn parse_cfg_predicate(tokens: &proc_macro2::TokenStream) -> Option<Self> {
-        let tokens_str = tokens.to_string();
-
-        // Handle `feature = "name"`
-        if tokens_str.starts_with("feature")
-            && let Some(start) = tokens_str.find('"')
-            && let Some(end) = tokens_str.rfind('"')
-            && start < end
-        {
-            let feature_name = &tokens_str[start + 1..end];
-            return Some(FeatureGate::Feature(feature_name.to_string()));
-        }
-
-        // Handle `not(any(feature = "X", feature = "Y"))`
-        if tokens_str.starts_with("not (any (") || tokens_str.starts_with("not(any(") {
-            let features = extract_feature_names(&tokens_str);
-            if !features.is_empty() {
-                let gates: Vec<FeatureGate> =
-                    features.into_iter().map(FeatureGate::Feature).collect();
-                return Some(FeatureGate::NotAny(gates));
-            }
-        }
-
-        // Handle `not(feature = "name")`
-        if tokens_str.starts_with("not")
-            && let Some(inner_start) = tokens_str.find('(')
-            && let Some(inner_end) = tokens_str.rfind(')')
-        {
-            let inner = &tokens_str[inner_start + 1..inner_end];
-            if inner.trim().starts_with("feature")
-                && let Some(start) = inner.find('"')
-                && let Some(end) = inner.rfind('"')
-                && start < end
-            {
-                let feature_name = &inner[start + 1..end];
-                return Some(FeatureGate::NotFeature(feature_name.to_string()));
-            }
-        }
-
-        // Handle `any(feature = "X", feature = "Y")`
-        if tokens_str.starts_with("any (") || tokens_str.starts_with("any(") {
-            let features = extract_feature_names(&tokens_str);
-            if !features.is_empty() {
-                let gates: Vec<FeatureGate> =
-                    features.into_iter().map(FeatureGate::Feature).collect();
-                return Some(FeatureGate::Any(gates));
-            }
-        }
-
-        // Handle `all(...)` - similar to any
-        if tokens_str.starts_with("all(") || tokens_str.starts_with("all (") {
-            let features = extract_feature_names(&tokens_str);
-            if !features.is_empty() {
-                let gates: Vec<FeatureGate> =
-                    features.into_iter().map(FeatureGate::Feature).collect();
-                return Some(FeatureGate::All(gates));
-            }
-        }
-
-        None
-    }
-}
-
-/// Extract all feature names from a cfg predicate string.
-fn extract_feature_names(s: &str) -> Vec<String> {
-    let mut features = Vec::new();
-    let mut remaining = s;
-
-    while let Some(start) = remaining.find("feature") {
-        remaining = &remaining[start..];
-        if let Some(quote_start) = remaining.find('"') {
-            remaining = &remaining[quote_start + 1..];
-            if let Some(quote_end) = remaining.find('"') {
-                let feature_name = &remaining[..quote_end];
-                features.push(feature_name.to_string());
-                remaining = &remaining[quote_end + 1..];
-            } else {
-                break;
-            }
-        } else {
-            break;
-        }
+    /// Parse the predicate inside `cfg(...)`, such as
+    /// `all(feature = "a", not(any(feature = "b")))`.
+    pub fn from_cfg_tokens(predicate: &str) -> Option<Self> {
+        syn::parse_str::<syn::Meta>(predicate)
+            .ok()
+            .and_then(|predicate| Self::from_predicate(&predicate))
     }
 
-    features
+    /// Reads one cfg predicate, recursing into `not`, `all` and `any`.
+    fn from_predicate(predicate: &syn::Meta) -> Option<Self> {
+        match predicate {
+            syn::Meta::NameValue(pair) if pair.path.is_ident("feature") => match &pair.value {
+                syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(name),
+                    ..
+                }) => Some(FeatureGate::Feature(name.value())),
+                _ => None,
+            },
+            syn::Meta::List(list) => {
+                let inner = list
+                    .parse_args_with(
+                        syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+                    )
+                    .ok()?
+                    .iter()
+                    .map(Self::from_predicate)
+                    .collect::<Option<Vec<_>>>()?;
+                if list.path.is_ident("all") {
+                    Some(FeatureGate::All(inner))
+                } else if list.path.is_ident("any") {
+                    Some(FeatureGate::Any(inner))
+                } else if list.path.is_ident("not") {
+                    let [gate] = <[FeatureGate; 1]>::try_from(inner).ok()?;
+                    Some(FeatureGate::Not(Box::new(gate)))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Get the active postgres features based on compile-time cfg.
@@ -191,9 +144,20 @@ mod tests {
 
     #[test]
     fn test_feature_gate_not_feature() {
-        let gate = FeatureGate::NotFeature("postgres-18".to_string());
+        let gate = FeatureGate::Not(Box::new(FeatureGate::Feature("postgres-18".to_string())));
         assert!(gate.is_enabled(&[]));
         assert!(gate.is_enabled(&["postgres-17"]));
         assert!(!gate.is_enabled(&["postgres-18"]));
+    }
+
+    #[test]
+    fn test_feature_gate_reads_a_negation_nested_in_all() {
+        let gate = FeatureGate::from_cfg_tokens(
+            r#"all(feature = "postgres-16", not(any(feature = "postgres-17", feature = "postgres-18")))"#,
+        )
+        .expect("the predicate parses");
+        assert!(gate.is_enabled(&["postgres-16"]));
+        assert!(!gate.is_enabled(&["postgres-16", "postgres-18"]));
+        assert!(!gate.is_enabled(&["postgres-17"]));
     }
 }
