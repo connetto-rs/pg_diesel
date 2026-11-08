@@ -1,3 +1,4 @@
+-- parser gap: CREATE DOMAIN ... NOT NULL, https://github.com/apache/datafusion-sqlparser-rs/pull/2798
 -- Columns of domain types, including a domain nested over another domain.
 CREATE DOMAIN span AS interval day to second(3);
 CREATE DOMAIN short_span AS span NOT NULL;

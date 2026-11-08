@@ -1,3 +1,4 @@
+-- parser gap: CREATE DOMAIN ... NOT NULL, https://github.com/apache/datafusion-sqlparser-rs/pull/2798
 -- Domains written `NOT NULL`, `DEFAULT` and `CHECK`, one declared over a
 -- base domain, reading the type the domain declares over, one step
 -- towards the base type the chain reaches.

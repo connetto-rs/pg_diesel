@@ -104,6 +104,14 @@ enum Outcome {
     /// Both models were described, with these unexplained differences, each
     /// printed as one line.
     Compared(Vec<String>),
+    /// `ParserDB` refused a document that names the sqlparser gap it waits
+    /// on.
+    ParserGap {
+        /// The gap the document names.
+        gap: String,
+        /// The parser's complaint.
+        error: String,
+    },
     /// The document could not be compared, for this reason.
     Failed(String),
 }
@@ -152,8 +160,23 @@ fn compare_document(database: &str, ddl: &str, server_major: u32) -> Outcome {
         return Outcome::Failed(format!("PostgreSQL refused the document: {error}"));
     }
     let source = match ParserDB::parse::<PostgreSqlDialect>(ddl) {
-        Ok(source) => source,
-        Err(error) => return Outcome::Failed(format!("ParserDB refused the document: {error}")),
+        Ok(source) => {
+            if let Some(gap) = parser_gap(ddl) {
+                eprintln!(
+                    "{database}: ParserDB parses the document now, so its parser gap line ({gap}) can go"
+                );
+            }
+            source
+        }
+        Err(error) => {
+            return match parser_gap(ddl) {
+                Some(gap) => Outcome::ParserGap {
+                    gap: gap.to_owned(),
+                    error: error.to_string(),
+                },
+                None => Outcome::Failed(format!("ParserDB refused the document: {error}")),
+            };
+        }
     };
     let default_schema: String = diesel::select(sql::<Text>("current_schema()"))
         .get_result(&mut connection)
@@ -221,15 +244,30 @@ fn compare_document(database: &str, ddl: &str, server_major: u32) -> Outcome {
 /// Returns the oldest `PostgreSQL` major version a document's DDL needs, from
 /// a `-- minimum server: N` line among its leading comments.
 fn minimum_server(ddl: &str) -> Option<u32> {
+    leading_comment(ddl, "-- minimum server:").map(|version| {
+        version
+            .parse()
+            .expect("a minimum server line names a major version")
+    })
+}
+
+/// Returns the sqlparser gap a document waits on, from a
+/// `-- parser gap: <what sqlparser lacks and where it is fixed>` line among
+/// its leading comments.
+///
+/// A document `ParserDB` refuses is skipped when it names one, and compared
+/// as any other once sqlparser parses it.
+fn parser_gap(ddl: &str) -> Option<&str> {
+    leading_comment(ddl, "-- parser gap:")
+}
+
+/// Returns the rest of the leading comment line starting with `prefix`,
+/// trimmed.
+fn leading_comment<'a>(ddl: &'a str, prefix: &str) -> Option<&'a str> {
     ddl.lines()
         .take_while(|line| line.starts_with("--"))
-        .find_map(|line| line.strip_prefix("-- minimum server:"))
-        .map(|version| {
-            version
-                .trim()
-                .parse()
-                .expect("a minimum server line names a major version")
-        })
+        .find_map(|line| line.strip_prefix(prefix))
+        .map(str::trim)
 }
 
 #[tokio::test]
@@ -279,6 +317,9 @@ async fn parser_and_catalog_agree_on_every_corpus_document() {
                 for difference in found {
                     writeln!(report, "  {difference}").expect("writing to a string succeeds");
                 }
+            }
+            Outcome::ParserGap { gap, error } => {
+                eprintln!("{name}: skipped, sqlparser cannot parse it yet ({gap}): {error}");
             }
             Outcome::Failed(reason) => {
                 writeln!(report, "{name}: {reason}").expect("writing to a string succeeds");
