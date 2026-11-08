@@ -2,10 +2,10 @@
 
 use sql_traits::{
     errors::{LookupError, ObjectKind},
-    structs::TargetName,
+    structs::{PolicyExpression, TargetName},
     traits::{DatabaseLike, Metadata, PolicyLike},
 };
-use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Expr, Function, Owner};
+use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Function, Owner};
 
 use crate::{
     database::PgDieselDatabase,
@@ -84,24 +84,29 @@ impl PolicyLike for PgPolicy {
             .flat_map(PolicyMetadata::roles)
     }
 
-    fn using_expression<'db>(
+    fn using_clause<'db>(
         &'db self,
         database: &'db Self::DB,
-    ) -> Result<Option<&'db Expr>, LookupError>
+    ) -> Result<Option<PolicyExpression<'db>>, LookupError>
     where
         Self: 'db,
     {
-        Ok(metadata(self, database)?.using_expression())
+        // The catalog holds the clause with every literal already stored.
+        Ok(metadata(self, database)?
+            .using_expression()
+            .map(PolicyExpression::Stored))
     }
 
-    fn check_expression<'db>(
+    fn check_clause<'db>(
         &'db self,
         database: &'db Self::DB,
-    ) -> Result<Option<&'db Expr>, LookupError>
+    ) -> Result<Option<PolicyExpression<'db>>, LookupError>
     where
         Self: 'db,
     {
-        Ok(metadata(self, database)?.check_expression())
+        Ok(metadata(self, database)?
+            .check_expression()
+            .map(PolicyExpression::Stored))
     }
 
     fn using_functions<'db>(
