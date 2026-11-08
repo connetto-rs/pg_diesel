@@ -5,7 +5,7 @@ use sql_traits::{
     structs::{PolicyExpression, TargetName},
     traits::{DatabaseLike, Metadata, PolicyLike},
 };
-use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Function, Owner};
+use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Expr, Function, Owner};
 
 use crate::{
     database::PgDieselDatabase,
@@ -97,6 +97,18 @@ impl PolicyLike for PgPolicy {
             .map(PolicyExpression::Stored))
     }
 
+    fn written_using<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<Option<&'db Expr>, LookupError>
+    where
+        Self: 'db,
+    {
+        // The catalog keeps only the typed constants, never the spelling.
+        metadata(self, database)?;
+        Ok(None)
+    }
+
     fn check_clause<'db>(
         &'db self,
         database: &'db Self::DB,
@@ -107,6 +119,17 @@ impl PolicyLike for PgPolicy {
         Ok(metadata(self, database)?
             .check_expression()
             .map(PolicyExpression::Stored))
+    }
+
+    fn written_check<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<Option<&'db Expr>, LookupError>
+    where
+        Self: 'db,
+    {
+        metadata(self, database)?;
+        Ok(None)
     }
 
     fn using_functions<'db>(
