@@ -57,8 +57,6 @@ use crate::{
     },
 };
 
-/// The port the differential container listens on.
-const PORT: u16 = 35437;
 /// The maintenance database documents are created from.
 const MAINTENANCE: &str = "differential";
 /// The superuser the container creates, left out of role comparisons.
@@ -180,13 +178,15 @@ enum ServerFactsError {
 
 /// Returns what the server itself answers about the roles, tables, functions
 /// and schemas of `scope` in the database `database`, a server of major
-/// version `server_major`, in the facts the describer names.
+/// version `server_major` published on the host port `port`, in the facts
+/// the describer names.
 ///
 /// # Errors
 ///
 /// Returns a [`ServerFactsError`] naming the server read that failed.
 fn server_facts(
     connection: &mut PgConnection,
+    port: u16,
     database: &str,
     live: &PgDieselDatabase,
     scope: &Scope,
@@ -214,7 +214,7 @@ fn server_facts(
             .map_err(ServerFactsError::SchemaUsage)?,
     );
     facts.extend(
-        server_row_security(connection, PORT, database, &tables, &roles, server_major)
+        server_row_security(connection, port, database, &tables, &roles, server_major)
             .map_err(ServerFactsError::RowSecurity)?,
     );
     Ok(facts)
@@ -261,10 +261,11 @@ fn expected_context(
 }
 
 /// Applies `ddl` to the database `database` on a server of major version
-/// `server_major`, then describes and compares the two models.
-fn compare_document(database: &str, ddl: &str, server_major: u32) -> Outcome {
+/// `server_major` published on the host port `port`, then describes and
+/// compares the two models.
+fn compare_document(port: u16, database: &str, ddl: &str, server_major: u32) -> Outcome {
     let mut connection: PgConnection =
-        establish_connection(PORT, database).expect("the document database accepts connections");
+        establish_connection(port, database).expect("the document database accepts connections");
     if let Err(error) = connection.batch_execute(ddl) {
         return Outcome::Failed(format!("PostgreSQL refused the document: {error}"));
     }
@@ -328,10 +329,11 @@ fn compare_document(database: &str, ddl: &str, server_major: u32) -> Outcome {
             return Outcome::Failed(format!("describing the source model failed: {error}"));
         }
     };
-    let server_facts = match server_facts(&mut connection, database, &live, &scope, server_major) {
-        Ok(facts) => facts,
-        Err(error) => return Outcome::Failed(error.to_string()),
-    };
+    let server_facts =
+        match server_facts(&mut connection, port, database, &live, &scope, server_major) {
+            Ok(facts) => facts,
+            Err(error) => return Outcome::Failed(error.to_string()),
+        };
     let context = expected_context(&mut connection, &live, &scope);
     let mut found: Vec<String> = differences(&source_facts, &live_facts)
         .into_iter()
@@ -388,10 +390,10 @@ fn leading_comment<'a>(ddl: &'a str, prefix: &str) -> Option<&'a str> {
 
 #[tokio::test]
 async fn parser_and_catalog_agree_on_every_corpus_document() {
-    let _docker = reference_docker(PORT, MAINTENANCE)
+    let docker = reference_docker(MAINTENANCE)
         .await
         .expect("the container starts");
-    let mut maintenance: PgConnection = establish_connection(PORT, MAINTENANCE)
+    let mut maintenance: PgConnection = establish_connection(docker.port, MAINTENANCE)
         .expect("the maintenance database accepts connections");
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/differential/corpus");
     let server_major = diesel::select(sql::<Text>("current_setting('server_version_num')"))
@@ -418,7 +420,7 @@ async fn parser_and_catalog_agree_on_every_corpus_document() {
         maintenance
             .batch_execute(&format!("CREATE DATABASE {};", quoted(&database)))
             .expect("the document database is created");
-        let outcome = compare_document(&database, &ddl, server_major);
+        let outcome = compare_document(docker.port, &database, &ddl, server_major);
         maintenance
             .batch_execute(&format!(
                 "DROP DATABASE {} WITH (FORCE);",

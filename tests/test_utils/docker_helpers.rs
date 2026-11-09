@@ -56,14 +56,31 @@ pub fn get_postgres_version_tag() -> &'static str {
     }
 }
 
-/// Setup a docker container with a postgres database.
-pub async fn reference_docker(
-    database_port: u16,
-    database_name: &str,
-) -> Result<ContainerAsync<GenericImage>, TestcontainersError> {
+/// The port `PostgreSQL` listens on inside the container.
+const CONTAINER_PORT: u16 = 5432;
+
+/// A running reference database and the host port Docker published it on.
+/// Dropping it stops and removes the container.
+pub struct ReferenceDocker {
+    /// The container, held only so that dropping it removes the container.
+    _container: ContainerAsync<GenericImage>,
+    /// The free host port Docker chose for the container's `PostgreSQL`.
+    pub port: u16,
+}
+
+/// Starts a `PostgreSQL` container holding the database `database_name`,
+/// published on a host port Docker picks, so concurrent runs never contend
+/// for one.
+///
+/// # Errors
+///
+/// Returns the [`TestcontainersError`] when the container does not start or
+/// Docker reports no published port.
+pub async fn reference_docker(database_name: &str) -> Result<ReferenceDocker, TestcontainersError> {
     let tag = get_postgres_version_tag();
 
-    GenericImage::new("postgis/postgis", tag)
+    let container = GenericImage::new("postgis/postgis", tag)
+        .with_exposed_port(CONTAINER_PORT.tcp())
         .with_wait_for(WaitFor::message_on_stderr(
             "database system is ready to accept connections",
         ))
@@ -72,9 +89,13 @@ pub async fn reference_docker(
         .with_env_var("POSTGRES_USER", "user")
         .with_env_var("POSTGRES_PASSWORD", "password")
         .with_env_var("POSTGRES_DB", database_name)
-        .with_mapped_port(database_port, 5432_u16.tcp())
         .start()
-        .await
+        .await?;
+    let port = container.get_host_port_ipv4(CONTAINER_PORT).await?;
+    Ok(ReferenceDocker {
+        _container: container,
+        port,
+    })
 }
 
 /// Returns the URL of the database `database_name` on the container

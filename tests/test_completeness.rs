@@ -39,11 +39,10 @@ async fn test_schema_completeness() {
     const UNREADABLE_UDT_NAMES: [&str; 2] = ["aclitem", "_aclitem"];
 
     let database_name = "test_schema_completeness";
-    let port = 35433;
-    let docker = reference_docker(port, database_name)
+    let docker = reference_docker(database_name)
         .await
         .expect("Failed to start docker container");
-    let mut conn: PgConnection = establish_connection(port, database_name)
+    let mut conn: PgConnection = establish_connection(docker.port, database_name)
         .expect("Failed to establish connection to database");
 
     let crate_root_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -195,8 +194,6 @@ async fn test_schema_completeness() {
             }
         }
     }
-
-    docker.stop().await.unwrap();
 }
 
 /// Test that `test_load_all.rs` has test blocks for all tables in the schema.
