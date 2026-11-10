@@ -87,32 +87,3 @@ pub struct PgStatStatement {
     /// Requires `track_io_timing` to be enabled.
     pub local_blk_write_time: f64,
 }
-
-impl PgStatStatement {
-    /// Returns the statements that caused the most compute time expenditure,
-    /// meaning the total time * number of calls.
-    ///
-    /// # Errors
-    ///
-    /// * If the query fails to execute, an error is returned.
-    pub fn most_expensive_queries(
-        connection: &mut diesel::PgConnection,
-    ) -> Result<Vec<Self>, diesel::result::Error> {
-        use diesel::{QueryDsl, RunQueryDsl, SelectableHelper};
-
-        use crate::schema::pg_catalog::pg_stat_statements::pg_stat_statements;
-
-        let mut statements = pg_stat_statements::table
-            .select(PgStatStatement::as_select())
-            .load::<PgStatStatement>(connection)?;
-
-        // Sort by total_exec_time * calls in descending order
-        statements.sort_by(|a, b| {
-            (b.total_exec_time * f64::from(u32::try_from(b.calls).unwrap()))
-                .partial_cmp(&(a.total_exec_time * f64::from(u32::try_from(a.calls).unwrap())))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        Ok(statements)
-    }
-}

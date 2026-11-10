@@ -2,8 +2,6 @@
 
 use diesel::{PgConnection, Queryable, QueryableByName, Selectable};
 
-use crate::models::PgExtension;
-
 mod cached_queries;
 pub use cached_queries::ProcAclEntry;
 
@@ -85,15 +83,6 @@ pub struct PgProc {
 }
 
 impl PgProc {
-    /// Returns the [`PgExtension`] that contains this function, if any.
-    ///
-    /// # Errors
-    ///
-    /// * If the function is not contained in an extension
-    pub fn extension(&self, conn: &mut PgConnection) -> Result<PgExtension, diesel::result::Error> {
-        cached_queries::extension(self, conn)
-    }
-
     /// Loads every `pg_proc` row except the procedures.
     ///
     /// # Errors

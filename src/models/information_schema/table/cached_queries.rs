@@ -25,21 +25,6 @@ pub(crate) fn load_all_tables(
         .load::<Table>(conn)
 }
 
-/// Loads a specific table by name, schema, and catalog.
-pub(crate) fn load_table(
-    conn: &mut PgConnection,
-    table_name: &str,
-    table_schema: &str,
-    table_catalog: &str,
-) -> Result<Table, diesel::result::Error> {
-    use crate::schema::information_schema::tables::tables;
-    tables::table
-        .filter(tables::table_name.eq(table_name))
-        .filter(tables::table_schema.eq(table_schema))
-        .filter(tables::table_catalog.eq(table_catalog))
-        .first::<Table>(conn)
-}
-
 /// Returns the columns of the table.
 pub(crate) fn columns(
     table: &Table,
@@ -242,21 +227,6 @@ pub(crate) fn standalone_indices(
         .into_iter()
         .filter(|(pg_index, _)| !backed.contains(&pg_index.indexrelid))
         .collect())
-}
-
-/// Returns the column with the given name from the table.
-pub(crate) fn column_by_name(
-    table: &Table,
-    column_name: &str,
-    conn: &mut PgConnection,
-) -> Result<Column, diesel::result::Error> {
-    use crate::schema::information_schema::columns::columns;
-    columns::table
-        .filter(columns::table_name.eq(&table.table_name))
-        .filter(columns::table_schema.eq(&table.table_schema))
-        .filter(columns::table_catalog.eq(&table.table_catalog))
-        .filter(columns::column_name.eq(column_name))
-        .first::<Column>(conn)
 }
 
 /// Returns the triggers `pg_trigger` records for the table, one row per

@@ -1,9 +1,5 @@
-//! Submodule providing the struct `PgAttribute` and associated methods.
-use diesel::{PgConnection, Queryable, QueryableByName, Selectable};
-
-use crate::models::PgType;
-
-mod cached_queries;
+//! Submodule providing the struct `PgAttribute`.
+use diesel::{Queryable, QueryableByName, Selectable};
 
 /// Represents a `PostgreSQL` attribute (column) in a table.
 #[derive(Queryable, QueryableByName, Selectable, Debug, PartialEq, Eq, Hash, Clone)]
@@ -102,15 +98,4 @@ pub struct PgAttribute {
     pub attcompression: String,
     /// Missing value for added columns
     pub attmissingval: Option<Vec<String>>,
-}
-
-impl PgAttribute {
-    /// Returns the [`PgType`] associated to the `PgAttribute`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the provided database connection fails.
-    pub fn pg_type(&self, conn: &mut PgConnection) -> Result<PgType, diesel::result::Error> {
-        cached_queries::pg_type(self, conn)
-    }
 }

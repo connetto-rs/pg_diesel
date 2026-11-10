@@ -1,9 +1,7 @@
 //! Submodule providing the `PGSetting` struct representing a row of the
 //! `pg_settings` table in `PostgreSQL`.
 
-use diesel::{
-    ExpressionMethods, PgConnection, QueryDsl, Queryable, QueryableByName, RunQueryDsl, Selectable,
-};
+use diesel::{Queryable, QueryableByName, Selectable};
 
 #[derive(Queryable, QueryableByName, Selectable, Debug, PartialEq, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -56,19 +54,4 @@ pub struct PgSetting {
     /// true if the value has been changed in the configuration file but needs a
     /// restart; or false otherwise.
     pub pending_restart: Option<bool>,
-}
-
-impl PgSetting {
-    /// Returns the TIME ZONE setting for the provided `PostgreSQL` connection.
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if the query to fetch the TIME ZONE
-    /// setting fails.
-    pub fn time_zone(conn: &mut PgConnection) -> Result<Self, diesel::result::Error> {
-        use crate::schema::pg_catalog::pg_settings::pg_settings;
-        pg_settings::table
-            .filter(pg_settings::dsl::name.eq("TimeZone"))
-            .first::<PgSetting>(conn)
-    }
 }
