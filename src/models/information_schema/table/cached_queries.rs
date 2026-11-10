@@ -7,22 +7,25 @@ use diesel::{
 
 use crate::models::{Column, KeyColumnUsage, PgDescription, PgIndex, PgTrigger, Table};
 
-/// Loads all base tables and foreign tables from the information schema for
-/// the given catalog and schema.
+/// Loads base and foreign tables, optionally restricted to exact table names.
 pub(crate) fn load_all_tables(
     table_catalog: &str,
     table_schema: &str,
+    table_names: Option<&[String]>,
     conn: &mut PgConnection,
 ) -> Result<Vec<Table>, diesel::result::Error> {
     use crate::schema::information_schema::tables::tables;
-    tables::table
+    let query = tables::table
         .filter(tables::table_catalog.eq(table_catalog))
         .filter(tables::table_schema.eq(table_schema))
         .filter(tables::table_type.eq_any(["BASE TABLE", "FOREIGN"]))
         .filter(tables::table_name.ne("__diesel_schema_migrations"))
         .order_by(tables::table_name)
-        .select(Table::as_select())
-        .load::<Table>(conn)
+        .select(Table::as_select());
+    match table_names {
+        Some(names) => query.filter(tables::table_name.eq_any(names)).load(conn),
+        None => query.load(conn),
+    }
 }
 
 /// Returns the columns of the table.

@@ -8,7 +8,8 @@
 //! `DO`, which reports `is_instead` as `false`, as `ALSO` asks.
 
 use diesel::{
-    ExpressionMethods, JoinOnDsl, PgConnection, QueryDsl, RunQueryDsl, dsl::sql, sql_types::Text,
+    BoolExpressionMethods, ExpressionMethods, JoinOnDsl, PgConnection, QueryDsl, RunQueryDsl,
+    dsl::sql, sql_types::Text,
 };
 use sqlparser::{
     ast::{CreateRule, CreateRuleAction, CreateRuleDoKind, CreateRuleEvent, Expr, Statement},
@@ -146,7 +147,16 @@ impl PgRuleEntry {
         schemas: &[String],
         conn: &mut PgConnection,
     ) -> Result<Vec<RuleRow>, diesel::result::Error> {
-        pg_rewrite::table
+        Self::load_filtered(schemas, None, conn)
+    }
+
+    /// Loads relation rules, restricting table rules to the selected OIDs.
+    pub(crate) fn load_filtered(
+        schemas: &[String],
+        table_oids: Option<&[u32]>,
+        conn: &mut PgConnection,
+    ) -> Result<Vec<RuleRow>, diesel::result::Error> {
+        let query = pg_rewrite::table
             .inner_join(pg_class::table.on(pg_rewrite::ev_class.eq(pg_class::oid)))
             .inner_join(pg_namespace::table.on(pg_class::relnamespace.eq(pg_namespace::oid)))
             .filter(pg_rewrite::rulename.ne("_RETURN"))
@@ -159,8 +169,13 @@ impl PgRuleEntry {
                 pg_namespace::nspname,
                 pg_class::relkind,
                 sql::<Text>("pg_get_ruledef(pg_rewrite.oid)"),
-            ))
-            .load(conn)
+            ));
+        match table_oids {
+            Some(oids) => query
+                .filter(pg_class::relkind.eq("v").or(pg_class::oid.eq_any(oids)))
+                .load(conn),
+            None => query.load(conn),
+        }
     }
 
     /// Reads one rule row into an entry, parsing the definition it carries.

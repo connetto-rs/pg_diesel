@@ -220,6 +220,8 @@ pub struct PgDieselDatabaseBuilder<'conn> {
     catalog: Option<String>,
     /// The schema names to include.
     schemas: Vec<String>,
+    /// The exact table names to include, grouped by schema.
+    tables: Option<HashMap<String, Vec<String>>>,
     /// Types denylist.
     denylist_types: Vec<String>,
 }
@@ -301,6 +303,30 @@ impl<'conn> PgDieselDatabaseBuilder<'conn> {
                 self = self.schema(schema);
             }
         }
+        self
+    }
+
+    /// Restricts tables and their metadata to these exact `(schema, table)` names within the selected schemas.
+    ///
+    /// An empty selection loads no tables, and missing names are ignored.
+    /// Each call replaces the selection, while omitting this method loads all tables.
+    /// Non-table objects retain their existing loading scope.
+    /// Navigation to excluded relations behaves as it does for an unloaded schema.
+    #[must_use]
+    pub fn tables<I, S, T>(mut self, tables: I) -> Self
+    where
+        I: IntoIterator<Item = (S, T)>,
+        S: AsRef<str>,
+        T: AsRef<str>,
+    {
+        let mut selected = HashMap::<String, Vec<String>>::new();
+        for (schema, table) in tables {
+            let names = selected.entry(schema.as_ref().to_owned()).or_default();
+            if !names.iter().any(|name| name == table.as_ref()) {
+                names.push(table.as_ref().to_owned());
+            }
+        }
+        self.tables = Some(selected);
         self
     }
 
@@ -439,9 +465,20 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
         }
 
         let mut tables = Vec::new();
+        let mut table_oids = value.tables.as_ref().map(|_| Vec::new());
         for table_schema in &table_schemas {
-            for row in Table::load_all(connection, &table_catalog, table_schema)? {
+            let names = value
+                .tables
+                .as_ref()
+                .map(|selected| selected.get(table_schema).map_or(&[][..], Vec::as_slice));
+            if names.is_some_and(<[String]>::is_empty) {
+                continue;
+            }
+            for row in Table::load_filtered(connection, &table_catalog, table_schema, names)? {
                 let facts = row.table_facts(connection)?;
+                if let Some(oids) = &mut table_oids {
+                    oids.push(facts.oid);
+                }
                 let partition_strategy = row.partition_strategy(connection)?;
                 tables.push(Arc::new(PgTable::new(
                     row,
@@ -593,7 +630,7 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
             generic_builder = generic_builder.add_sequence(Arc::new(sequence), ());
         }
 
-        for row in PgRuleEntry::load_rows(&table_schemas, connection)? {
+        for row in PgRuleEntry::load_filtered(&table_schemas, table_oids.as_deref(), connection)? {
             generic_builder = generic_builder.add_rule(Arc::new(PgRuleEntry::new(row)?), ());
         }
 
@@ -664,7 +701,9 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
             (String, String, String),
             Vec<AclTableGrant>,
         > = std::collections::BTreeMap::new();
-        for grant in AclTableGrant::load(&table_schemas, connection)? {
+        for grant in
+            AclTableGrant::load_filtered(&table_schemas, table_oids.as_deref(), connection)?
+        {
             grants_by_relation
                 .entry((
                     grant.table_schema.clone(),
@@ -755,7 +794,9 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
             generic_builder = generic_builder.add_table_grant(Arc::new(model), metadata);
         }
 
-        for grant in RoleColumnGrants::load_acl(&table_schemas, connection)? {
+        for grant in
+            RoleColumnGrants::load_acl_filtered(&table_schemas, table_oids.as_deref(), connection)?
+        {
             let action = string_to_action(&grant.privilege_type).ok_or_else(|| {
                 PgDatabaseBuildError::UnrepresentablePrivilege {
                     object: format!(

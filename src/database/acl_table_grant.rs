@@ -46,6 +46,15 @@ impl AclTableGrant {
         table_schemas: &[String],
         conn: &mut PgConnection,
     ) -> Result<Vec<Self>, diesel::result::Error> {
+        Self::load_filtered(table_schemas, None, conn)
+    }
+
+    /// Loads relation grants, restricting table grants to the selected OIDs.
+    pub(crate) fn load_filtered(
+        table_schemas: &[String],
+        table_oids: Option<&[u32]>,
+        conn: &mut PgConnection,
+    ) -> Result<Vec<Self>, diesel::result::Error> {
         use diesel::RunQueryDsl;
 
         diesel::sql_query(
@@ -63,9 +72,14 @@ impl AclTableGrant {
              WHERE class.relkind IN ('r', 'p', 'v', 'm', 'f', 'S') \
                AND entry.grantee <> class.relowner \
                AND namespace.nspname = ANY($1) \
+               AND ($2::oid[] IS NULL OR class.relkind NOT IN ('r', 'p', 'f') \
+                    OR class.oid = ANY($2)) \
              ORDER BY namespace.nspname, class.relname, grantee, privilege_type",
         )
         .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(table_schemas)
+        .bind::<diesel::sql_types::Nullable<diesel::sql_types::Array<diesel::sql_types::Oid>>, _>(
+            table_oids,
+        )
         .load::<Self>(conn)
     }
 }

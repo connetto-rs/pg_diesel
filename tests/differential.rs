@@ -22,6 +22,8 @@ mod expected;
 mod node_tree;
 #[path = "differential/server.rs"]
 mod server;
+#[path = "differential/table_filter.rs"]
+mod table_filter;
 
 use std::{
     collections::BTreeSet,
