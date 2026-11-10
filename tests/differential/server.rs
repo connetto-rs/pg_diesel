@@ -26,8 +26,9 @@ use pg_diesel::{
 use crate::{
     compare::{
         COLUMN_PRIVILEGES, Facts, ROLE_PRIVILEGES, ROW_STATEMENTS, Value, WHOLE_TABLE_PRIVILEGES,
-        column_privilege_value, quoted, rewritten, rewritten_fact, rewritten_item, rewritten_term,
-        role_privilege_fact, table_privilege_fact,
+        column_privilege_value, execute_fact, execute_value, quoted, rewritten, rewritten_fact,
+        rewritten_item, rewritten_term, role_privilege_fact, schema_usage_fact,
+        table_privilege_fact,
     },
     node_tree::{self, NodeTreeError, Tree},
     test_utils::docker_helpers::database_url,
@@ -46,6 +47,16 @@ diesel::define_sql_function! {
 diesel::define_sql_function! {
     /// `has_column_privilege(role, table, column, privilege)`.
     fn has_column_privilege(role: Text, table: Oid, column: SmallInt, privilege: Text) -> Bool;
+}
+
+diesel::define_sql_function! {
+    /// `has_function_privilege(role, function, privilege)`.
+    fn has_function_privilege(role: Text, function: Oid, privilege: Text) -> Bool;
+}
+
+diesel::define_sql_function! {
+    /// `has_schema_privilege(role, schema, privilege)`.
+    fn has_schema_privilege(role: Text, schema: Text, privilege: Text) -> Bool;
 }
 
 /// Returns, for every ordered pair of `roles` and every privilege the server
@@ -162,6 +173,65 @@ pub fn server_table_privileges(
                     Value::Text(holds.to_string()),
                 );
             }
+        }
+    }
+    Ok(facts)
+}
+
+/// Returns, for every function of `functions`, keyed as the describer keys
+/// it, and every role of `roles`, whether `has_function_privilege` grants the
+/// role `EXECUTE` and `EXECUTE WITH GRANT OPTION`, as the facts the describer
+/// names.
+///
+/// # Errors
+///
+/// Returns a `diesel::result::Error` when a query fails.
+pub fn server_function_privileges(
+    connection: &mut PgConnection,
+    functions: &[(String, u32)],
+    roles: &[String],
+) -> Result<Facts, diesel::result::Error> {
+    let mut facts = Facts::new();
+    for (key, oid) in functions {
+        for role in roles {
+            let can_execute: bool = diesel::select(has_function_privilege(role, *oid, "EXECUTE"))
+                .get_result(connection)?;
+            let can_grant: bool = diesel::select(has_function_privilege(
+                role,
+                *oid,
+                "EXECUTE WITH GRANT OPTION",
+            ))
+            .get_result(connection)?;
+            facts.insert(
+                execute_fact(key, role),
+                Value::Text(execute_value(can_execute, can_grant)),
+            );
+        }
+    }
+    Ok(facts)
+}
+
+/// Returns, for every schema of `schemas` and every role of `roles`, whether
+/// `has_schema_privilege` grants the role `USAGE`, as the facts the describer
+/// names.
+///
+/// # Errors
+///
+/// Returns a `diesel::result::Error` when a query fails.
+pub fn server_schema_usage(
+    connection: &mut PgConnection,
+    schemas: &[String],
+    roles: &[String],
+) -> Result<Facts, diesel::result::Error> {
+    let mut facts = Facts::new();
+    for schema in schemas {
+        for role in roles {
+            let holds: bool = diesel::select(has_schema_privilege(role, schema, "USAGE"))
+                .get_result(connection)?;
+            facts.insert(
+                schema_usage_fact(schema, role),
+                Value::Text(holds.to_string()),
+            );
         }
     }
     Ok(facts)

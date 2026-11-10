@@ -63,6 +63,31 @@ pub const EXPECTED: &[Expected] = &[
         },
     },
     Expected {
+        name: "possible privileges wider than held",
+        reason: "a parsed schema is open-world, so ParserDB rules out only what an explicit REVOKE proves gone, while a catalog's complete ACL answers exactly what is held, and the parser's answer must contain the catalog's",
+        matches: |difference, _| {
+            let (Some(Value::Text(source)), Some(Value::Text(live))) =
+                (&difference.source, &difference.live)
+            else {
+                return false;
+            };
+            difference.fact.contains(" / possible privilege ") && privilege_contains(source, live)
+        },
+    },
+    Expected {
+        name: "PUBLIC creates in public before PostgreSQL 15",
+        reason: "ParserDB models PostgreSQL 18, where public grants PUBLIC only USAGE, while an older server also grants PUBLIC CREATE on it from creation",
+        matches: |difference, _| {
+            !cfg!(any(
+                feature = "postgres-15",
+                feature = "postgres-16",
+                feature = "postgres-17",
+                feature = "postgres-18"
+            )) && difference.fact == "grant CREATE on schema public to PUBLIC"
+                && difference.source.is_none()
+        },
+    },
+    Expected {
         name: "public owned by the bootstrap superuser before PostgreSQL 15",
         reason: "ParserDB models PostgreSQL 18, where pg_database_owner owns public, while an older server makes the bootstrap superuser its owner",
         matches: |difference, context| {
@@ -132,6 +157,27 @@ pub const EXPECTED: &[Expected] = &[
         },
     },
 ];
+
+/// Returns whether the privilege `wider`, a value of a table privilege
+/// fact, holds wherever `narrower` does.
+fn privilege_contains(wider: &str, narrower: &str) -> bool {
+    let columns = |value: &str| -> Option<Vec<String>> {
+        match value {
+            "none" | "false" => Some(Vec::new()),
+            _ => value
+                .strip_prefix("columns ")
+                .map(|columns| columns.split(", ").map(str::to_owned).collect()),
+        }
+    };
+    match (wider, narrower) {
+        ("table" | "true", _) => true,
+        (_, "table" | "true") => false,
+        _ => match (columns(wider), columns(narrower)) {
+            (Some(wider), Some(narrower)) => narrower.iter().all(|column| wider.contains(column)),
+            _ => false,
+        },
+    }
+}
 
 /// Returns the entry accepting `difference`, if any.
 pub fn accepted(difference: &Difference, context: &Context) -> Option<&'static Expected> {

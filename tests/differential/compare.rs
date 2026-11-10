@@ -34,7 +34,7 @@ use pg_diesel::{
             DatabaseLike, DomainLike, ExtensionLike, ForeignKeyLike, FunctionLike, GrantLike,
             IndexLike, PolicyLike, Relation, RoleLike, RolePrivilege, RuleLike, SchemaLike,
             SequenceLike, SequenceOwner, TableGrantLike, TableLike, TriggerLike, UniqueIndexLike,
-            UserDefinedTypeLike, ViewLike,
+            UserDefinedTypeLike, ViewLike, grant::GrantTarget,
         },
         utils::{identifier_resolution::normalize_identifier, normalize_postgres_type},
     },
@@ -359,11 +359,43 @@ pub const COLUMN_PRIVILEGES: [&str; 4] = ["SELECT", "INSERT", "UPDATE", "REFEREN
 /// the order of the fields of `TablePrivileges`.
 pub const WHOLE_TABLE_PRIVILEGES: [&str; 4] = ["DELETE", "TRUNCATE", "TRIGGER", "MAINTAIN"];
 
+/// Names a table privilege fact from the table's schema and name, the
+/// privilege keyword and the role.
+type PrivilegeFact = fn(&str, &str, &str, &str) -> String;
+
 /// Returns the name of the fact stating where the role `role` holds the
 /// privilege `keyword` on the table `schema.table`.
 #[must_use]
 pub fn table_privilege_fact(schema: &str, table: &str, keyword: &str, role: &str) -> String {
     format!("table {schema}.{table} / privilege {keyword} / role {role}")
+}
+
+/// Returns the name of the fact stating where the role `role` may hold the
+/// privilege `keyword` on the table `schema.table`, as far as the model can
+/// tell.
+#[must_use]
+pub fn possible_privilege_fact(schema: &str, table: &str, keyword: &str, role: &str) -> String {
+    format!("table {schema}.{table} / possible privilege {keyword} / role {role}")
+}
+
+/// Returns the name of the fact stating whether the role `role` holds
+/// `EXECUTE`, and with it the grant option, on the function `function`.
+#[must_use]
+pub fn execute_fact(function: &str, role: &str) -> String {
+    format!("function {function} / execute for role {role}")
+}
+
+/// Returns the value of an [`execute_fact`].
+#[must_use]
+pub fn execute_value(can_execute: bool, can_grant: bool) -> String {
+    format!("can execute={can_execute} can grant={can_grant}")
+}
+
+/// Returns the name of the fact stating whether the role `role` holds
+/// `USAGE` on the schema `schema`.
+#[must_use]
+pub fn schema_usage_fact(schema: &str, role: &str) -> String {
+    format!("schema {schema} / usage for role {role}")
 }
 
 /// Returns where a column privilege holds, `table` for the table-level
@@ -653,6 +685,20 @@ impl Scope {
             .filter(|(schema, name)| self.covers_object(schema, name))
             .collect()
     }
+
+    /// Returns the functions of `database` that are described.
+    pub fn functions<'db, DB: DatabaseLike>(&self, database: &'db DB) -> Vec<&'db DB::Function> {
+        database
+            .functions()
+            .filter(|function| {
+                let schema = function
+                    .target_name()
+                    .schema()
+                    .map_or_else(|| self.default_schema.clone(), str::to_owned);
+                self.covers_object(&schema, &function.stored_name())
+            })
+            .collect()
+    }
 }
 
 /// Collects the facts of one model.
@@ -819,7 +865,9 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
     /// Records the schemas in scope, with the `USAGE` each holds before any
     /// `GRANT`.
     fn schemas(&mut self) {
-        for schema in self.database.schemas() {
+        let database = self.database;
+        let roles = self.described_roles();
+        for schema in database.schemas() {
             let name = schema.stored_name().into_owned();
             if self.scope.covers(&name) {
                 self.text(format!("schema {name}"), "present");
@@ -835,6 +883,12 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                     format!("schema {name} / owner"),
                     format!("{:?}", schema.authorization()),
                 );
+                for (role_name, role) in &roles {
+                    self.text(
+                        schema_usage_fact(&name, role_name),
+                        schema.has_usage(*role, database).to_string(),
+                    );
+                }
             }
         }
     }
@@ -1431,20 +1485,9 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
     /// Records the functions in scope, keyed by name and argument types.
     fn functions(&mut self) -> Result<(), DescribeError> {
         let database = self.database;
-        for function in database.functions() {
-            let schema = function
-                .target_name()
-                .schema()
-                .map_or_else(|| self.scope.default_schema.clone(), str::to_owned);
-            if !self.scope.covers_object(&schema, &function.stored_name()) {
-                continue;
-            }
+        for function in self.scope.functions(database) {
             let arguments = function.normalized_argument_type_names(database);
-            let subject = format!(
-                "function {schema}.{}({})",
-                function.stored_name(),
-                arguments.join(", ")
-            );
+            let subject = format!("function {}", self.function_name(function));
             self.text(
                 format!("{subject} / language"),
                 format!("{:?}", function.stored_language()),
@@ -1572,13 +1615,13 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 .execute_holders(database)?
                 .map(|holder| format!("{holder:?}"))),
         );
+        let key = self.function_name(function);
         for (role_name, role) in self.described_roles() {
             self.text(
-                format!("{subject} / execute for role {role_name}"),
-                format!(
-                    "can execute={} can grant={}",
+                execute_fact(&key, &role_name),
+                execute_value(
                     function.can_execute(role, database)?,
-                    function.can_grant_execute(role, database)?
+                    function.can_grant_execute(role, database)?,
                 ),
             );
         }
@@ -1706,7 +1749,8 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         }
     }
 
-    /// Records where each role in scope holds each privilege on `table`.
+    /// Records where each role in scope holds each privilege on `table`, and
+    /// where the model allows that it may.
     fn table_privileges(
         &mut self,
         schema: &str,
@@ -1714,31 +1758,31 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         table: &DB::Table,
     ) -> Result<(), DescribeError> {
         let database = self.database;
+        let facts: [PrivilegeFact; 2] = [table_privilege_fact, possible_privilege_fact];
         for (role_name, role) in self.described_roles() {
-            let held = table.privileges(role, database)?;
-            let by_column = [&held.select, &held.insert, &held.update, &held.references];
-            for (keyword, privilege) in COLUMN_PRIVILEGES.into_iter().zip(by_column) {
-                let value = match privilege {
-                    ColumnPrivilege::Table => column_privilege_value(true, &[]),
-                    ColumnPrivilege::Columns(columns) => column_privilege_value(
-                        false,
-                        &columns
-                            .iter()
-                            .map(|column| column.stored_column_name().into_owned())
-                            .collect::<Vec<_>>(),
-                    ),
-                };
-                self.text(
-                    table_privilege_fact(schema, name, keyword, &role_name),
-                    value,
-                );
-            }
-            let whole = [held.delete, held.truncate, held.trigger, held.maintain];
-            for (keyword, holds) in WHOLE_TABLE_PRIVILEGES.into_iter().zip(whole) {
-                self.text(
-                    table_privilege_fact(schema, name, keyword, &role_name),
-                    holds.to_string(),
-                );
+            let answers = [
+                table.privileges(role, database)?,
+                table.possible_privileges(role, database)?,
+            ];
+            for (fact, held) in facts.into_iter().zip(answers) {
+                let by_column = [&held.select, &held.insert, &held.update, &held.references];
+                for (keyword, privilege) in COLUMN_PRIVILEGES.into_iter().zip(by_column) {
+                    let value = match privilege {
+                        ColumnPrivilege::Table => column_privilege_value(true, &[]),
+                        ColumnPrivilege::Columns(columns) => column_privilege_value(
+                            false,
+                            &columns
+                                .iter()
+                                .map(|column| column.stored_column_name().into_owned())
+                                .collect::<Vec<_>>(),
+                        ),
+                    };
+                    self.text(fact(schema, name, keyword, &role_name), value);
+                }
+                let whole = [held.delete, held.truncate, held.trigger, held.maintain];
+                for (keyword, holds) in WHOLE_TABLE_PRIVILEGES.into_iter().zip(whole) {
+                    self.text(fact(schema, name, keyword, &role_name), holds.to_string());
+                }
             }
         }
         Ok(())
@@ -1788,8 +1832,8 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         }
     }
 
-    /// Records table and column grants, one fact per relation, grantee and
-    /// privilege.
+    /// Records table, schema and column grants, one fact per object, grantee
+    /// and privilege.
     fn grants(&mut self) -> Result<(), DescribeError> {
         let database = self.database;
         for grant in database.table_grants() {
@@ -1799,22 +1843,32 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             } else {
                 grant.privileges(database).map(privilege_keyword).collect()
             };
-            for relation in grant.relations(database) {
-                let relation_name = self.relation_name(&relation);
-                if !self
-                    .scope
-                    .covers(relation_name.split('.').next().unwrap_or_default())
-                {
+            let mut objects: Vec<(String, String)> = grant
+                .relations(database)
+                .map(|relation| {
+                    let (schema, name) = self.relation_parts(&relation);
+                    (schema.clone(), format!("{schema}.{name}"))
+                })
+                .collect();
+            if let GrantTarget::Schemas(schemas) = grant.target() {
+                objects.extend(schemas.map(|schema| {
+                    let name =
+                        normalize_identifier(schema.name(), schema.name_is_quoted()).into_owned();
+                    (name.clone(), format!("schema {name}"))
+                }));
+            }
+            let grantor = grant.granted_by(database);
+            for (schema, object) in objects {
+                if !self.scope.covers(&schema) {
                     continue;
                 }
                 for grantee in &grantees {
                     for privilege in &privileges {
                         self.text(
-                            format!("grant {privilege} on {relation_name} to {grantee}"),
+                            format!("grant {privilege} on {object} to {grantee}"),
                             format!(
-                                "grant option={} grantor={:?}",
+                                "grant option={} grantor={grantor:?}",
                                 grant.with_grant_option(),
-                                grant.granted_by(database)
                             ),
                         );
                     }
