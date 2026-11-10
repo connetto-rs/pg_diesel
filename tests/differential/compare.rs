@@ -25,7 +25,10 @@ use std::{
 use pg_diesel::{
     sql_traits::{
         errors::LookupError,
-        structs::ColumnPrivilege,
+        structs::{
+            ColumnPrivilege, GateFailure, GateTerm, PolicyClause, RowSecurity, RowStatement,
+            RowVersion,
+        },
         traits::{
             BinarySend, CheckConstraintLike, ColumnGrantLike, ColumnLike, DataTypeLike,
             DatabaseLike, DomainLike, ExtensionLike, ForeignKeyLike, FunctionLike, GrantLike,
@@ -373,6 +376,197 @@ pub fn column_privilege_value(on_table: bool, columns: &[String]) -> String {
     }
 }
 
+/// Every statement shape row-level security tells apart, with the label the
+/// facts about it carry.
+pub const ROW_STATEMENTS: [(RowStatement, &str); 20] = [
+    (RowStatement::Select, "SELECT"),
+    (RowStatement::SelectLocking, "SELECT FOR UPDATE"),
+    (RowStatement::Insert { returning: false }, "INSERT"),
+    (RowStatement::Insert { returning: true }, "INSERT RETURNING"),
+    (RowStatement::Update { reads: false }, "UPDATE"),
+    (
+        RowStatement::Update { reads: true },
+        "UPDATE reading the table",
+    ),
+    (RowStatement::Delete { reads: false }, "DELETE"),
+    (
+        RowStatement::Delete { reads: true },
+        "DELETE reading the table",
+    ),
+    (
+        RowStatement::InsertOnConflictDoNothing { arbiter: false },
+        "INSERT ON CONFLICT DO NOTHING",
+    ),
+    (
+        RowStatement::InsertOnConflictDoNothing { arbiter: true },
+        "INSERT ON CONFLICT (arbiter) DO NOTHING",
+    ),
+    (
+        RowStatement::InsertOnConflictDoUpdate,
+        "INSERT ON CONFLICT DO UPDATE",
+    ),
+    (
+        RowStatement::MergeInsert {
+            reads: false,
+            returning: false,
+        },
+        "MERGE INSERT",
+    ),
+    (
+        RowStatement::MergeInsert {
+            reads: false,
+            returning: true,
+        },
+        "MERGE INSERT RETURNING",
+    ),
+    (
+        RowStatement::MergeInsert {
+            reads: true,
+            returning: false,
+        },
+        "MERGE INSERT reading the target",
+    ),
+    (
+        RowStatement::MergeInsert {
+            reads: true,
+            returning: true,
+        },
+        "MERGE INSERT RETURNING reading the target",
+    ),
+    (RowStatement::MergeUpdate { reads: false }, "MERGE UPDATE"),
+    (
+        RowStatement::MergeUpdate { reads: true },
+        "MERGE UPDATE reading the target",
+    ),
+    (RowStatement::MergeDelete { reads: false }, "MERGE DELETE"),
+    (
+        RowStatement::MergeDelete { reads: true },
+        "MERGE DELETE reading the target",
+    ),
+    (RowStatement::MergeDoNothing, "MERGE DO NOTHING"),
+];
+
+/// Returns the name of the fact stating the row-level security the statement
+/// `statement` meets on the table `schema.table` when `role` runs it, in the
+/// terms of the query `PostgreSQL`'s rewriter produces.
+#[must_use]
+pub fn rewritten_fact(schema: &str, table: &str, role: &str, statement: &str) -> String {
+    format!("table {schema}.{table} / rewritten for role {role} on {statement}")
+}
+
+/// Returns one term of a rewritten qualification, the clause `clause` of the
+/// policy `policy`.
+#[must_use]
+pub fn rewritten_term(policy: &str, clause: PolicyClause) -> String {
+    match clause {
+        PolicyClause::Using => format!("{policy} USING"),
+        PolicyClause::WithCheck => format!("{policy} WITH CHECK"),
+    }
+}
+
+/// Returns one qualification of a rewritten query, kept in `list`, the row
+/// filter or the kind of `WithCheckOption`, holding when any of `terms` holds
+/// and so `false` without terms.
+#[must_use]
+pub fn rewritten_item(list: &str, mut terms: Vec<String>) -> String {
+    terms.sort();
+    if terms.is_empty() {
+        format!("{list} false")
+    } else {
+        format!("{list} any of {}", terms.join(", "))
+    }
+}
+
+/// Returns the qualifications of a rewritten query as one value, `none`
+/// when it carries none.
+#[must_use]
+pub fn rewritten(items: BTreeSet<String>) -> String {
+    if items.is_empty() {
+        "none".to_owned()
+    } else {
+        items.into_iter().collect::<Vec<_>>().join("; ")
+    }
+}
+
+/// Returns the message `PostgreSQL` refuses a statement with when expanding
+/// its policies loops back into `relation`.
+#[must_use]
+pub fn recursion(relation: &str) -> String {
+    format!("infinite recursion detected in policy for relation \"{relation}\"")
+}
+
+/// Returns `security`, the answer for `statement`, in the terms of the query
+/// `PostgreSQL`'s rewriter produces.
+///
+/// A filter gate is a qualification on the table's range table entry, and a
+/// raising gate a `WithCheckOption` of the kind the executor checks for the
+/// row it judges. A gate with no permissive term admits nothing, which
+/// `PostgreSQL` writes as `false` without the restrictive terms. The
+/// qualifications are a set, as the rewriter adds each only once.
+fn rewritten_form<P: PolicyLike>(security: &RowSecurity<'_, P>, statement: RowStatement) -> String {
+    let gates = match security {
+        RowSecurity::Exempt(_) => return rewritten(BTreeSet::new()),
+        RowSecurity::InfiniteRecursion { relation } => return recursion(relation),
+        RowSecurity::Gated(gates) => gates,
+    };
+    let term = |term: &GateTerm<'_, P>| rewritten_term(term.policy().name(), term.clause());
+    let mut items = BTreeSet::new();
+    for gate in gates {
+        let list = match (gate.failure(), gate.row()) {
+            (GateFailure::Filter, _) => "filter",
+            (GateFailure::Raise, RowVersion::Inserted) => "WCO_RLS_INSERT_CHECK",
+            (GateFailure::Raise, RowVersion::Updated) => "WCO_RLS_UPDATE_CHECK",
+            (GateFailure::Raise, RowVersion::Existing) => match statement {
+                RowStatement::InsertOnConflictDoUpdate => "WCO_RLS_CONFLICT_CHECK",
+                RowStatement::MergeUpdate { .. } => "WCO_RLS_MERGE_UPDATE_CHECK",
+                RowStatement::MergeDelete { .. } => "WCO_RLS_MERGE_DELETE_CHECK",
+                _ => "check of the existing row",
+            },
+        };
+        items.insert(rewritten_item(
+            list,
+            gate.permissive().iter().map(term).collect(),
+        ));
+        if !gate.permissive().is_empty() {
+            for restrictive in gate.restrictive() {
+                items.insert(rewritten_item(list, vec![term(restrictive)]));
+            }
+        }
+    }
+    rewritten(items)
+}
+
+/// Returns `security` with every detail the trait answers, the gates in
+/// their order and the reason for an exemption.
+fn row_security_detail<P: PolicyLike>(security: &RowSecurity<'_, P>) -> String {
+    let gates = match security {
+        RowSecurity::Exempt(reason) => return format!("exempt, {reason:?}"),
+        RowSecurity::InfiniteRecursion { relation } => return recursion(relation),
+        RowSecurity::Gated(gates) => gates,
+    };
+    let terms = |terms: &[GateTerm<'_, P>]| {
+        terms
+            .iter()
+            .map(|term| rewritten_term(term.policy().name(), term.clause()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    gates
+        .iter()
+        .map(|gate| {
+            format!(
+                "{:?} {:?} {:?}: any of [{}] and all of [{}]",
+                gate.command(),
+                gate.row(),
+                gate.failure(),
+                terms(gate.permissive()),
+                terms(gate.restrictive())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// The objects a description covers.
 #[derive(Debug, Clone)]
 pub struct Scope {
@@ -453,7 +647,7 @@ struct Describer<'a, DB: DatabaseLike> {
 }
 
 /// Returns `name` as a quoted identifier.
-fn quoted(name: &str) -> String {
+pub fn quoted(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
@@ -650,6 +844,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         self.policies(&schema, &name, &subject, table)?;
         if !foreign {
             self.table_privileges(&schema, &name, table)?;
+            self.row_security(&schema, &name, table);
         }
         Ok(())
     }
@@ -1278,6 +1473,29 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             }
         }
         Ok(())
+    }
+
+    /// Records the row-level security each statement shape meets on `table`
+    /// for each role in scope, in full and in the terms of the rewritten
+    /// query.
+    fn row_security(&mut self, schema: &str, name: &str, table: &DB::Table) {
+        let database = self.database;
+        for (role_name, role) in self.described_roles() {
+            for (statement, label) in ROW_STATEMENTS {
+                let (detail, rewritten) = match table.row_security(statement, role, database) {
+                    Ok(security) => (
+                        row_security_detail(&security),
+                        rewritten_form(&security, statement),
+                    ),
+                    Err(error) => (format!("error: {error}"), format!("error: {error}")),
+                };
+                self.text(
+                    format!("table {schema}.{name} / row security for role {role_name} on {label}"),
+                    detail,
+                );
+                self.text(rewritten_fact(schema, name, &role_name, label), rewritten);
+            }
+        }
     }
 
     /// Records role memberships.
