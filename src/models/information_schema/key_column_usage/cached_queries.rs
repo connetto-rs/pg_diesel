@@ -25,45 +25,51 @@ pub(super) fn referential_constraint(
 }
 
 /// Returns the names of the columns this foreign key references, in the
-/// order the referenced table declares them.
+/// order the foreign key lists them, each paired with the host column at the
+/// same position.
 pub(super) fn referenced_columns(
     key_column_usage: &KeyColumnUsage,
     conn: &mut PgConnection,
 ) -> Result<Vec<String>, diesel::result::Error> {
-    use crate::schema::information_schema::{
-        columns::columns, constraint_column_usage::constraint_column_usage,
-    };
+    use crate::schema::information_schema::key_column_usage::key_column_usage as usage;
 
-    // Find the referential constraint for this key_column_usage
     let referential_constraint = referential_constraint(key_column_usage, conn)?;
-
-    // Find the columns in the referenced (unique) constraint
-    constraint_column_usage::table
+    let positions: Vec<Option<i32>> = usage::table
+        .filter(usage::constraint_name.eq(&key_column_usage.constraint_name))
+        .filter(usage::constraint_schema.eq(&key_column_usage.constraint_schema))
+        .filter(usage::constraint_catalog.eq(&key_column_usage.constraint_catalog))
+        .order_by(usage::ordinal_position)
+        .select(usage::position_in_unique_constraint)
+        .load(conn)?;
+    let unique_key: Vec<(i32, String)> = usage::table
         .filter(
-            constraint_column_usage::constraint_catalog.eq(referential_constraint
+            usage::constraint_catalog.eq(referential_constraint
                 .unique_constraint_catalog
                 .ok_or(diesel::result::Error::NotFound)?),
         )
         .filter(
-            constraint_column_usage::constraint_schema.eq(referential_constraint
+            usage::constraint_schema.eq(referential_constraint
                 .unique_constraint_schema
                 .ok_or(diesel::result::Error::NotFound)?),
         )
         .filter(
-            constraint_column_usage::constraint_name.eq(referential_constraint
+            usage::constraint_name.eq(referential_constraint
                 .unique_constraint_name
                 .ok_or(diesel::result::Error::NotFound)?),
         )
-        .inner_join(
-            columns::table.on(columns::table_name
-                .eq(constraint_column_usage::table_name)
-                .and(columns::table_schema.eq(constraint_column_usage::table_schema))
-                .and(columns::table_catalog.eq(constraint_column_usage::table_catalog))
-                .and(columns::column_name.eq(constraint_column_usage::column_name))),
-        )
-        .order_by(columns::ordinal_position.asc())
-        .select(columns::column_name)
-        .load(conn)
+        .select((usage::ordinal_position, usage::column_name))
+        .load(conn)?;
+    positions
+        .into_iter()
+        .map(|position| {
+            let position = position.ok_or(diesel::result::Error::NotFound)?;
+            unique_key
+                .iter()
+                .find(|(ordinal, _)| *ordinal == position)
+                .map(|(_, name)| name.clone())
+                .ok_or(diesel::result::Error::NotFound)
+        })
+        .collect()
 }
 
 /// Returns the names of the host columns of this key column usage, in the

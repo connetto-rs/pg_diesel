@@ -1281,6 +1281,14 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 format!("{index_subject} / constraint index schema"),
                 self.index_schema(index),
             );
+            self.text(
+                format!("{index_subject} / columns"),
+                index
+                    .columns(database)?
+                    .map(|column| column.stored_column_name().into_owned())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
         }
         for index in table.indices(database)? {
             let name = index.name().unwrap_or("<unnamed>").to_owned();

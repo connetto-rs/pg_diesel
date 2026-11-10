@@ -9,31 +9,35 @@ use sqlparser::{ast::Expr, parser::Parser};
 
 use crate::models::{Column, PgIndex, Table};
 
-/// Returns the columns that make up the index.
+/// Returns the columns that make up the index, in the order `indkey` lists
+/// them, read from the table the index is defined on.
 pub(crate) fn columns(
     index: &PgIndex,
     conn: &mut PgConnection,
 ) -> Result<Vec<Column>, diesel::result::Error> {
     use crate::schema::{
         information_schema::columns::columns,
-        pg_catalog::{pg_attribute::pg_attribute, pg_class::pg_class, pg_index::pg_index},
+        pg_catalog::{pg_attribute::pg_attribute, pg_class::pg_class, pg_namespace::pg_namespace},
     };
 
-    pg_index::table
-        .inner_join(pg_class::table.on(pg_class::oid.eq(pg_index::indrelid)))
-        .inner_join(pg_attribute::table.on(pg_attribute::attrelid.eq(pg_class::oid)))
+    let mut numbered: Vec<(i16, Column)> = pg_attribute::table
+        .inner_join(pg_class::table.on(pg_class::oid.eq(pg_attribute::attrelid)))
+        .inner_join(pg_namespace::table.on(pg_namespace::oid.eq(pg_class::relnamespace)))
         .inner_join(
             columns::table.on(columns::table_name
                 .eq(pg_class::relname)
+                .and(columns::table_schema.eq(pg_namespace::nspname))
                 .and(columns::column_name.eq(pg_attribute::attname))),
         )
         .filter(
-            pg_index::indexrelid
-                .eq(index.indexrelid)
+            pg_attribute::attrelid
+                .eq(index.indrelid)
                 .and(pg_attribute::attnum.eq_any(&index.indkey)),
         )
-        .select(Column::as_select())
-        .load::<Column>(conn)
+        .select((pg_attribute::attnum, Column::as_select()))
+        .load::<(i16, Column)>(conn)?;
+    numbered.sort_by_key(|(number, _)| index.indkey.iter().position(|key| key == number));
+    Ok(numbered.into_iter().map(|(_, column)| column).collect())
 }
 
 /// Returns the table on which the index is defined.
