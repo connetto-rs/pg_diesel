@@ -121,6 +121,7 @@ pub fn primary_key_columns(
         .filter(key_column_usage::table_schema.eq(&table.table_schema))
         .filter(key_column_usage::table_catalog.eq(&table.table_catalog))
         .filter(table_constraints::constraint_type.eq("PRIMARY KEY"))
+        .order_by(key_column_usage::ordinal_position)
         .select(Column::as_select())
         .load::<Column>(conn)
 }
