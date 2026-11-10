@@ -90,10 +90,11 @@ impl PgDomainEntry {
                 pg_namespace::nspname,
                 pg_type::typbasetype,
                 pg_type::typtypmod,
+                pg_type::typndims,
             ))
-            .load::<(String, String, u32, i32)>(conn)?
+            .load::<(String, String, u32, i32, i32)>(conn)?
             .into_iter()
-            .map(|(name, schema, base, typmod)| {
+            .map(|(name, schema, base, typmod, ndims)| {
                 let base_type =
                     cache
                         .pg_type(base)
@@ -102,7 +103,7 @@ impl PgDomainEntry {
                             schema: schema.clone(),
                         })?;
                 let data_type =
-                    PgDataType::from_type(base_type, typmod, cache, 0).ok_or_else(|| {
+                    PgDataType::from_type(base_type, typmod, cache, ndims).ok_or_else(|| {
                         DomainDefinitionError::BaseTypeUnreadable {
                             name: name.clone(),
                             schema: schema.clone(),

@@ -32,7 +32,7 @@ use crate::{
     },
     models::{
         PgDbRoleSetting, PgMatview, PgProc, PgRole, PgView, RoleColumnGrants, RoleSettingError,
-        RoleTableGrants, Table,
+        RoleTableGrants, Table, TableMetadataError,
     },
 };
 
@@ -254,6 +254,9 @@ pub enum PgDatabaseBuildError {
     #[error("Role setting: {0}")]
     /// A role setting could not be read from `pg_db_role_setting`.
     RoleSetting(#[from] RoleSettingError),
+    #[error("Table metadata: {0}")]
+    /// A table's columns, keys or indexes could not be read.
+    TableMetadata(#[from] TableMetadataError),
     #[error("The privilege {privilege} on {object} has no sqlparser action")]
     /// The catalog grants a privilege `sqlparser::ast::Action` cannot spell.
     UnrepresentablePrivilege {

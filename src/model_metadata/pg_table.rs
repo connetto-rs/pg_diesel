@@ -290,13 +290,14 @@ impl PgTable {
     ///
     /// # Errors
     ///
-    /// * If the metadata cannot be loaded from the database.
+    /// Returns a [`TableMetadataError`](crate::models::TableMetadataError)
+    /// when a catalog query fails or a column's type cannot be resolved.
     pub fn metadata(
         self: &std::sync::Arc<Self>,
         conn: &mut diesel::PgConnection,
         denylist_types: &[String],
         cache: &crate::database::CatalogCache,
-    ) -> Result<crate::model_metadata::TableMetadata, diesel::result::Error> {
+    ) -> Result<crate::model_metadata::TableMetadata, crate::models::TableMetadataError> {
         self.model.metadata(self, conn, denylist_types, cache)
     }
 }
