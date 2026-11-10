@@ -97,11 +97,18 @@ impl TableLike for PgTable {
     {
         // `pg_inherits.inhseqno` keeps the order the `INHERITS` list wrote.
         let parents = metadata(self, database)?;
-        Ok(parents.parents().filter_map(move |(schema, name)| {
-            database
-                .tables()
-                .find(|candidate| candidate.schema() == schema && candidate.name() == name)
-        }))
+        let parents: Result<Vec<_>, _> = parents
+            .parents()
+            .map(|(schema, name)| {
+                database
+                    .tables()
+                    .find(|candidate| candidate.schema() == schema && candidate.name() == name)
+                    .ok_or_else(|| LookupError::TableNotFound {
+                        object_name: format!("{schema}.{name}"),
+                    })
+            })
+            .collect();
+        Ok(parents?.into_iter())
     }
 
     fn partition_root<'db>(
@@ -114,9 +121,13 @@ impl TableLike for PgTable {
         let Some((schema, name)) = metadata(self, database)?.partition_root() else {
             return Ok(None);
         };
-        Ok(database
+        database
             .tables()
-            .find(|candidate| candidate.schema() == schema && candidate.name() == name))
+            .find(|candidate| candidate.schema() == schema && candidate.name() == name)
+            .map(Some)
+            .ok_or_else(|| LookupError::TableNotFound {
+                object_name: format!("{schema}.{name}"),
+            })
     }
 
     fn partition_strategy(&self) -> Option<PartitionStrategy> {
