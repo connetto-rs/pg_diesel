@@ -25,6 +25,7 @@ use std::{
 use pg_diesel::{
     sql_traits::{
         errors::LookupError,
+        structs::ColumnPrivilege,
         traits::{
             BinarySend, CheckConstraintLike, ColumnGrantLike, ColumnLike, DataTypeLike,
             DatabaseLike, DomainLike, ExtensionLike, ForeignKeyLike, FunctionLike, GrantLike,
@@ -344,6 +345,34 @@ pub fn role_privilege_fact(member: &str, keyword: &str, target: &str) -> String 
     format!("role {member} / {keyword} on role {target}")
 }
 
+/// The table privileges that can be granted per column, by keyword, in the
+/// order of the fields of `TablePrivileges`.
+pub const COLUMN_PRIVILEGES: [&str; 4] = ["SELECT", "INSERT", "UPDATE", "REFERENCES"];
+
+/// The table privileges that exist on the whole table only, by keyword, in
+/// the order of the fields of `TablePrivileges`.
+pub const WHOLE_TABLE_PRIVILEGES: [&str; 4] = ["DELETE", "TRUNCATE", "TRIGGER", "MAINTAIN"];
+
+/// Returns the name of the fact stating where the role `role` holds the
+/// privilege `keyword` on the table `schema.table`.
+#[must_use]
+pub fn table_privilege_fact(schema: &str, table: &str, keyword: &str, role: &str) -> String {
+    format!("table {schema}.{table} / privilege {keyword} / role {role}")
+}
+
+/// Returns where a column privilege holds, `table` for the table-level
+/// privilege, else the `columns` that carry it or `none`.
+#[must_use]
+pub fn column_privilege_value(on_table: bool, columns: &[String]) -> String {
+    if on_table {
+        "table".to_owned()
+    } else if columns.is_empty() {
+        "none".to_owned()
+    } else {
+        format!("columns {}", columns.join(", "))
+    }
+}
+
 /// The objects a description covers.
 #[derive(Debug, Clone)]
 pub struct Scope {
@@ -394,6 +423,21 @@ impl Scope {
             .filter(|name| self.covers_role(name))
             .collect()
     }
+
+    /// Returns the stored schema and name of every table of `database` that
+    /// is described, foreign tables left out.
+    pub fn tables<DB: DatabaseLike>(&self, database: &DB) -> Vec<(String, String)> {
+        database
+            .tables()
+            .map(|table| {
+                (
+                    self.schema(table.stored_table_schema()).into_owned(),
+                    table.stored_table_name().into_owned(),
+                )
+            })
+            .filter(|(schema, name)| self.covers_object(schema, name))
+            .collect()
+    }
 }
 
 /// Collects the facts of one model.
@@ -431,6 +475,17 @@ fn set<I: IntoIterator<Item = String>>(values: I) -> String {
     values.sort();
     values.dedup();
     values.join(", ")
+}
+
+impl<'a, DB: DatabaseLike> Describer<'a, DB> {
+    /// Returns the roles in scope, each with its stored name.
+    fn described_roles(&self) -> Vec<(String, &'a DB::Role)> {
+        self.database
+            .roles()
+            .map(|role| (role.stored_name().into_owned(), role))
+            .filter(|(name, _)| self.scope.covers_role(name))
+            .collect()
+    }
 }
 
 impl<DB: DatabaseLike> Describer<'_, DB> {
@@ -593,6 +648,9 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         self.indexes(&schema, &name, &subject, table)?;
         self.triggers(&subject, table)?;
         self.policies(&schema, &name, &subject, table)?;
+        if !foreign {
+            self.table_privileges(&schema, &name, table)?;
+        }
         Ok(())
     }
 
@@ -1171,11 +1229,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
     /// in scope, itself included.
     fn role_privileges(&mut self) {
         let database = self.database;
-        let roles: Vec<(String, &DB::Role)> = database
-            .roles()
-            .map(|role| (role.stored_name().into_owned(), role))
-            .filter(|(name, _)| self.scope.covers_role(name))
-            .collect();
+        let roles = self.described_roles();
         for (member_name, member) in &roles {
             for (target_name, target) in &roles {
                 for (privilege, keyword) in ROLE_PRIVILEGES {
@@ -1186,6 +1240,44 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 }
             }
         }
+    }
+
+    /// Records where each role in scope holds each privilege on `table`.
+    fn table_privileges(
+        &mut self,
+        schema: &str,
+        name: &str,
+        table: &DB::Table,
+    ) -> Result<(), DescribeError> {
+        let database = self.database;
+        for (role_name, role) in self.described_roles() {
+            let held = table.privileges(role, database)?;
+            let by_column = [&held.select, &held.insert, &held.update, &held.references];
+            for (keyword, privilege) in COLUMN_PRIVILEGES.into_iter().zip(by_column) {
+                let value = match privilege {
+                    ColumnPrivilege::Table => column_privilege_value(true, &[]),
+                    ColumnPrivilege::Columns(columns) => column_privilege_value(
+                        false,
+                        &columns
+                            .iter()
+                            .map(|column| column.stored_column_name().into_owned())
+                            .collect::<Vec<_>>(),
+                    ),
+                };
+                self.text(
+                    table_privilege_fact(schema, name, keyword, &role_name),
+                    value,
+                );
+            }
+            let whole = [held.delete, held.truncate, held.trigger, held.maintain];
+            for (keyword, holds) in WHOLE_TABLE_PRIVILEGES.into_iter().zip(whole) {
+                self.text(
+                    table_privilege_fact(schema, name, keyword, &role_name),
+                    holds.to_string(),
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Records role memberships.
