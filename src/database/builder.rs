@@ -30,7 +30,10 @@ use crate::{
         PgUserDefinedType, PgViewDefinition, RuleDefinitionError, TriggerMetadata,
         ViewDefinitionError,
     },
-    models::{PgMatview, PgProc, PgRole, PgView, RoleColumnGrants, RoleTableGrants, Table},
+    models::{
+        PgDbRoleSetting, PgMatview, PgProc, PgRole, PgView, RoleColumnGrants, RoleSettingError,
+        RoleTableGrants, Table,
+    },
 };
 
 /// Returns the schemas the reading session resolves unqualified names in,
@@ -248,6 +251,9 @@ pub enum PgDatabaseBuildError {
     #[error("Lookup error: {0}")]
     /// Adding an object left the database unable to resolve a name.
     Lookup(#[from] LookupError),
+    #[error("Role setting: {0}")]
+    /// A role setting could not be read from `pg_db_role_setting`.
+    RoleSetting(#[from] RoleSettingError),
     #[error("The privilege {privilege} on {object} has no sqlparser action")]
     /// The catalog grants a privilege `sqlparser::ast::Action` cannot spell.
     UnrepresentablePrivilege {
@@ -642,6 +648,11 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
         for membership in PgRoleMembership::load_all(&cache, connection)? {
             generic_builder = generic_builder.add_role_membership(Arc::new(membership), ());
         }
+        generic_builder = generic_builder.add_role_settings(PgDbRoleSetting::load_settings(
+            &table_catalog,
+            &cache,
+            connection,
+        )?);
 
         // The server expands `GRANT ALL` into one `aclexplode` row per
         // privilege, so the rows of one relation and grantee group back into

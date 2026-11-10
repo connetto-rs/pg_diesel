@@ -1714,7 +1714,8 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
     }
 
     /// Records the `ALTER ROLE ... SET` entries of the roles in scope, and
-    /// of every role.
+    /// of every role, keyed by the setting's lowercased name, which
+    /// `PostgreSQL` matches without regard to case.
     fn role_settings(&mut self) {
         for setting in self.database.role_settings() {
             let role = setting.role().unwrap_or("ALL");
@@ -1724,7 +1725,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             self.text(
                 format!(
                     "role setting {} for role {role} in database {}",
-                    setting.name(),
+                    setting.name().to_lowercase(),
                     setting.database().unwrap_or("ALL")
                 ),
                 setting.value().to_owned(),

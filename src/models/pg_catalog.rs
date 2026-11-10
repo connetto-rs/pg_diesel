@@ -165,7 +165,7 @@ pub use pg_constraint::PgConstraint;
 pub use pg_conversion::PgConversion;
 pub use pg_cursor::PgCursor;
 pub use pg_database::PgDatabase;
-pub use pg_db_role_setting::PgDbRoleSetting;
+pub use pg_db_role_setting::{PgDbRoleSetting, RoleSettingError};
 pub use pg_default_acl::PgDefaultAcl;
 pub use pg_depend::PgDepend;
 pub use pg_description::PgDescription;
