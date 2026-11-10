@@ -1,5 +1,11 @@
 //! Table-scoped catalog loading.
 
+use pg_diesel::{
+    database::AclTableGrant,
+    model_metadata::PgRuleEntry,
+    models::{RoleColumnGrants, Table},
+};
+
 use pg_diesel::sql_traits::{
     errors::LookupError,
     traits::{ForeignKeyLike, TableLike},
@@ -165,5 +171,79 @@ async fn table_names_are_exact_and_intersect_schemas() {
             .map(TableLike::table_name)
             .collect::<Vec<_>>(),
         ["remote"]
+    );
+}
+
+#[tokio::test]
+async fn unfiltered_readers_return_all_schema_metadata() {
+    let docker = reference_docker("unfiltered_readers").await.unwrap();
+    let mut connection: PgConnection =
+        establish_connection(docker.port, "unfiltered_readers").unwrap();
+    connection
+        .batch_execute(include_str!("corpus/relations/table_filter.sql"))
+        .unwrap();
+    connection
+        .batch_execute("GRANT USAGE ON SEQUENCE app.skipped_seq TO PUBLIC")
+        .unwrap();
+    let schemas = ["app".to_owned()];
+
+    let tables = Table::load_all(&mut connection, "unfiltered_readers", "app").unwrap();
+    assert_eq!(
+        tables
+            .iter()
+            .map(|table| (table.table_schema.as_str(), table.table_name.as_str()))
+            .collect::<Vec<_>>(),
+        [("app", "kept"), ("app", "skipped")]
+    );
+
+    let grants = AclTableGrant::load(&schemas, &mut connection).unwrap();
+    assert_eq!(
+        grants
+            .iter()
+            .map(|grant| (
+                grant.table_name.as_str(),
+                grant.privilege_type.as_str(),
+                grant.grantee.as_str(),
+            ))
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            ("kept", "SELECT", "PUBLIC"),
+            ("kept_view", "SELECT", "PUBLIC"),
+            ("skipped", "SELECT", "PUBLIC"),
+            ("skipped_seq", "USAGE", "PUBLIC"),
+        ])
+    );
+
+    let grants = RoleColumnGrants::load_acl(&schemas, &mut connection).unwrap();
+    assert_eq!(
+        grants
+            .iter()
+            .map(|grant| (
+                grant.table_name.as_str(),
+                grant.column_name.as_str(),
+                grant.privilege_type.as_str(),
+                grant.grantee.as_str(),
+            ))
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            ("kept", "value", "UPDATE", "PUBLIC"),
+            ("skipped", "id", "UPDATE", "PUBLIC"),
+        ])
+    );
+
+    let rules: Vec<_> = PgRuleEntry::load_rows(&schemas, &mut connection)
+        .unwrap()
+        .into_iter()
+        .map(|row| PgRuleEntry::new(row).unwrap())
+        .collect();
+    assert_eq!(
+        rules
+            .iter()
+            .map(|rule| (rule.relation_schema(), rule.relation_name(), rule.name()))
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            ("app", "kept", "kept_no_delete"),
+            ("app", "skipped", "skipped_no_delete"),
+        ])
     );
 }
