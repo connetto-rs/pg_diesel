@@ -115,7 +115,7 @@ pub use sql_features::SqlFeatures;
 pub use sql_implementation_info::SqlImplementationInfo;
 pub use sql_parts::SqlParts;
 pub use sql_sizing::SqlSizing;
-pub use table::{Table, TableFacts};
+pub use table::{Table, TableFacts, TableMetadataError};
 pub use table_constraint::TableConstraint;
 pub use table_privileges::TablePrivileges;
 pub use transforms::Transforms;

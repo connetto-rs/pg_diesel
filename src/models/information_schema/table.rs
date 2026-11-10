@@ -118,12 +118,34 @@ impl Display for Table {
     }
 }
 
+/// Why the metadata of a table could not be read.
+#[derive(Debug, thiserror::Error)]
+pub enum TableMetadataError {
+    /// A catalog query failed.
+    #[error(transparent)]
+    Query(#[from] diesel::result::Error),
+    /// The type of a column reaches an array element or a domain base the
+    /// catalog cache does not hold.
+    #[error(
+        "the type of column {column} of table {schema}.{table} reaches a type the catalog does not hold"
+    )]
+    UnresolvedColumnType {
+        /// The schema of the table.
+        schema: String,
+        /// The name of the table.
+        table: String,
+        /// The name of the column.
+        column: String,
+    },
+}
+
 impl Table {
     /// Initializes and returns the metadata for the table.
     ///
     /// # Errors
     ///
-    /// * If the metadata cannot be loaded from the database.
+    /// Returns a [`TableMetadataError`] when a catalog query fails or a
+    /// column's type reaches a type the catalog cache does not hold.
     #[allow(clippy::too_many_lines)]
     pub fn metadata(
         &self,
@@ -131,7 +153,7 @@ impl Table {
         conn: &mut PgConnection,
         denylist_types: &[String],
         cache: &CatalogCache,
-    ) -> Result<TableMetadata, diesel::result::Error> {
+    ) -> Result<TableMetadata, TableMetadataError> {
         let facts = cached_queries::table_facts(self, conn)?;
         let attributes = cached_queries::attributes(facts.oid, conn)?;
         let descriptions = cached_queries::descriptions(facts.oid, conn)?;
@@ -168,10 +190,12 @@ impl Table {
             let serial = serial_numbers.contains(&i32::from(attribute.number))
                 && PgDataType::is_serial_integer(&pg_type.typname);
             let data_type =
-                PgDataType::from_type(pg_type, attribute.typmod, cache, attribute.ndims).expect(
-                    "the column's type row is held by the cache, and so are its array \
-                     element and domain bases",
-                );
+                PgDataType::from_type(pg_type, attribute.typmod, cache, attribute.ndims)
+                    .ok_or_else(|| TableMetadataError::UnresolvedColumnType {
+                        schema: self.table_schema.clone(),
+                        table: self.table_name.clone(),
+                        column: column.column_name.clone(),
+                    })?;
             let foreign_options = foreign_options_of(attribute.fdw_options.as_deref());
             let not_null = not_null_names
                 .iter()

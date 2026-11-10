@@ -70,6 +70,30 @@ impl PgDataType {
         ndims: i32,
         in_progress: &[u32],
     ) -> Option<PgDataType> {
+        if pg_type.typtype == "d" {
+            let (base, effective_typmod, base_ndims) = final_base(pg_type, cache)?;
+            let base_type =
+                Self::from_type_through(base, effective_typmod, cache, base_ndims, in_progress)?;
+            let send_function = base_type.send_function;
+            return Some(PgDataType {
+                name: cache
+                    .type_name(pg_type.oid)
+                    .map_or_else(|| pg_type.typname.clone(), ToOwned::to_owned),
+                element: None,
+                base_type: Some(Box::new(base_type)),
+                dimensions: None,
+                max_character_length: None,
+                numeric_scale: None,
+                fractional_seconds_precision: None,
+                interval_fields: None,
+                vector: None,
+                // `PostgreSQL` copies the send function into the domain, so
+                // the domain answers its base type's.
+                send_function,
+                range_subtype: None,
+                composite_fields: None,
+            });
+        }
         if pg_type.typcategory == "A" {
             let element_type = cache.pg_type(pg_type.typelem)?;
             let element = Self::from_type_through(element_type, typmod, cache, 0, in_progress)?;
@@ -89,29 +113,6 @@ impl PgDataType {
                 interval_fields: None,
                 vector: None,
                 send_function: Some(pg_type.typsend != 0),
-                range_subtype: None,
-                composite_fields: None,
-            });
-        }
-        if pg_type.typtype == "d" {
-            let (base, effective_typmod) = final_base(pg_type, cache)?;
-            let base_type = Self::from_type_through(base, effective_typmod, cache, 0, in_progress)?;
-            let send_function = base_type.send_function;
-            return Some(PgDataType {
-                name: cache
-                    .type_name(pg_type.oid)
-                    .map_or_else(|| pg_type.typname.clone(), ToOwned::to_owned),
-                element: None,
-                base_type: Some(Box::new(base_type)),
-                dimensions: None,
-                max_character_length: None,
-                numeric_scale: None,
-                fractional_seconds_precision: None,
-                interval_fields: None,
-                vector: None,
-                // `PostgreSQL` copies the send function into the domain, so
-                // the domain answers its base type's.
-                send_function,
                 range_subtype: None,
                 composite_fields: None,
             });
@@ -144,20 +145,25 @@ fn array_name(element: &PgDataType, dimensions: u32) -> String {
     name
 }
 
-/// The final non-domain base of `domain`, with the type modifier the
-/// innermost domain over it pins.
+/// The final non-domain base of `domain`, with the type modifier and the
+/// array dimension count the innermost domain over it pins.
 ///
 /// `PostgreSQL` refuses a domain declared over itself, so the walk reaches a
-/// base type, and the `typtypmod` of the domain directly over the base is the
-/// one the base sees.
-fn final_base<'a>(mut domain: &'a PgType, cache: &'a CatalogCache) -> Option<(&'a PgType, i32)> {
+/// base type, and the `typtypmod` and `typndims` of the domain directly over
+/// the base are the ones the base sees.
+fn final_base<'a>(
+    mut domain: &'a PgType,
+    cache: &'a CatalogCache,
+) -> Option<(&'a PgType, i32, i32)> {
     let mut effective_typmod = -1;
+    let mut ndims = 0;
     loop {
         if domain.typtype != "d" {
-            return Some((domain, effective_typmod));
+            return Some((domain, effective_typmod, ndims));
         }
         let base = cache.pg_type(domain.typbasetype)?;
         effective_typmod = domain.typtypmod;
+        ndims = domain.typndims;
         domain = base;
     }
 }
