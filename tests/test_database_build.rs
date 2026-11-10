@@ -204,11 +204,10 @@ fn select_expr(sql: &str) -> Expr {
 #[allow(clippy::too_many_lines)]
 async fn test_database_build() {
     let database_name = "test_database_build";
-    let port = 35436;
-    let _docker = reference_docker(port, database_name)
+    let docker = reference_docker(database_name)
         .await
         .expect("Failed to start docker");
-    let mut conn: PgConnection = establish_connection(port, database_name)
+    let mut conn: PgConnection = establish_connection(docker.port, database_name)
         .expect("Failed to establish connection to database");
 
     conn.batch_execute(FIXTURE).expect("the fixture applies");
