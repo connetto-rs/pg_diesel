@@ -161,37 +161,26 @@ pub(crate) fn foreign_keys(
         .load::<KeyColumnUsage>(conn)
 }
 
-/// Returns the indices of the table a `PRIMARY KEY` or `UNIQUE` constraint
-/// created, each with the name `pg_class` records the index relation under.
+/// Returns the indices of the table with OID `table_oid` a `PRIMARY KEY` or
+/// `UNIQUE` constraint created, each with the name `pg_class` records the
+/// index relation under.
 pub(crate) fn unique_indices(
-    table: &Table,
+    table_oid: u32,
     conn: &mut PgConnection,
 ) -> Result<Vec<(PgIndex, String)>, diesel::result::Error> {
     use crate::schema::pg_catalog::{
         pg_class::pg_class, pg_constraint::pg_constraint, pg_index::pg_index,
     };
 
-    let (pg_class1, pg_class2) = diesel::alias!(pg_class as pg_class1, pg_class as pg_class2);
-
     pg_index::table
-        .inner_join(pg_class1.on(pg_class1.field(pg_class::oid).eq(pg_index::indexrelid)))
-        .inner_join(pg_class2.on(pg_class2.field(pg_class::oid).eq(pg_index::indrelid)))
-        .filter(
-            pg_class2
-                .field(pg_class::relname)
-                .eq(&table.table_name)
-                .and(
-                    pg_class2
-                        .field(pg_class::relnamespace)
-                        .eq(pg_class1.field(pg_class::relnamespace)),
-                ),
-        )
+        .inner_join(pg_class::table.on(pg_class::oid.eq(pg_index::indexrelid)))
+        .filter(pg_index::indrelid.eq(table_oid))
         .filter(diesel::dsl::exists(
             pg_constraint::table
                 .select(pg_constraint::oid)
                 .filter(pg_constraint::conindid.eq(pg_index::indexrelid)),
         ))
-        .select((PgIndex::as_select(), pg_class1.field(pg_class::relname)))
+        .select((PgIndex::as_select(), pg_class::relname))
         .load::<(PgIndex, String)>(conn)
 }
 
@@ -221,41 +210,30 @@ pub(crate) fn index_constraint_names(
         .load::<(u32, String)>(conn)
 }
 
-/// Returns all indices of the table, each with the name `pg_class` records the
-/// index relation under.
+/// Returns all indices of the table with OID `table_oid`, each with the name
+/// `pg_class` records the index relation under.
 pub(crate) fn indices(
-    table: &Table,
+    table_oid: u32,
     conn: &mut PgConnection,
 ) -> Result<Vec<(PgIndex, String)>, diesel::result::Error> {
     use crate::schema::pg_catalog::{pg_class::pg_class, pg_index::pg_index};
 
-    let (pg_class1, pg_class2) = diesel::alias!(pg_class as pg_class1, pg_class as pg_class2);
-
     pg_index::table
-        .inner_join(pg_class1.on(pg_class1.field(pg_class::oid).eq(pg_index::indexrelid)))
-        .inner_join(pg_class2.on(pg_class2.field(pg_class::oid).eq(pg_index::indrelid)))
-        .filter(
-            pg_class2
-                .field(pg_class::relname)
-                .eq(&table.table_name)
-                .and(
-                    pg_class2
-                        .field(pg_class::relnamespace)
-                        .eq(pg_class1.field(pg_class::relnamespace)),
-                ),
-        )
-        .select((PgIndex::as_select(), pg_class1.field(pg_class::relname)))
+        .inner_join(pg_class::table.on(pg_class::oid.eq(pg_index::indexrelid)))
+        .filter(pg_index::indrelid.eq(table_oid))
+        .select((PgIndex::as_select(), pg_class::relname))
         .load::<(PgIndex, String)>(conn)
 }
 
-/// Returns the indices of the table no constraint created, unique or not,
-/// each with the name `pg_class` records the index relation under.
+/// Returns the indices of the table with OID `table_oid` no constraint
+/// created, unique or not, each with the name `pg_class` records the index
+/// relation under.
 pub(crate) fn standalone_indices(
-    table: &Table,
+    table_oid: u32,
     conn: &mut PgConnection,
 ) -> Result<Vec<(PgIndex, String)>, diesel::result::Error> {
-    let all = indices(table, conn)?;
-    let backed: Vec<u32> = unique_indices(table, conn)?
+    let all = indices(table_oid, conn)?;
+    let backed: Vec<u32> = unique_indices(table_oid, conn)?
         .into_iter()
         .map(|(pg_index, _)| pg_index.indexrelid)
         .collect();

@@ -199,7 +199,7 @@ impl Table {
         let mut constraint_names = index_constraint_names(facts.oid, conn)?
             .into_iter()
             .collect::<HashMap<_, _>>();
-        for (index, index_name) in cached_queries::unique_indices(self, conn)? {
+        for (index, index_name) in cached_queries::unique_indices(facts.oid, conn)? {
             let constraint_name = constraint_names.remove(&index.indexrelid);
             sql_metadata.add_unique_index(Arc::new(PgIndexEntry::new(
                 index,
@@ -208,7 +208,7 @@ impl Table {
                 constraint_name,
             )));
         }
-        for (index, index_name) in cached_queries::standalone_indices(self, conn)? {
+        for (index, index_name) in cached_queries::standalone_indices(facts.oid, conn)? {
             sql_metadata.add_index(Arc::new(PgIndexEntry::new(
                 index,
                 self.table_schema.clone(),
@@ -346,10 +346,11 @@ impl Table {
         &self,
         conn: &mut PgConnection,
     ) -> Result<Vec<PgIndexEntry>, diesel::result::Error> {
-        let mut constraint_names = index_constraint_names(table_facts(self, conn)?.oid, conn)?
+        let table_oid = table_facts(self, conn)?.oid;
+        let mut constraint_names = index_constraint_names(table_oid, conn)?
             .into_iter()
             .collect::<HashMap<_, _>>();
-        Ok(indices(self, conn)?
+        Ok(indices(table_oid, conn)?
             .into_iter()
             .map(|(index, name)| {
                 let constraint_name = constraint_names.remove(&index.indexrelid);
@@ -380,10 +381,11 @@ impl Table {
         &self,
         conn: &mut PgConnection,
     ) -> Result<Vec<PgIndexEntry>, diesel::result::Error> {
-        let mut constraint_names = index_constraint_names(table_facts(self, conn)?.oid, conn)?
+        let table_oid = table_facts(self, conn)?.oid;
+        let mut constraint_names = index_constraint_names(table_oid, conn)?
             .into_iter()
             .collect::<HashMap<_, _>>();
-        Ok(unique_indices(self, conn)?
+        Ok(unique_indices(table_oid, conn)?
             .into_iter()
             .map(|(index, name)| {
                 let constraint_name = constraint_names.remove(&index.indexrelid);
