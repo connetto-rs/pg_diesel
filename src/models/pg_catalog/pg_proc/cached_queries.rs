@@ -6,7 +6,7 @@ use diesel::{
     sql_types::{Oid, Text},
 };
 
-use crate::models::{PgExtension, PgProc};
+use crate::models::PgProc;
 
 /// One row of a function's `pg_proc.proacl` as `aclexplode` reads it, or a
 /// row without grantee for an ACL that grants nothing.
@@ -23,19 +23,6 @@ pub struct ProcAclEntry {
     /// is empty.
     #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Bool>)]
     pub grantable: Option<bool>,
-}
-
-/// Returns the extension that defines the procedure.
-pub(super) fn extension(
-    pg_proc: &PgProc,
-    conn: &mut PgConnection,
-) -> Result<PgExtension, diesel::result::Error> {
-    use crate::schema::pg_catalog::{pg_depend::pg_depend, pg_extension::pg_extension};
-    pg_extension::table
-        .inner_join(pg_depend::table.on(pg_extension::oid.eq(pg_depend::refobjid)))
-        .filter(pg_depend::objid.eq(pg_proc.oid))
-        .select(PgExtension::as_select())
-        .first::<PgExtension>(conn)
 }
 
 /// Loads every `pg_proc` row except the procedures, which `PostgreSQL` reads

@@ -6,7 +6,7 @@ mod cached_queries;
 pub(crate) use cached_queries::*;
 use sqlparser::parser::Parser;
 
-use crate::models::{Column, Table};
+use crate::models::Column;
 
 /// Represents the `pg_index` system catalog table in `PostgreSQL`.
 /// This table stores information about indexes on tables.
@@ -97,15 +97,6 @@ impl PgIndex {
             .expect("No expression found in parsed unique constraint"))
     }
 
-    /// Returns the table that this index belongs to.
-    ///
-    /// # Errors
-    ///
-    /// If an error occurs while loading the table from the database
-    pub fn table(&self, conn: &mut PgConnection) -> Result<Table, diesel::result::Error> {
-        cached_queries::table(self, conn)
-    }
-
     /// Returns the columns that are involved in the index
     ///
     /// # Errors
@@ -113,17 +104,5 @@ impl PgIndex {
     /// If an error occurs while loading the columns from the database
     pub fn columns(&self, conn: &mut PgConnection) -> Result<Vec<Column>, diesel::result::Error> {
         cached_queries::columns(self, conn)
-    }
-
-    #[must_use]
-    /// Returns whether the index is unique
-    pub fn is_unique(&self) -> bool {
-        self.indisunique
-    }
-
-    #[must_use]
-    /// Returns whether the index is a primary key
-    pub fn is_primary_key(&self) -> bool {
-        self.indisprimary
     }
 }

@@ -1,11 +1,7 @@
 //! Submodule providing a struct [`PgConstraint`] representing the
 //! `pg_constraint` table.
 
-use diesel::{PgConnection, Queryable, QueryableByName, Selectable};
-
-mod cached_queries;
-
-use super::{PgOperator, PgProc};
+use diesel::{Queryable, QueryableByName, Selectable};
 
 /// Represents the `pg_constraint` system catalog table in `PostgreSQL`.
 /// This table stores information about constraints on tables and columns.
@@ -107,29 +103,4 @@ pub struct PgConstraint {
     pub conexclop: Option<Vec<u32>>,
     /// Check constraint expression as a human-readable string, or `NULL` if not a check constraint.
     pub conbin: Option<String>,
-}
-
-impl PgConstraint {
-    /// Returns the vector of [`PgProc`] functions that are used in the
-    /// constraint.
-    ///
-    /// # Errors
-    ///
-    /// * If an error occurs while querying the database
-    pub fn functions(&self, conn: &mut PgConnection) -> Result<Vec<PgProc>, diesel::result::Error> {
-        cached_queries::functions(self, conn)
-    }
-
-    /// Returns the vector of [`PgOperator`] functions that are used in the
-    /// constraint.
-    ///
-    /// # Errors
-    ///
-    /// * If an error occurs while querying the database
-    pub fn operators(
-        &self,
-        conn: &mut PgConnection,
-    ) -> Result<Vec<PgOperator>, diesel::result::Error> {
-        cached_queries::operators(self, conn)
-    }
 }

@@ -7,7 +7,7 @@ use diesel::{
 };
 use sqlparser::{ast::Expr, parser::Parser};
 
-use crate::models::{Column, PgIndex, Table};
+use crate::models::{Column, PgIndex};
 
 /// Returns the columns that make up the index, in the order `indkey` lists
 /// them, read from the table the index is defined on.
@@ -38,20 +38,6 @@ pub(crate) fn columns(
         .load::<(i16, Column)>(conn)?;
     numbered.sort_by_key(|(number, _)| index.indkey.iter().position(|key| key == number));
     Ok(numbered.into_iter().map(|(_, column)| column).collect())
-}
-
-/// Returns the table on which the index is defined.
-pub(crate) fn table(
-    index: &PgIndex,
-    conn: &mut PgConnection,
-) -> Result<crate::models::Table, diesel::result::Error> {
-    use crate::schema::{information_schema::tables::tables, pg_catalog::pg_class::pg_class};
-
-    pg_class::table
-        .inner_join(tables::table.on(tables::table_name.eq(pg_class::relname)))
-        .filter(pg_class::oid.eq(index.indrelid))
-        .select(Table::as_select())
-        .first(conn)
 }
 
 /// Represents an index expression.

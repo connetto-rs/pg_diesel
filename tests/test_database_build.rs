@@ -936,43 +936,6 @@ async fn test_database_build() {
         "`PostgreSQL` records a type for every column"
     );
 
-    // The model methods read the table's rows from the live catalogs.
-    let children = table(&database, "children");
-    let indices = children
-        .model()
-        .indices(&mut conn)
-        .expect("the indices load");
-    let mut names: Vec<Option<&str>> = indices.iter().map(IndexLike::name).collect();
-    names.sort();
-    assert_eq!(
-        names,
-        vec![Some("children_by_parent"), Some("children_pkey")]
-    );
-    let unique = children
-        .model()
-        .unique_indices(&mut conn)
-        .expect("the unique indices load");
-    assert_eq!(unique.len(), 1);
-    let triggers = children
-        .model()
-        .triggers(&mut conn)
-        .expect("the triggers load");
-    assert_eq!(triggers.len(), 2);
-    let parent_id = children
-        .columns(&database)
-        .expect("in database")
-        .find(|column| column.column_name() == "parent_id")
-        .expect("the column is recorded");
-    let checks = parent_id
-        .model()
-        .check_constraints(&mut conn)
-        .expect("the constraints load");
-    let names: Vec<&str> = checks
-        .iter()
-        .map(|check| check.constraint_name.as_str())
-        .collect();
-    assert_eq!(names, vec!["children_parent_admitted"]);
-
     // The bare `CREATE TYPE` holds a name the later definition takes over.
     let placeholder = database
         .user_defined_types()

@@ -1,10 +1,7 @@
 //! This module defines the `PgOperator` model representing the
 //! `pg_catalog.pg_operator` system catalog table in `PostgreSQL`.
 
-use super::{PgExtension, PgProc, PgType};
-use diesel::{PgConnection, Queryable, QueryableByName, RunQueryDsl, Selectable};
-
-mod cached_queries;
+use diesel::{Queryable, QueryableByName, Selectable};
 
 /// Represents the `pg_operator` system catalog table in `PostgreSQL`.
 /// This table stores information about operators.
@@ -43,73 +40,4 @@ pub struct PgOperator {
     pub oprrest: u32,
     /// The OID of the join selectivity estimator function, or 0 if none.
     pub oprjoin: u32,
-}
-
-impl PgOperator {
-    /// Loads all of the [`PgExtension`]s from the database.
-    ///
-    /// # Errors
-    ///
-    /// * If an error occurs while querying the database
-    pub fn load_all(conn: &mut PgConnection) -> Result<Vec<Self>, diesel::result::Error> {
-        use crate::schema::pg_catalog::pg_operator::pg_operator;
-        pg_operator::table.load(conn)
-    }
-
-    /// Returns the symbol of the operator.
-    #[must_use]
-    pub fn symbol(&self) -> &str {
-        &self.oprname
-    }
-
-    /// Returns the [`PgProc`] associated with this operator.
-    ///
-    /// # Errors
-    ///
-    /// * If an error occurs while querying the database
-    pub fn function(&self, conn: &mut PgConnection) -> Result<PgProc, diesel::result::Error> {
-        cached_queries::function(self, conn)
-    }
-
-    /// Returns the [`PgExtension`] that contains this function, if any.
-    ///
-    /// # Errors
-    ///
-    /// * If the function is not contained in an extension
-    pub fn extension(&self, conn: &mut PgConnection) -> Result<PgExtension, diesel::result::Error> {
-        cached_queries::extension(self, conn)
-    }
-
-    /// Returns the left operand type [`PgType`] of the operator.
-    ///
-    /// # Errors
-    ///
-    /// * If an error occurs while querying the database
-    pub fn left_operand_type(
-        &self,
-        conn: &mut PgConnection,
-    ) -> Result<PgType, diesel::result::Error> {
-        cached_queries::left_operand_type(self, conn)
-    }
-
-    /// Returns the right operand type [`PgType`] of the operator.
-    ///
-    /// # Errors
-    ///
-    /// * If an error occurs while querying the database
-    pub fn right_operand_type(
-        &self,
-        conn: &mut PgConnection,
-    ) -> Result<PgType, diesel::result::Error> {
-        cached_queries::right_operand_type(self, conn)
-    }
-
-    /// Returns the result type [`PgType`] of the operator.
-    ///
-    /// # Errors
-    ///
-    /// * If an error occurs while querying the database
-    pub fn result_type(&self, conn: &mut PgConnection) -> Result<PgType, diesel::result::Error> {
-        cached_queries::result_type(self, conn)
-    }
 }

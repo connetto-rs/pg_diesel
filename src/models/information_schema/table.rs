@@ -13,7 +13,6 @@ use crate::{
         ColumnMetadata, PgCheckConstraint, PgColumn, PgDataType, PgForeignKey, PgIndexEntry,
         PgPolicy, PgTable, TableMetadata, TableMetadataDetails, storage_option_entries,
     },
-    models::{Column, PgTrigger},
 };
 
 mod cached_queries;
@@ -354,70 +353,6 @@ impl Table {
         cached_queries::table_facts(self, conn)
     }
 
-    #[must_use]
-    /// Returns whether the table is temporary.
-    pub fn is_temporary(&self) -> bool {
-        self.table_type == "LOCAL TEMPORARY" || self.table_type == "GLOBAL TEMPORARY"
-    }
-
-    /// Returns the indices for the table, each with the name the constraint
-    /// it enforces holds, when one does.
-    ///
-    /// # Errors
-    ///
-    /// * If the indices cannot be loaded from the database.
-    pub fn indices(
-        &self,
-        conn: &mut PgConnection,
-    ) -> Result<Vec<PgIndexEntry>, diesel::result::Error> {
-        let table_oid = table_facts(self, conn)?.oid;
-        let mut constraint_names = index_constraint_names(table_oid, conn)?
-            .into_iter()
-            .collect::<HashMap<_, _>>();
-        Ok(indices(table_oid, conn)?
-            .into_iter()
-            .map(|(index, name)| {
-                let constraint_name = constraint_names.remove(&index.indexrelid);
-                PgIndexEntry::new(index, self.table_schema.clone(), name, constraint_name)
-            })
-            .collect())
-    }
-
-    /// Returns the primary key columns for the table.
-    ///
-    /// # Errors
-    ///
-    /// * If the primary key columns cannot be loaded from the database.
-    pub fn primary_key_columns(
-        &self,
-        conn: &mut PgConnection,
-    ) -> Result<Vec<Column>, diesel::result::Error> {
-        primary_key_columns(self, conn)
-    }
-
-    /// Returns the UNIQUE constraint indices for the table, each with the
-    /// name its constraint holds.
-    ///
-    /// # Errors
-    ///
-    /// * If the indices cannot be loaded from the database.
-    pub fn unique_indices(
-        &self,
-        conn: &mut PgConnection,
-    ) -> Result<Vec<PgIndexEntry>, diesel::result::Error> {
-        let table_oid = table_facts(self, conn)?.oid;
-        let mut constraint_names = index_constraint_names(table_oid, conn)?
-            .into_iter()
-            .collect::<HashMap<_, _>>();
-        Ok(unique_indices(table_oid, conn)?
-            .into_iter()
-            .map(|(index, name)| {
-                let constraint_name = constraint_names.remove(&index.indexrelid);
-                PgIndexEntry::new(index, self.table_schema.clone(), name, constraint_name)
-            })
-            .collect())
-    }
-
     /// Returns all tables in the database.
     ///
     /// # Errors
@@ -429,52 +364,5 @@ impl Table {
         table_schema: &str,
     ) -> Result<Vec<Self>, diesel::result::Error> {
         load_all_tables(table_catalog, table_schema, conn)
-    }
-
-    /// Returns the table by name.
-    ///
-    /// # Errors
-    ///
-    /// * If the table cannot be loaded from the database.
-    pub fn load(
-        table_name: &str,
-        table_schema: &str,
-        table_catalog: &str,
-        conn: &mut PgConnection,
-    ) -> Result<Self, diesel::result::Error> {
-        load_table(conn, table_name, table_schema, table_catalog)
-    }
-
-    /// Returns the column by name.
-    ///
-    /// # Errors
-    ///
-    /// * If the column cannot be loaded from the database.
-    pub fn column_by_name(
-        &self,
-        column_name: &str,
-        conn: &mut PgConnection,
-    ) -> Result<Column, diesel::result::Error> {
-        column_by_name(self, column_name, conn)
-    }
-
-    /// Returns the triggers `pg_trigger` records for the table, one per
-    /// trigger, with the name the engine records the function each executes
-    /// under.
-    ///
-    /// # Errors
-    ///
-    /// * If the triggers cannot be loaded from the database.
-    pub fn triggers(
-        &self,
-        conn: &mut PgConnection,
-    ) -> Result<Vec<(PgTrigger, String)>, diesel::result::Error> {
-        triggers(table_facts(self, conn)?.oid, conn)
-    }
-}
-
-impl AsRef<Table> for Table {
-    fn as_ref(&self) -> &Table {
-        self
     }
 }

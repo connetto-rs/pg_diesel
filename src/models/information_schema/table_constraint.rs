@@ -3,14 +3,12 @@
 use std::io::Write;
 
 use diesel::{
-    PgConnection, Queryable, QueryableByName, Selectable,
+    Queryable, QueryableByName, Selectable,
     backend::Backend,
     deserialize::{FromSql, FromSqlRow},
     expression::AsExpression,
     serialize::{IsNull, Output, ToSql},
 };
-
-use crate::models::Table;
 
 #[derive(
     Queryable, QueryableByName, Selectable, PartialEq, Debug, Clone, Ord, PartialOrd, Eq, Hash,
@@ -59,28 +57,6 @@ pub enum ConstraintType {
     Check,
 }
 
-impl ConstraintType {
-    /// Returns true if the constraint is a primary key.
-    pub fn is_primary_key(&self) -> bool {
-        matches!(self, ConstraintType::PrimaryKey)
-    }
-
-    /// Returns true if the constraint is a foreign key.
-    pub fn is_foreign_key(&self) -> bool {
-        matches!(self, ConstraintType::ForeignKey)
-    }
-
-    /// Returns true if the constraint is a unique constraint.
-    pub fn is_unique(&self) -> bool {
-        matches!(self, ConstraintType::Unique)
-    }
-
-    /// Returns true if the constraint is a check constraint.
-    pub fn is_check(&self) -> bool {
-        matches!(self, ConstraintType::Check)
-    }
-}
-
 impl std::str::FromStr for ConstraintType {
     type Err = String;
 
@@ -125,45 +101,5 @@ impl FromSql<diesel::sql_types::Text, diesel::pg::Pg> for ConstraintType {
             "CHECK" => Ok(ConstraintType::Check),
             _ => Err("Unknown constraint type".into()),
         }
-    }
-}
-
-impl TableConstraint {
-    /// Returns the table associated with this table constraint
-    ///
-    /// # Errors
-    ///
-    /// * If an error occurs while querying the database
-    pub fn table(&self, conn: &mut PgConnection) -> Result<Table, diesel::result::Error> {
-        Table::load(
-            &self.table_name,
-            &self.table_schema,
-            &self.table_catalog,
-            conn,
-        )
-    }
-
-    #[must_use]
-    /// Returns whether the constraint is a primary key constraint
-    pub fn is_primary_key(&self) -> bool {
-        self.constraint_type.is_primary_key()
-    }
-
-    #[must_use]
-    /// Returns whether the constraint is a foreign key constraint
-    pub fn is_foreign_key(&self) -> bool {
-        self.constraint_type.is_foreign_key()
-    }
-
-    #[must_use]
-    /// Returns whether the constraint is a unique constraint
-    pub fn is_unique(&self) -> bool {
-        self.constraint_type.is_unique()
-    }
-
-    #[must_use]
-    /// Returns whether the constraint is a check constraint
-    pub fn is_check(&self) -> bool {
-        self.constraint_type.is_check()
     }
 }
