@@ -1,8 +1,9 @@
 //! The `PostgreSQL` dialect the introspected catalogs speak.
 
-use sql_traits::traits::{ColumnLike, DialectLike, TypeMatch};
+use sql_traits::traits::{ColumnLike, DataTypeLike, DialectLike, TypeMatch};
+use sqlparser::dialect::{Dialect, PostgreSqlDialect};
 
-use crate::{PgDieselDatabase, models::Column};
+use crate::{PgDieselDatabase, model_metadata::PgColumn};
 
 /// The dialect of a database read through `pg_catalog`.
 ///
@@ -13,9 +14,9 @@ use crate::{PgDieselDatabase, models::Column};
 pub struct PostgresDialect;
 
 impl PostgresDialect {
-    /// Whether the column's resolved catalog type is `type_name`.
-    fn declares(database: &PgDieselDatabase, column: &Column, type_name: &str) -> TypeMatch {
-        if column.data_type(database) == type_name {
+    /// Whether the column's resolved catalog type is named `type_name`.
+    fn declares(database: &PgDieselDatabase, column: &PgColumn, type_name: &str) -> TypeMatch {
+        if column.data_type(database).name(database) == type_name {
             TypeMatch::Yes
         } else {
             TypeMatch::No
@@ -27,11 +28,15 @@ impl DialectLike for PostgresDialect {
     type DB = PgDieselDatabase;
     type Match = TypeMatch;
 
-    fn is_bool(&self, database: &Self::DB, column: &Column) -> Self::Match {
-        Self::declares(database, column, "bool")
+    fn is_bool(&self, database: &Self::DB, column: &PgColumn) -> Self::Match {
+        Self::declares(database, column, "BOOLEAN")
     }
 
-    fn is_uuid(&self, database: &Self::DB, column: &Column) -> Self::Match {
-        Self::declares(database, column, "uuid")
+    fn is_uuid(&self, database: &Self::DB, column: &PgColumn) -> Self::Match {
+        Self::declares(database, column, "UUID")
+    }
+
+    fn sqlparser_dialect(&self) -> &dyn Dialect {
+        &PostgreSqlDialect {}
     }
 }

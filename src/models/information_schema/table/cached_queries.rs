@@ -5,12 +5,10 @@ use diesel::{
     OptionalExtension, PgConnection, QueryDsl, RunQueryDsl, SelectableHelper,
 };
 
-use crate::models::{
-    CheckConstraint, Column, KeyColumnUsage, PgDescription, PgIndex, PgTrigger, Table, Triggers,
-};
+use crate::models::{Column, KeyColumnUsage, PgDescription, PgIndex, PgTrigger, Table};
 
-/// Loads all base tables from the information schema for the given catalog and
-/// schema.
+/// Loads all base tables and foreign tables from the information schema for
+/// the given catalog and schema.
 pub(crate) fn load_all_tables(
     table_catalog: &str,
     table_schema: &str,
@@ -20,7 +18,7 @@ pub(crate) fn load_all_tables(
     tables::table
         .filter(tables::table_catalog.eq(table_catalog))
         .filter(tables::table_schema.eq(table_schema))
-        .filter(tables::table_type.eq("BASE TABLE"))
+        .filter(tables::table_type.eq_any(["BASE TABLE", "FOREIGN"]))
         .filter(tables::table_name.ne("__diesel_schema_migrations"))
         .order_by(tables::table_name)
         .select(Table::as_select())
@@ -162,13 +160,15 @@ pub(crate) fn foreign_keys(
         .load::<KeyColumnUsage>(conn)
 }
 
-/// Returns the unique indices of the table, each with the name `pg_class`
-/// records the index relation under.
+/// Returns the indices of the table a `PRIMARY KEY` or `UNIQUE` constraint
+/// created, each with the name `pg_class` records the index relation under.
 pub(crate) fn unique_indices(
     table: &Table,
     conn: &mut PgConnection,
 ) -> Result<Vec<(PgIndex, String)>, diesel::result::Error> {
-    use crate::schema::pg_catalog::{pg_class::pg_class, pg_index::pg_index};
+    use crate::schema::pg_catalog::{
+        pg_class::pg_class, pg_constraint::pg_constraint, pg_index::pg_index,
+    };
 
     let (pg_class1, pg_class2) = diesel::alias!(pg_class as pg_class1, pg_class as pg_class2);
 
@@ -185,9 +185,39 @@ pub(crate) fn unique_indices(
                         .eq(pg_class1.field(pg_class::relnamespace)),
                 ),
         )
-        .filter(pg_index::indisunique.eq(true))
+        .filter(diesel::dsl::exists(
+            pg_constraint::table
+                .select(pg_constraint::oid)
+                .filter(pg_constraint::conindid.eq(pg_index::indexrelid)),
+        ))
         .select((PgIndex::as_select(), pg_class1.field(pg_class::relname)))
         .load::<(PgIndex, String)>(conn)
+}
+
+/// Returns, for each index of the table, the name of the primary key, unique,
+/// or exclusion constraint the index enforces, and the OID the engine gives
+/// the index.
+///
+/// A foreign key constraint points at the index the referenced columns hold
+/// and takes its name from the key, so the names those constraints record
+/// do not describe what the index enforces, and the query skips them.
+pub(crate) fn index_constraint_names(
+    table_oid: u32,
+    conn: &mut PgConnection,
+) -> Result<Vec<(u32, String)>, diesel::result::Error> {
+    use crate::schema::pg_catalog::{pg_constraint::pg_constraint, pg_index::pg_index};
+
+    let backed = pg_constraint::contype
+        .eq("p")
+        .or(pg_constraint::contype.eq("u"))
+        .or(pg_constraint::contype.eq("x"));
+
+    pg_constraint::table
+        .inner_join(pg_index::table.on(pg_constraint::conindid.eq(pg_index::indexrelid)))
+        .filter(pg_index::indrelid.eq(table_oid))
+        .filter(backed)
+        .select((pg_constraint::conindid, pg_constraint::conname))
+        .load::<(u32, String)>(conn)
 }
 
 /// Returns all indices of the table, each with the name `pg_class` records the
@@ -217,57 +247,22 @@ pub(crate) fn indices(
         .load::<(PgIndex, String)>(conn)
 }
 
-/// Returns the indices of the table that enforce no uniqueness, each with the
-/// name `pg_class` records the index relation under.
-pub(crate) fn non_unique_indices(
+/// Returns the indices of the table no constraint created, unique or not,
+/// each with the name `pg_class` records the index relation under.
+pub(crate) fn standalone_indices(
     table: &Table,
     conn: &mut PgConnection,
 ) -> Result<Vec<(PgIndex, String)>, diesel::result::Error> {
-    use crate::schema::pg_catalog::{pg_class::pg_class, pg_index::pg_index};
+    let all = indices(table, conn)?;
+    let backed: Vec<u32> = unique_indices(table, conn)?
+        .into_iter()
+        .map(|(pg_index, _)| pg_index.indexrelid)
+        .collect();
 
-    let (pg_class1, pg_class2) = diesel::alias!(pg_class as pg_class1, pg_class as pg_class2);
-
-    pg_index::table
-        .inner_join(pg_class1.on(pg_class1.field(pg_class::oid).eq(pg_index::indexrelid)))
-        .inner_join(pg_class2.on(pg_class2.field(pg_class::oid).eq(pg_index::indrelid)))
-        .filter(
-            pg_class2
-                .field(pg_class::relname)
-                .eq(&table.table_name)
-                .and(
-                    pg_class2
-                        .field(pg_class::relnamespace)
-                        .eq(pg_class1.field(pg_class::relnamespace)),
-                ),
-        )
-        .filter(pg_index::indisunique.eq(false))
-        .select((PgIndex::as_select(), pg_class1.field(pg_class::relname)))
-        .load::<(PgIndex, String)>(conn)
-}
-
-/// Returns the check constraints of the table.
-pub(crate) fn check_constraints(
-    table: &Table,
-    conn: &mut PgConnection,
-) -> Result<Vec<CheckConstraint>, diesel::result::Error> {
-    use crate::schema::information_schema::{
-        check_constraints::check_constraints, table_constraints::table_constraints,
-    };
-
-    check_constraints::table
-        .inner_join(
-            table_constraints::table.on(check_constraints::constraint_name
-                .eq(table_constraints::constraint_name)
-                .and(check_constraints::constraint_schema.eq(table_constraints::constraint_schema))
-                .and(
-                    check_constraints::constraint_catalog.eq(table_constraints::constraint_catalog),
-                )),
-        )
-        .filter(table_constraints::table_name.eq(&table.table_name))
-        .filter(table_constraints::table_schema.eq(&table.table_schema))
-        .filter(table_constraints::table_catalog.eq(&table.table_catalog))
-        .select(CheckConstraint::as_select())
-        .load::<CheckConstraint>(conn)
+    Ok(all
+        .into_iter()
+        .filter(|(pg_index, _)| !backed.contains(&pg_index.indexrelid))
+        .collect())
 }
 
 /// Returns the column with the given name from the table.
@@ -285,41 +280,49 @@ pub(crate) fn column_by_name(
         .first::<Column>(conn)
 }
 
-/// Returns the triggers of the table, along with the OID of the function they call.
+/// Returns the triggers `pg_trigger` records for the table, one row per
+/// trigger, with the name the engine records the function they execute under.
 pub(crate) fn triggers(
-    table: &Table,
+    table_oid: u32,
     conn: &mut PgConnection,
-) -> Result<Vec<(Triggers, Option<u32>)>, diesel::result::Error> {
-    use crate::schema::information_schema::triggers::triggers;
-    use crate::schema::pg_catalog::{
-        pg_class::pg_class, pg_namespace::pg_namespace, pg_trigger::pg_trigger,
-    };
+) -> Result<Vec<(PgTrigger, String)>, diesel::result::Error> {
+    use crate::schema::pg_catalog::{pg_proc::pg_proc, pg_trigger::pg_trigger};
 
-    let is_triggers = triggers::table
-        .filter(triggers::event_object_catalog.eq(&table.table_catalog))
-        .filter(triggers::event_object_schema.eq(&table.table_schema))
-        .filter(triggers::event_object_table.eq(&table.table_name))
-        .select(Triggers::as_select())
-        .load::<Triggers>(conn)?;
+    pg_trigger::table
+        .inner_join(pg_proc::table.on(pg_trigger::tgfoid.eq(pg_proc::oid)))
+        .filter(pg_trigger::tgrelid.eq(table_oid))
+        .filter(pg_trigger::tgisinternal.eq(false))
+        .order_by(pg_trigger::oid)
+        .select((PgTrigger::as_select(), pg_proc::proname))
+        .load::<(PgTrigger, String)>(conn)
+}
 
-    let pg_triggers = pg_trigger::table
-        .inner_join(pg_class::table.on(pg_trigger::tgrelid.eq(pg_class::oid)))
-        .inner_join(pg_namespace::table.on(pg_class::relnamespace.eq(pg_namespace::oid)))
-        .filter(pg_class::relname.eq(&table.table_name))
-        .filter(pg_namespace::nspname.eq(&table.table_schema))
-        .select(PgTrigger::as_select())
-        .load::<PgTrigger>(conn)?;
+/// Returns the name each not-null constraint of the table holds, by the
+/// number the engine gives the column it applies to.
+///
+/// The engine records such constraints as `pg_constraint` rows only in
+/// `PostgreSQL` 18, so the query exists nowhere else.
+#[cfg(feature = "postgres-18")]
+pub(crate) fn not_null_constraint_names(
+    table_oid: u32,
+    conn: &mut PgConnection,
+) -> Result<Vec<(i32, String)>, diesel::result::Error> {
+    use crate::schema::pg_catalog::pg_constraint::pg_constraint;
 
-    let mut result = Vec::new();
-    for trig in is_triggers {
-        let name = trig.trigger_name.as_deref().unwrap_or("");
-        let oid = pg_triggers
-            .iter()
-            .find(|t| t.tgname == name)
-            .map(|t| t.tgfoid);
-        result.push((trig, oid));
-    }
-    Ok(result)
+    let rows = pg_constraint::table
+        .filter(pg_constraint::conrelid.eq(table_oid))
+        .filter(pg_constraint::contype.eq("n"))
+        .select((pg_constraint::conkey, pg_constraint::conname))
+        .load::<(Option<Vec<i16>>, String)>(conn)?;
+
+    Ok(rows
+        .into_iter()
+        .filter_map(|(key, name)| {
+            key.as_deref()?
+                .first()
+                .map(|attnum| (i32::from(*attnum), name))
+        })
+        .collect())
 }
 
 /// Returns the policies associated with the table.
@@ -344,13 +347,63 @@ pub(crate) struct AttributeFacts {
     pub(crate) number: i16,
     /// The OID of the column's type.
     pub(crate) type_oid: u32,
+    /// The type modifier the column carries, `-1` when the type stores none.
+    pub(crate) typmod: i32,
+    /// The array dimensions the column declares, `0` when it is not an array.
+    pub(crate) ndims: i32,
+    /// The foreign data wrapper options the column declares.
+    pub(crate) fdw_options: Option<Vec<String>>,
     /// Whether the column comes from a parent rather than this table.
     pub(crate) inherited: bool,
 }
 
+/// The raw row `table_facts` reads, named like its `SELECT` aliases.
+#[derive(diesel::QueryableByName, Debug)]
+struct TableFactsRow {
+    /// The OID of the table.
+    #[diesel(sql_type = diesel::sql_types::Oid)]
+    oid: u32,
+    /// Whether Row Level Security is enabled on the table.
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    row_security: bool,
+    /// Whether Row Level Security applies to the table's owner too.
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    forced_row_security: bool,
+    /// The OID of the role owning the table.
+    #[diesel(sql_type = diesel::sql_types::Oid)]
+    owner: u32,
+    /// Whether the table is a partition of another one.
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    is_partition: bool,
+    /// Whether the table is `UNLOGGED`.
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    unlogged: bool,
+    /// The storage parameters `pg_class.reloptions` records, each a
+    /// `name=value` pair.
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Array<diesel::sql_types::Text>>)]
+    reloptions: Option<Vec<String>>,
+    /// The storage parameters the table's TOAST relation records, each a
+    /// `name=value` pair.
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Array<diesel::sql_types::Text>>)]
+    toast_reloptions: Option<Vec<String>>,
+    /// The partition bound, as `pg_get_expr` writes it.
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+    partition_bound: Option<String>,
+    /// The name of the server a foreign table reads through.
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+    server_name: Option<String>,
+    /// The table-level options the foreign server records, each a
+    /// `name=value` pair.
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Array<diesel::sql_types::Text>>)]
+    server_options: Option<Vec<String>>,
+    /// Whether `pg_class.relacl` holds no ACL at all.
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    acl_is_null: bool,
+}
+
 /// What `pg_catalog.pg_class` records about a table beyond its columns.
 #[derive(Debug, Clone)]
-pub(crate) struct TableCatalogFacts {
+pub struct TableFacts {
     /// The OID `pg_class` records the table under.
     pub(crate) oid: u32,
     /// Whether Row Level Security is enabled on the table.
@@ -362,37 +415,173 @@ pub(crate) struct TableCatalogFacts {
     /// Whether the table is a partition of another one, as opposed to an
     /// `INHERITS` child.
     pub(crate) is_partition: bool,
+    /// Whether the table is `UNLOGGED`.
+    pub(crate) unlogged: bool,
+    /// The storage parameters `pg_class.reloptions` records, each as
+    /// `PostgreSQL` stores the `name=value` pair.
+    pub(crate) reloptions: Vec<String>,
+    /// The storage parameters the table's TOAST relation records.
+    pub(crate) toast_reloptions: Vec<String>,
+    /// The bound the table takes as a partition, as `pg_get_expr` writes it.
+    pub(crate) partition_bound: Option<String>,
+    /// The server the table reads through, when it is a foreign table.
+    pub(crate) server_name: Option<String>,
+    /// The table-level options the foreign server recorded.
+    pub(crate) server_options: Vec<String>,
+    /// Whether `pg_class.relacl` holds no ACL at all, so the owner's entry
+    /// stands implicit rather than recorded.
+    pub(crate) acl_is_null: bool,
 }
 
-/// Returns the identity, row security settings, owner and partition status of
-/// the table.
-pub(crate) fn catalog_facts(
+/// Returns what `pg_catalog` records about the table beyond its columns:
+/// its identity, row security settings, owner, partition status and bound,
+/// its storage parameters, the server a foreign table reads through, and
+/// whether an explicit ACL was written.
+pub(crate) fn table_facts(
     table: &Table,
     conn: &mut PgConnection,
-) -> Result<TableCatalogFacts, diesel::result::Error> {
-    use crate::schema::pg_catalog::{pg_class::pg_class, pg_namespace::pg_namespace};
+) -> Result<TableFacts, diesel::result::Error> {
+    // Raw query: `diesel` refuses to join plain tables once an `Alias` of
+    // `pg_class` is in the from clause, and the TOAST row needs exactly that
+    // self-join next to `pg_get_expr` on the node-tree bound.
+    let name = table.table_name.replace('\'', "''");
+    let schema = table.table_schema.replace('\'', "''");
+    let row = diesel::sql_query(
+        format!(
+            r"
+            SELECT
+                cls.oid AS oid,
+                cls.relrowsecurity AS row_security,
+                cls.relforcerowsecurity AS forced_row_security,
+                cls.relowner AS owner,
+                cls.relispartition AS is_partition,
+                cls.relpersistence = 'u' AS unlogged,
+                cls.reloptions AS reloptions,
+                toast.reloptions AS toast_reloptions,
+                pg_get_expr(cls.relpartbound, cls.oid) AS partition_bound,
+                srv.srvname AS server_name,
+                ft.ftoptions AS server_options,
+                cls.relacl IS NULL AS acl_is_null
+            FROM pg_catalog.pg_class AS cls
+            INNER JOIN pg_catalog.pg_namespace AS nsp
+                ON nsp.oid = cls.relnamespace
+            LEFT JOIN pg_catalog.pg_foreign_table AS ft
+                ON ft.ftrelid = cls.oid
+            LEFT JOIN pg_catalog.pg_foreign_server AS srv
+                ON srv.oid = ft.ftserver
+            LEFT JOIN pg_catalog.pg_class AS toast
+                ON toast.oid = cls.reltoastrelid
+            WHERE cls.relname = '{name}'
+              AND nsp.nspname = '{schema}'
+            "
+        )
+        .as_str(),
+    )
+    .load::<TableFactsRow>(conn)?
+    .into_iter()
+    .next()
+    .ok_or(diesel::result::Error::NotFound)?;
 
-    let (oid, row_security, forced_row_security, owner, is_partition) = pg_class::table
-        .inner_join(pg_namespace::table.on(pg_class::relnamespace.eq(pg_namespace::oid)))
-        .filter(pg_class::relname.eq(&table.table_name))
-        .filter(pg_namespace::nspname.eq(&table.table_schema))
-        .select((
-            pg_class::oid,
-            pg_class::relrowsecurity,
-            pg_class::relforcerowsecurity,
-            pg_class::relowner,
-            pg_class::relispartition,
-        ))
-        .first::<(u32, bool, bool, u32, bool)>(conn)?;
-
-    Ok(TableCatalogFacts {
+    let (
         oid,
         row_security,
         forced_row_security,
         owner,
         is_partition,
+        unlogged,
+        reloptions,
+        toast_reloptions,
+        partition_bound,
+        server_name,
+        server_options,
+        acl_is_null,
+    ) = (
+        row.oid,
+        row.row_security,
+        row.forced_row_security,
+        row.owner,
+        row.is_partition,
+        row.unlogged,
+        row.reloptions,
+        row.toast_reloptions,
+        row.partition_bound,
+        row.server_name,
+        row.server_options,
+        row.acl_is_null,
+    );
+
+    Ok(TableFacts {
+        oid,
+        row_security,
+        forced_row_security,
+        owner,
+        is_partition,
+        unlogged,
+        reloptions: reloptions.unwrap_or_default(),
+        toast_reloptions: toast_reloptions.unwrap_or_default(),
+        partition_bound,
+        server_name,
+        server_options: server_options.unwrap_or_default(),
+        acl_is_null,
     })
 }
+
+/// One entry of a table's access privileges, as `aclexplode` reads
+/// `pg_class.relacl`.
+#[derive(diesel::QueryableByName, Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TableAclEntry {
+    /// The OID of the role holding the privilege.
+    #[diesel(sql_type = diesel::sql_types::Oid)]
+    pub(crate) grantee: u32,
+    /// The privilege `PostgreSQL` names for the entry.
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub(crate) privilege_type: String,
+}
+
+/// One row per privilege `pg_class.relacl` records, read raw because
+/// `aclexplode` is a table function the typed DSL cannot put in a `FROM`
+/// clause, the way `pg_proc`'s `proacl` grants are read.
+pub(crate) fn table_acl_entries(
+    table_oid: u32,
+    conn: &mut PgConnection,
+) -> Result<Vec<TableAclEntry>, diesel::result::Error> {
+    diesel::sql_query(
+        format!(
+            r"
+            SELECT
+                acl.grantee AS grantee,
+                acl.privilege_type AS privilege_type
+            FROM pg_catalog.pg_class AS cls
+            CROSS JOIN LATERAL aclexplode(cls.relacl) AS acl (
+                grantor,
+                grantee,
+                privilege_type,
+                is_grantable
+            )
+            WHERE cls.oid = {table_oid}
+            "
+        )
+        .as_str(),
+    )
+    .load::<TableAclEntry>(conn)
+}
+
+/// The width `pg_attribute.attndims` has, `integer` before `PostgreSQL` 16
+/// and `smallint` from it on.
+#[cfg(not(any(
+    feature = "postgres-16",
+    feature = "postgres-17",
+    feature = "postgres-18"
+)))]
+type Dimensions = i32;
+/// The width `pg_attribute.attndims` has, `integer` before `PostgreSQL` 16
+/// and `smallint` from it on.
+#[cfg(any(
+    feature = "postgres-16",
+    feature = "postgres-17",
+    feature = "postgres-18"
+))]
+type Dimensions = i16;
 
 /// Returns what `pg_attribute` records for every live column of the table.
 pub(crate) fn attributes(
@@ -410,16 +599,96 @@ pub(crate) fn attributes(
             pg_attribute::attname,
             pg_attribute::attnum,
             pg_attribute::atttypid,
+            pg_attribute::atttypmod,
+            pg_attribute::attndims,
+            pg_attribute::attfdwoptions,
             pg_attribute::attislocal,
         ))
-        .load::<(String, i16, u32, bool)>(conn)?
+        .load::<(String, i16, u32, i32, Dimensions, Option<Vec<String>>, bool)>(conn)?
         .into_iter()
-        .map(|(name, number, type_oid, local)| AttributeFacts {
-            name,
-            number,
-            type_oid,
-            inherited: !local,
+        .map(
+            |(name, number, type_oid, typmod, ndims, fdw_options, local)| AttributeFacts {
+                name,
+                number,
+                type_oid,
+                typmod,
+                #[cfg(any(
+                    feature = "postgres-16",
+                    feature = "postgres-17",
+                    feature = "postgres-18"
+                ))]
+                ndims: i32::from(ndims),
+                #[cfg(not(any(
+                    feature = "postgres-16",
+                    feature = "postgres-17",
+                    feature = "postgres-18"
+                )))]
+                ndims,
+                fdw_options,
+                inherited: !local,
+            },
+        )
+        .collect())
+}
+
+/// Returns the position of every column whose default draws from a sequence
+/// the column owns, the columns declared with a serial pseudo-type.
+///
+/// `PostgreSQL` records the ownership as an automatic dependency from the
+/// sequence on the column, and the default as a normal dependency from the
+/// column's `pg_attrdef` row on the same sequence. A column is serial when
+/// both rows name one sequence.
+pub(crate) fn serial_attributes(
+    table_oid: u32,
+    conn: &mut PgConnection,
+) -> Result<Vec<i32>, diesel::result::Error> {
+    use crate::schema::pg_catalog::{
+        pg_attrdef::pg_attrdef, pg_class::pg_class, pg_depend::pg_depend,
+    };
+
+    let owned = pg_depend::table
+        .inner_join(pg_class::table.on(pg_depend::objid.eq(pg_class::oid)))
+        .filter(
+            pg_depend::classid.eq(diesel::dsl::sql::<diesel::sql_types::Oid>(
+                "'pg_class'::regclass",
+            )),
+        )
+        .filter(pg_depend::objsubid.eq(0))
+        .filter(
+            pg_depend::refclassid.eq(diesel::dsl::sql::<diesel::sql_types::Oid>(
+                "'pg_class'::regclass",
+            )),
+        )
+        .filter(pg_depend::refobjid.eq(table_oid))
+        .filter(pg_depend::deptype.eq("a"))
+        .filter(pg_class::relkind.eq("S"))
+        .select((pg_depend::objid, pg_depend::refobjsubid))
+        .load::<(u32, i32)>(conn)?;
+    let defaulted = pg_attrdef::table
+        .inner_join(pg_depend::table.on(pg_attrdef::oid.eq(pg_depend::objid)))
+        .filter(pg_attrdef::adrelid.eq(table_oid))
+        .filter(
+            pg_depend::classid.eq(diesel::dsl::sql::<diesel::sql_types::Oid>(
+                "'pg_attrdef'::regclass",
+            )),
+        )
+        .filter(pg_depend::deptype.eq("n"))
+        .filter(
+            pg_depend::refclassid.eq(diesel::dsl::sql::<diesel::sql_types::Oid>(
+                "'pg_class'::regclass",
+            )),
+        )
+        .select((pg_attrdef::adnum, pg_depend::refobjid))
+        .load::<(i16, u32)>(conn)?;
+    Ok(defaulted
+        .into_iter()
+        .map(|(adnum, sequence)| (i32::from(adnum), sequence))
+        .filter(|(attnum, sequence)| {
+            owned
+                .iter()
+                .any(|(owned_sequence, attn)| *owned_sequence == *sequence && *attn == *attnum)
         })
+        .map(|(attnum, _)| attnum)
         .collect())
 }
 

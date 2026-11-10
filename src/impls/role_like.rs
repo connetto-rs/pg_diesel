@@ -43,7 +43,8 @@ impl RoleLike for PgRole {
     }
 
     fn connection_limit(&self) -> Option<i32> {
-        self.rolconnlimit
+        // `-1` is the catalog's spelling of no limit.
+        self.rolconnlimit.filter(|limit| *limit != -1)
     }
 
     fn member_of<'db>(

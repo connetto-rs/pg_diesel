@@ -29,13 +29,29 @@ pub fn parse_schema_file(path: &Path) -> Result<SchemaParseResult, String> {
     let mut current_sql_name: Option<String> = None;
     let mut pending_cfg_for_table: Option<FeatureGate> = None;
 
+    let mut pending_attribute: Option<String> = None;
+
     for line in content.lines() {
         let trimmed = line.trim();
 
-        // Check for #[cfg(...)] attribute before diesel::table!
-        if !in_table_macro && trimmed.starts_with("#[cfg(") {
-            if let Some(gate) = parse_cfg_attribute(trimmed) {
-                pending_cfg_for_table = Some(gate);
+        // A `#[cfg(...)]` attribute, which may span several lines, gates the
+        // table macro it precedes or the column it precedes.
+        if pending_attribute.is_some() || trimmed.starts_with("#[cfg(") {
+            let attribute = pending_attribute.get_or_insert_with(String::new);
+            attribute.push_str(trimmed);
+            attribute.push(' ');
+            if !attribute_is_complete(attribute) {
+                continue;
+            }
+            let gate = pending_attribute
+                .take()
+                .and_then(|attribute| parse_cfg_attribute(&attribute));
+            if in_table_definition {
+                if let Some(gate) = gate {
+                    column_feature_gate = gate;
+                }
+            } else if !in_table_macro {
+                pending_cfg_for_table = gate;
             }
             continue;
         }
@@ -84,14 +100,6 @@ pub fn parse_schema_file(path: &Path) -> Result<SchemaParseResult, String> {
             table_feature_gate = FeatureGate::Always;
             column_feature_gate = FeatureGate::Always;
             current_sql_name = None;
-            continue;
-        }
-
-        // Check for #[cfg(...)] attribute on column
-        if trimmed.starts_with("#[cfg(") {
-            if let Some(gate) = parse_cfg_attribute(trimmed) {
-                column_feature_gate = gate;
-            }
             continue;
         }
 
@@ -150,70 +158,20 @@ fn or_feature_gates(gate1: &FeatureGate, gate2: &FeatureGate) -> FeatureGate {
     }
 }
 
+/// Returns whether `attribute`, the text of a `#[cfg(...)]` attribute read so
+/// far, is closed.
+fn attribute_is_complete(attribute: &str) -> bool {
+    attribute.trim_end().ends_with(")]")
+        && attribute.matches('(').count() == attribute.matches(')').count()
+}
+
 /// Parse a `#[cfg(...)]` attribute and return the corresponding `FeatureGate`.
-fn parse_cfg_attribute(line: &str) -> Option<FeatureGate> {
-    let trimmed = line.trim();
-
-    // Remove #[cfg( prefix and )] suffix
-    if !trimmed.starts_with("#[cfg(") {
-        return None;
-    }
-
-    let inner = trimmed.strip_prefix("#[cfg(")?.strip_suffix(")]")?.trim();
-
-    // Handle `feature = "name"`
-    if inner.starts_with("feature")
-        && let Some(start) = inner.find('"')
-        && let Some(end) = inner.rfind('"')
-        && start < end
-    {
-        let feature_name = &inner[start + 1..end];
-        return Some(FeatureGate::Feature(feature_name.to_string()));
-    }
-
-    // Handle `not(any(feature = "X", feature = "Y"))`
-    if inner.starts_with("not(any(") {
-        let features = super::extract_feature_names(inner);
-        if !features.is_empty() {
-            let gates: Vec<FeatureGate> = features.into_iter().map(FeatureGate::Feature).collect();
-            return Some(FeatureGate::NotAny(gates));
-        }
-    }
-
-    // Handle `not(feature = "name")`
-    if inner.starts_with("not(")
-        && let Some(inner_end) = inner.rfind(')')
-    {
-        let inner_content = &inner[4..inner_end];
-        if inner_content.trim().starts_with("feature")
-            && let Some(start) = inner_content.find('"')
-            && let Some(end) = inner_content.rfind('"')
-            && start < end
-        {
-            let feature_name = &inner_content[start + 1..end];
-            return Some(FeatureGate::NotFeature(feature_name.to_string()));
-        }
-    }
-
-    // Handle `any(feature = "X", feature = "Y")`
-    if inner.starts_with("any(") {
-        let features = super::extract_feature_names(inner);
-        if !features.is_empty() {
-            let gates: Vec<FeatureGate> = features.into_iter().map(FeatureGate::Feature).collect();
-            return Some(FeatureGate::Any(gates));
-        }
-    }
-
-    // Handle `all(...)`
-    if inner.starts_with("all(") {
-        let features = super::extract_feature_names(inner);
-        if !features.is_empty() {
-            let gates: Vec<FeatureGate> = features.into_iter().map(FeatureGate::Feature).collect();
-            return Some(FeatureGate::All(gates));
-        }
-    }
-
-    None
+fn parse_cfg_attribute(attribute: &str) -> Option<FeatureGate> {
+    let inner = attribute
+        .trim()
+        .strip_prefix("#[cfg(")?
+        .strip_suffix(")]")?;
+    FeatureGate::from_cfg_tokens(inner)
 }
 
 /// Parse a single column definition line.

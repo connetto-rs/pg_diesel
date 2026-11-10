@@ -1,9 +1,11 @@
 //! Implementation of [`ForeignKeyLike`] for [`PgForeignKey`].
 
+use std::borrow::Cow;
+
 use sql_traits::{
     errors::{LookupError, ObjectKind},
-    structs::TargetName,
-    traits::{DatabaseLike, ForeignKeyLike, Metadata},
+    structs::{IdentifierCase, TargetName},
+    traits::{DatabaseLike, ForeignKeyLike, Metadata, TableLike},
 };
 
 use crate::{PgDieselDatabase, database::KeyColumnUsageMetadata, model_metadata::PgForeignKey};
@@ -30,6 +32,14 @@ impl ForeignKeyLike for PgForeignKey {
 
     fn foreign_key_name(&self) -> Option<&str> {
         Some(&self.model().constraint_name)
+    }
+
+    fn constraint_name<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<Option<Cow<'db, str>>, LookupError> {
+        metadata(self, database)?;
+        Ok(Some(Cow::Borrowed(self.model().constraint_name.as_str())))
     }
 
     fn referenced_table_name(&self) -> TargetName<'_> {
@@ -60,11 +70,18 @@ impl ForeignKeyLike for PgForeignKey {
             .host_table()
     }
 
-    fn on_delete_cascade(&self, database: &Self::DB) -> bool {
+    fn on_delete(&self, database: &Self::DB) -> sqlparser::ast::ReferentialAction {
         database
             .foreign_key_metadata(self)
             .expect("Foreign key must exist in database")
-            .on_delete_cascade()
+            .on_delete()
+    }
+
+    fn on_update(&self, database: &Self::DB) -> sqlparser::ast::ReferentialAction {
+        database
+            .foreign_key_metadata(self)
+            .expect("Foreign key must exist in database")
+            .on_update()
     }
 
     fn match_kind(&self, database: &Self::DB) -> sqlparser::ast::ConstraintReferenceMatchKind {
@@ -81,7 +98,14 @@ impl ForeignKeyLike for PgForeignKey {
     where
         Self: 'db,
     {
-        Ok(metadata(self, database)?.host_columns().iter())
+        let names = metadata(self, database)?.host_columns();
+        let table = self.host_table(database);
+        Ok(names.iter().filter_map(|name| {
+            table
+                .column(name, database, IdentifierCase::Exact)
+                .ok()
+                .flatten()
+        }))
     }
 
     fn referenced_columns<'db>(
@@ -91,6 +115,13 @@ impl ForeignKeyLike for PgForeignKey {
     where
         Self: 'db,
     {
-        Ok(metadata(self, database)?.referenced_columns().iter())
+        let names = metadata(self, database)?.referenced_columns();
+        let table = self.referenced_table(database)?;
+        Ok(names.iter().filter_map(|name| {
+            table
+                .column(name, database, IdentifierCase::Exact)
+                .ok()
+                .flatten()
+        }))
     }
 }

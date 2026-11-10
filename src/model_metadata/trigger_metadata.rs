@@ -1,16 +1,31 @@
-//! Submodule providing the `TriggerMetadata` struct for a [`Triggers`] model.
+//! Submodule providing the `TriggerMetadata` struct for a [`PgTrigger`] model.
 
 use std::sync::Arc;
 
-use sqlparser::ast::{TriggerEvent, TriggerObject, TriggerObjectKind, TriggerPeriod};
+use sqlparser::ast::{Ident, TriggerEvent, TriggerObject, TriggerObjectKind, TriggerPeriod};
 
-use crate::{model_metadata::PgTable, models::Triggers};
+use crate::{model_metadata::PgTable, models::PgTrigger};
+
+/// One bit of the `pg_trigger.tgtype` mask, which a trigger decodes against.
+const TYPE_ROW: i16 = 1;
+/// The trigger runs before the statement or rows that fire it run.
+const TYPE_BEFORE: i16 = 2;
+/// The trigger fires on an `INSERT`.
+const TYPE_INSERT: i16 = 4;
+/// The trigger fires on a `DELETE`.
+const TYPE_DELETE: i16 = 8;
+/// The trigger fires on an `UPDATE`.
+const TYPE_UPDATE: i16 = 16;
+/// The trigger fires on a `TRUNCATE`.
+const TYPE_TRUNCATE: i16 = 32;
+/// The trigger runs instead of the statement that fires it.
+const TYPE_INSTEAD: i16 = 64;
 
 #[derive(Clone, Debug)]
-/// Wrapper around [`Triggers`] model that holds parsed metadata.
+/// A `pg_trigger` row with the facts its `tgtype` mask and `tgattr` record.
 pub struct TriggerMetadata {
     /// The underlying trigger model.
-    pub model: Triggers,
+    pub model: PgTrigger,
     /// The table that the trigger is defined on.
     pub table: Arc<PgTable>,
     /// The events that fire the trigger.
@@ -20,24 +35,30 @@ pub struct TriggerMetadata {
     /// The orientation of the trigger.
     pub orientation: Option<TriggerObjectKind>,
     /// The OID of the function called by the trigger.
-    pub function_oid: Option<u32>,
+    pub function_oid: u32,
+    /// The name the engine records the function the trigger executes under.
+    pub function_name: String,
 }
 
 impl TriggerMetadata {
-    /// Creates a new `TriggerMetadata` instance.
+    /// Creates a `TriggerMetadata` over a `pg_trigger` row, decoding the
+    /// events, timing and orientation the row's `tgtype` mask holds and the
+    /// columns an `UPDATE` event fires on.
     #[must_use]
-    pub fn new(model: Triggers, table: Arc<PgTable>, function_oid: Option<u32>) -> Self {
-        let events = parse_events(&model);
-        let timing = parse_timing(&model);
-        let orientation = parse_orientation(&model);
-
+    pub fn new(
+        model: PgTrigger,
+        table: Arc<PgTable>,
+        function_name: String,
+        update_columns: Vec<String>,
+    ) -> Self {
         Self {
+            events: decode_events(model.tgtype, update_columns),
+            timing: Some(decode_timing(model.tgtype)),
+            orientation: Some(decode_orientation(model.tgtype)),
+            function_oid: model.tgfoid,
+            function_name,
             model,
             table,
-            events,
-            timing,
-            orientation,
-            function_oid,
         }
     }
 
@@ -48,36 +69,48 @@ impl TriggerMetadata {
     }
 }
 
-/// Parses the trigger events from the model.
-fn parse_events(model: &Triggers) -> Vec<TriggerEvent> {
+/// Decodes the events a `tgtype` mask fires the trigger on, an `UPDATE`
+/// naming the columns the mask fired it for.
+fn decode_events(tgtype: i16, update_columns: Vec<String>) -> Vec<TriggerEvent> {
     let mut events = Vec::new();
-    if let Some(event) = &model.event_manipulation {
-        match event.as_str() {
-            "INSERT" => events.push(TriggerEvent::Insert),
-            "UPDATE" => events.push(TriggerEvent::Update(vec![])),
-            "DELETE" => events.push(TriggerEvent::Delete),
-            "TRUNCATE" => events.push(TriggerEvent::Truncate),
-            _ => {} // Unknown or unsupported event
-        }
+    if tgtype & TYPE_INSERT != 0 {
+        events.push(TriggerEvent::Insert);
+    }
+    if tgtype & TYPE_DELETE != 0 {
+        events.push(TriggerEvent::Delete);
+    }
+    if tgtype & TYPE_UPDATE != 0 {
+        let columns = update_columns
+            .into_iter()
+            .map(|column| Ident::new(column.as_str()))
+            .collect();
+        events.push(TriggerEvent::Update(columns));
+    }
+    if tgtype & TYPE_TRUNCATE != 0 {
+        events.push(TriggerEvent::Truncate);
     }
     events
 }
 
-/// Parses the trigger timing from the model.
-fn parse_timing(model: &Triggers) -> Option<TriggerPeriod> {
-    model.action_timing.as_deref().and_then(|t| match t {
-        "BEFORE" => Some(TriggerPeriod::Before),
-        "AFTER" => Some(TriggerPeriod::After),
-        "INSTEAD OF" => Some(TriggerPeriod::InsteadOf),
-        _ => None,
-    })
+/// Decodes the timing a `tgtype` mask gives the trigger, which the mask
+/// records as a `BEFORE` or an `INSTEAD OF`, the trigger running after
+/// where it names neither.
+fn decode_timing(tgtype: i16) -> TriggerPeriod {
+    if tgtype & TYPE_BEFORE != 0 {
+        TriggerPeriod::Before
+    } else if tgtype & TYPE_INSTEAD != 0 {
+        TriggerPeriod::InsteadOf
+    } else {
+        TriggerPeriod::After
+    }
 }
 
-/// Parses the trigger orientation from the model.
-fn parse_orientation(model: &Triggers) -> Option<TriggerObjectKind> {
-    model.action_orientation.as_deref().and_then(|o| match o {
-        "ROW" => Some(TriggerObjectKind::ForEach(TriggerObject::Row)),
-        "STATEMENT" => Some(TriggerObjectKind::ForEach(TriggerObject::Statement)),
-        _ => None,
-    })
+/// Decodes the orientation a `tgtype` mask gives the trigger, statement level
+/// where the mask names no rows.
+fn decode_orientation(tgtype: i16) -> TriggerObjectKind {
+    if tgtype & TYPE_ROW != 0 {
+        TriggerObjectKind::ForEach(TriggerObject::Row)
+    } else {
+        TriggerObjectKind::ForEach(TriggerObject::Statement)
+    }
 }

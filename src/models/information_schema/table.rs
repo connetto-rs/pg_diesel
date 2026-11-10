@@ -3,17 +3,80 @@
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
 use diesel::{PgConnection, Queryable, QueryableByName, Selectable};
+use sql_traits::structs::ForeignTableSource;
+use sqlparser::ast::Action;
 
 use crate::{
     database::CatalogCache,
+    impls::string_to_action,
     model_metadata::{
-        ColumnMetadata, PgForeignKey, PgIndexEntry, PgPolicy, PgTable, TableMetadata,
+        ColumnMetadata, PgCheckConstraint, PgColumn, PgDataType, PgForeignKey, PgIndexEntry,
+        PgPolicy, PgTable, TableMetadata, TableMetadataDetails, storage_option_entries,
     },
-    models::{CheckConstraint, Column, Triggers},
+    models::{Column, PgTrigger},
 };
 
 mod cached_queries;
+pub use cached_queries::TableFacts;
 pub(crate) use cached_queries::*;
+
+/// The table privileges `PostgreSQL` hands the owner of a table, in the
+/// order the server lists them, which a `REVOKE` naming the owner takes from.
+#[cfg(not(any(feature = "postgres-17", feature = "postgres-18")))]
+const OWNER_PRIVILEGES: [&str; 7] = [
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "TRUNCATE",
+    "REFERENCES",
+    "TRIGGER",
+];
+
+/// The table privileges `PostgreSQL` hands the owner of a table, in the
+/// order the server lists them, which a `REVOKE` naming the owner takes from.
+#[cfg(any(feature = "postgres-17", feature = "postgres-18"))]
+const OWNER_PRIVILEGES: [&str; 8] = [
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "TRUNCATE",
+    "REFERENCES",
+    "TRIGGER",
+    "MAINTAIN",
+];
+
+/// The table-level privileges the owner's own `pg_class.relacl` entry holds,
+/// every one of them while `PostgreSQL` left the ACL itself implicit.
+fn owner_privileges(acl_is_null: bool, owner: u32, entries: &[TableAclEntry]) -> Vec<Action> {
+    OWNER_PRIVILEGES
+        .iter()
+        .filter(|privilege| {
+            acl_is_null
+                || entries.iter().any(|entry| {
+                    entry.grantee == owner && entry.privilege_type.eq_ignore_ascii_case(privilege)
+                })
+        })
+        .filter_map(|privilege| string_to_action(privilege))
+        .collect()
+}
+
+/// The foreign data wrapper options `PostgreSQL` stores for a column, each
+/// key and value as stored, key first.
+///
+/// The catalogs store one entry per option as `key=value`, and a key never
+/// holds an `=`, so the first one separates the two halves.
+fn foreign_options_of(options: Option<&[String]>) -> Vec<(String, String)> {
+    let Some(options) = options else {
+        return Vec::new();
+    };
+    options
+        .iter()
+        .filter_map(|option| option.split_once('='))
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
 
 #[derive(
     Queryable, QueryableByName, PartialEq, Eq, PartialOrd, Ord, Selectable, Debug, Clone, Hash,
@@ -69,9 +132,14 @@ impl Table {
         denylist_types: &[String],
         cache: &CatalogCache,
     ) -> Result<TableMetadata, diesel::result::Error> {
-        let facts = cached_queries::catalog_facts(self, conn)?;
+        let facts = cached_queries::table_facts(self, conn)?;
         let attributes = cached_queries::attributes(facts.oid, conn)?;
         let descriptions = cached_queries::descriptions(facts.oid, conn)?;
+        let serial_numbers = cached_queries::serial_attributes(facts.oid, conn)?;
+        #[cfg(feature = "postgres-18")]
+        let not_null_names = cached_queries::not_null_constraint_names(facts.oid, conn)?;
+        #[cfg(not(feature = "postgres-18"))]
+        let not_null_names: Vec<(i32, String)> = Vec::new();
 
         let mut sql_metadata = sql_traits::structs::TableMetadata::default();
         let mut column_metadata = HashMap::new();
@@ -97,31 +165,55 @@ impl Table {
                 .as_deref()
                 .zip(column.collation_name.as_deref())
                 .and_then(|(schema, name)| cache.collation_is_deterministic(schema, name));
+            let serial = serial_numbers.contains(&i32::from(attribute.number))
+                && PgDataType::is_serial_integer(&pg_type.typname);
+            let data_type =
+                PgDataType::from_type(pg_type, attribute.typmod, cache, attribute.ndims).expect(
+                    "the column's type row is held by the cache, and so are its array \
+                     element and domain bases",
+                );
+            let foreign_options = foreign_options_of(attribute.fdw_options.as_deref());
+            let not_null = not_null_names
+                .iter()
+                .find(|(number, _)| *number == i32::from(attribute.number))
+                .map(|(_, name)| name.clone());
             column_metadata.insert(
                 column.column_name.clone(),
-                ColumnMetadata::new(Arc::clone(table), description, pg_type.clone(), collation),
+                ColumnMetadata::new(Arc::clone(table), description, collation),
             );
-            sql_metadata.add_column(Arc::new(column));
+            sql_metadata.add_column(Arc::new(PgColumn::new(
+                column,
+                data_type,
+                foreign_options,
+                not_null,
+                serial,
+            )));
         }
-        for check_constraint in cached_queries::check_constraints(self, conn)? {
+        for check_constraint in PgCheckConstraint::load(table, facts.oid, conn)? {
             sql_metadata.add_check_constraint(Arc::new(check_constraint));
         }
         for foreign_key in cached_queries::foreign_keys(self, conn)? {
             let (schema, name) = foreign_key.referenced_relation(conn)?;
             sql_metadata.add_foreign_key(Arc::new(PgForeignKey::new(foreign_key, schema, name)));
         }
+        let mut constraint_names = index_constraint_names(facts.oid, conn)?
+            .into_iter()
+            .collect::<HashMap<_, _>>();
         for (index, index_name) in cached_queries::unique_indices(self, conn)? {
+            let constraint_name = constraint_names.remove(&index.indexrelid);
             sql_metadata.add_unique_index(Arc::new(PgIndexEntry::new(
                 index,
                 self.table_schema.clone(),
                 index_name,
+                constraint_name,
             )));
         }
-        for (index, index_name) in cached_queries::non_unique_indices(self, conn)? {
+        for (index, index_name) in cached_queries::standalone_indices(self, conn)? {
             sql_metadata.add_index(Arc::new(PgIndexEntry::new(
                 index,
                 self.table_schema.clone(),
                 index_name,
+                None,
             )));
         }
         let mut primary_key_columns = Vec::new();
@@ -129,15 +221,30 @@ impl Table {
             primary_key_columns.extend(
                 sql_metadata
                     .column_arcs()
-                    .filter(|col: &&Arc<Column>| col.as_ref() == &pk_column)
+                    .filter(|col: &&Arc<PgColumn>| {
+                        col.as_ref().column_name() == pk_column.column_name
+                    })
                     .cloned(),
             );
         }
         sql_metadata.set_primary_key(primary_key_columns);
 
-        let triggers = cached_queries::triggers(self, conn)?
+        let triggers = cached_queries::triggers(facts.oid, conn)?
             .into_iter()
-            .map(|(trigger, oid)| (Arc::new(trigger), oid))
+            .map(|(trigger, function_name)| {
+                let update_columns = trigger
+                    .tgattr
+                    .iter()
+                    .filter(|number| **number != 0)
+                    .filter_map(|number| {
+                        attributes
+                            .iter()
+                            .find(|attribute| attribute.number == *number)
+                            .map(|attribute| attribute.name.clone())
+                    })
+                    .collect();
+                (Arc::new(trigger), function_name, update_columns)
+            })
             .collect();
 
         let policies = cached_queries::policies(facts.oid, conn)?
@@ -148,6 +255,17 @@ impl Table {
         sql_metadata.set_rls_enabled(facts.row_security);
         sql_metadata.set_rls_forced(facts.forced_row_security);
         sql_metadata.set_owner(cache.role(facts.owner).map(ToOwned::to_owned));
+        if let Some(server_name) = &facts.server_name {
+            // Catalog option names are stored unquoted and folded.
+            let server_options = storage_option_entries(&facts.server_options);
+            sql_metadata.set_foreign_source(Some(ForeignTableSource::new(
+                server_name.as_str(),
+                false,
+                server_options
+                    .iter()
+                    .map(|(key, value)| (key.as_str(), false, value.as_str())),
+            )));
+        }
         sql_metadata.set_inherited_column_names(
             attributes
                 .iter()
@@ -163,16 +281,27 @@ impl Table {
             (ancestors, None)
         };
 
+        // An implicit ACL holds no entry to read, so the rows are fetched
+        // only when the server wrote one.
+        let acl_entries = if facts.acl_is_null {
+            Vec::new()
+        } else {
+            cached_queries::table_acl_entries(facts.oid, conn)?
+        };
+
         Ok(TableMetadata::new(
             sql_metadata,
-            descriptions
-                .into_iter()
-                .find(|description| description.objsubid == 0),
-            triggers,
-            policies,
-            parents,
-            partition_root,
-            column_metadata,
+            TableMetadataDetails {
+                description: descriptions
+                    .into_iter()
+                    .find(|description| description.objsubid == 0),
+                triggers,
+                policies,
+                parents,
+                partition_root,
+                column_metadata,
+                owner_privileges: owner_privileges(facts.acl_is_null, facts.owner, &acl_entries),
+            },
         ))
     }
 
@@ -186,7 +315,19 @@ impl Table {
         &self,
         conn: &mut PgConnection,
     ) -> Result<Option<String>, diesel::result::Error> {
-        cached_queries::partition_strategy(cached_queries::catalog_facts(self, conn)?.oid, conn)
+        cached_queries::partition_strategy(cached_queries::table_facts(self, conn)?.oid, conn)
+    }
+
+    /// Returns what `pg_catalog` records about the table beyond its columns.
+    ///
+    /// # Errors
+    ///
+    /// * If the facts cannot be loaded from the database.
+    pub fn table_facts(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<TableFacts, diesel::result::Error> {
+        cached_queries::table_facts(self, conn)
     }
 
     #[must_use]
@@ -195,7 +336,8 @@ impl Table {
         self.table_type == "LOCAL TEMPORARY" || self.table_type == "GLOBAL TEMPORARY"
     }
 
-    /// Returns the indices for the table.
+    /// Returns the indices for the table, each with the name the constraint
+    /// it enforces holds, when one does.
     ///
     /// # Errors
     ///
@@ -204,9 +346,15 @@ impl Table {
         &self,
         conn: &mut PgConnection,
     ) -> Result<Vec<PgIndexEntry>, diesel::result::Error> {
+        let mut constraint_names = index_constraint_names(table_facts(self, conn)?.oid, conn)?
+            .into_iter()
+            .collect::<HashMap<_, _>>();
         Ok(indices(self, conn)?
             .into_iter()
-            .map(|(index, name)| PgIndexEntry::new(index, self.table_schema.clone(), name))
+            .map(|(index, name)| {
+                let constraint_name = constraint_names.remove(&index.indexrelid);
+                PgIndexEntry::new(index, self.table_schema.clone(), name, constraint_name)
+            })
             .collect())
     }
 
@@ -222,7 +370,8 @@ impl Table {
         primary_key_columns(self, conn)
     }
 
-    /// Returns the UNIQUE constraint indices for the table.
+    /// Returns the UNIQUE constraint indices for the table, each with the
+    /// name its constraint holds.
     ///
     /// # Errors
     ///
@@ -231,9 +380,15 @@ impl Table {
         &self,
         conn: &mut PgConnection,
     ) -> Result<Vec<PgIndexEntry>, diesel::result::Error> {
+        let mut constraint_names = index_constraint_names(table_facts(self, conn)?.oid, conn)?
+            .into_iter()
+            .collect::<HashMap<_, _>>();
         Ok(unique_indices(self, conn)?
             .into_iter()
-            .map(|(index, name)| PgIndexEntry::new(index, self.table_schema.clone(), name))
+            .map(|(index, name)| {
+                let constraint_name = constraint_names.remove(&index.indexrelid);
+                PgIndexEntry::new(index, self.table_schema.clone(), name, constraint_name)
+            })
             .collect())
     }
 
@@ -277,19 +432,9 @@ impl Table {
         column_by_name(self, column_name, conn)
     }
 
-    /// Returns the check constraints for the table.
-    ///
-    /// # Errors
-    ///
-    /// * If the check constraints cannot be loaded from the database.
-    pub fn check_constraints(
-        &self,
-        conn: &mut PgConnection,
-    ) -> Result<Vec<CheckConstraint>, diesel::result::Error> {
-        check_constraints(self, conn)
-    }
-
-    /// Returns the list of Triggers associates to the current table.
+    /// Returns the triggers `pg_trigger` records for the table, one per
+    /// trigger, with the name the engine records the function each executes
+    /// under.
     ///
     /// # Errors
     ///
@@ -297,8 +442,8 @@ impl Table {
     pub fn triggers(
         &self,
         conn: &mut PgConnection,
-    ) -> Result<Vec<(Triggers, Option<u32>)>, diesel::result::Error> {
-        triggers(self, conn)
+    ) -> Result<Vec<(PgTrigger, String)>, diesel::result::Error> {
+        triggers(table_facts(self, conn)?.oid, conn)
     }
 }
 

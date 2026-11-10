@@ -117,3 +117,9 @@ diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_proc);
 
 use super::pg_policy::pg_policy;
 diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_policy);
+
+use super::pg_foreign_table::pg_foreign_table;
+diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_foreign_table);
+
+use super::pg_foreign_server::pg_foreign_server;
+diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_foreign_server);

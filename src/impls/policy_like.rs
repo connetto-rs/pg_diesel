@@ -2,10 +2,10 @@
 
 use sql_traits::{
     errors::{LookupError, ObjectKind},
-    structs::TargetName,
+    structs::{PolicyExpression, TargetName},
     traits::{DatabaseLike, Metadata, PolicyLike},
 };
-use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Expr, Owner};
+use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Expr, Function, Owner};
 
 use crate::{
     database::PgDieselDatabase,
@@ -84,35 +84,84 @@ impl PolicyLike for PgPolicy {
             .flat_map(PolicyMetadata::roles)
     }
 
-    fn using_expression<'db>(&'db self, database: &'db Self::DB) -> Option<&'db Expr>
+    fn using_clause<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<Option<PolicyExpression<'db>>, LookupError>
     where
         Self: 'db,
     {
-        metadata(self, database).ok()?.using_expression()
+        // The catalog holds the clause with every literal already stored.
+        Ok(metadata(self, database)?
+            .using_expression()
+            .map(PolicyExpression::Stored))
     }
 
-    fn check_expression<'db>(&'db self, database: &'db Self::DB) -> Option<&'db Expr>
+    fn written_using<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<Option<&'db Expr>, LookupError>
     where
         Self: 'db,
     {
-        metadata(self, database).ok()?.check_expression()
+        // The catalog keeps only the typed constants, never the spelling.
+        metadata(self, database)?;
+        Ok(None)
+    }
+
+    fn check_clause<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<Option<PolicyExpression<'db>>, LookupError>
+    where
+        Self: 'db,
+    {
+        Ok(metadata(self, database)?
+            .check_expression()
+            .map(PolicyExpression::Stored))
+    }
+
+    fn written_check<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<Option<&'db Expr>, LookupError>
+    where
+        Self: 'db,
+    {
+        metadata(self, database)?;
+        Ok(None)
     }
 
     fn using_functions<'db>(
         &'db self,
         database: &'db Self::DB,
     ) -> Result<impl Iterator<Item = &'db <Self::DB as DatabaseLike>::Function>, LookupError> {
-        Ok(metadata(self, database)?
-            .using_functions()
-            .map(AsRef::as_ref))
+        Ok(metadata(self, database)?.using_functions())
     }
 
     fn check_functions<'db>(
         &'db self,
         database: &'db Self::DB,
     ) -> Result<impl Iterator<Item = &'db <Self::DB as DatabaseLike>::Function>, LookupError> {
-        Ok(metadata(self, database)?
-            .check_functions()
-            .map(AsRef::as_ref))
+        Ok(metadata(self, database)?.check_functions())
+    }
+
+    fn functions_reached_by<'db>(
+        &'db self,
+        call: &Function,
+        database: &'db Self::DB,
+    ) -> Result<impl Iterator<Item = &'db <Self::DB as DatabaseLike>::Function>, LookupError> {
+        let metadata = metadata(self, database)?;
+        metadata
+            .using_expression()
+            .and_then(|using| metadata.using_calls().reached_by(using, call))
+            .or_else(|| {
+                metadata
+                    .check_expression()
+                    .and_then(|check| metadata.check_calls().reached_by(check, call))
+            })
+            .ok_or_else(|| LookupError::CallNotInExpression {
+                call: call.to_string(),
+            })
     }
 }

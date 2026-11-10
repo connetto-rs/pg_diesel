@@ -13,16 +13,25 @@ pub struct PgIndexEntry {
     schema: String,
     /// The name of the index.
     name: String,
+    /// The name the primary key, unique or exclusion constraint the index
+    /// enforces holds, when one does.
+    constraint_name: Option<String>,
 }
 
 impl PgIndexEntry {
     /// Pairs a `pg_index` row with the relation name its `indexrelid` names.
     #[must_use]
-    pub fn new(model: PgIndex, schema: String, name: String) -> Self {
+    pub fn new(
+        model: PgIndex,
+        schema: String,
+        name: String,
+        constraint_name: Option<String>,
+    ) -> Self {
         Self {
             model,
             schema,
             name,
+            constraint_name,
         }
     }
 
@@ -42,6 +51,13 @@ impl PgIndexEntry {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Returns the name the constraint the index enforces holds, when one
+    /// does.
+    #[must_use = "the index may enforce no constraint, so the caller decides"]
+    pub fn constraint_name(&self) -> Option<&str> {
+        self.constraint_name.as_deref()
     }
 
     /// Returns the metadata for the index.

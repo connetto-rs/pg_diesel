@@ -196,7 +196,7 @@ pub use pg_policy::PgPolicy;
 pub use pg_policy_table::PgPolicyTable;
 pub use pg_prepared_statement::PgPreparedStatement;
 pub use pg_prepared_xact::PgPreparedXact;
-pub use pg_proc::PgProc;
+pub use pg_proc::{PgProc, ProcAclEntry};
 pub use pg_publication::PgPublication;
 pub use pg_publication_namespace::PgPublicationNamespace;
 pub use pg_publication_rel::PgPublicationRel;

@@ -86,19 +86,14 @@ fn or_feature_gates(gate1: &FeatureGate, gate2: &FeatureGate) -> FeatureGate {
 fn has_diesel_derive(item: &ItemStruct) -> bool {
     for attr in &item.attrs {
         if attr.path().is_ident("derive") {
-            let tokens = attr
-                .meta
-                .require_list()
-                .ok()
-                .map(|list| {
-                    list.tokens
-                        .clone()
-                        .into_iter()
-                        .map(|t| t.to_string())
-                        .collect::<String>()
-                        .replace(' ', "")
-                })
-                .unwrap_or_default();
+            let tokens = attr.meta.require_list().ok().map_or_default(|list| {
+                list.tokens
+                    .clone()
+                    .into_iter()
+                    .map(|t| t.to_string())
+                    .collect::<String>()
+                    .replace(' ', "")
+            });
 
             if tokens.contains("Queryable") || tokens.contains("Selectable") {
                 return true;

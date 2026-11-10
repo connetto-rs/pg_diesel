@@ -18,6 +18,11 @@ pub struct PgViewDefinition {
     owner: Option<String>,
     /// Whether the view holds a stored snapshot of its definition's output.
     materialized: bool,
+    /// Whether the view is a security barrier, from its `pg_class.reloptions`.
+    security_barrier: bool,
+    /// Whether the view runs with the rights of its reader, from its
+    /// `pg_class.reloptions`.
+    security_invoker: bool,
     /// The parsed defining query, boxed to keep the struct small.
     definition: Box<Query>,
 }
@@ -71,8 +76,21 @@ fn required(
     value.ok_or(ViewDefinitionError::MissingColumn { catalog, column })
 }
 
+/// Returns whether `options` sets the relation option `name`, a bare name or
+/// a `true` or `on` value counting as set.
+fn relation_option_is_set(options: &[String], name: &str) -> bool {
+    options.iter().any(|entry| match entry.split_once('=') {
+        Some((option, value)) => {
+            option == name
+                && (value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("on"))
+        }
+        None => entry == name,
+    })
+}
+
 impl PgViewDefinition {
-    /// Reads a plain view from a `pg_catalog.pg_views` row.
+    /// Reads a plain view from a `pg_catalog.pg_views` row, whose
+    /// `pg_class.reloptions` are `options`.
     ///
     /// # Errors
     ///
@@ -80,7 +98,7 @@ impl PgViewDefinition {
     ///   schema, name or definition.
     /// * [`ViewDefinitionError::Unparsable`] when `sqlparser` refuses the
     ///   definition the catalog reconstructed.
-    pub fn plain(view: PgView) -> Result<Self, ViewDefinitionError> {
+    pub fn plain(view: PgView, options: &[String]) -> Result<Self, ViewDefinitionError> {
         let schema = required(view.schemaname, "pg_views", "schemaname")?;
         let name = required(view.viewname, "pg_views", "viewname")?;
         let definition = required(view.definition, "pg_views", "definition")?;
@@ -90,11 +108,14 @@ impl PgViewDefinition {
             name,
             owner: view.viewowner,
             materialized: false,
+            security_barrier: relation_option_is_set(options, "security_barrier"),
+            security_invoker: relation_option_is_set(options, "security_invoker"),
             definition,
         })
     }
 
-    /// Reads a materialized view from a `pg_catalog.pg_matviews` row.
+    /// Reads a materialized view from a `pg_catalog.pg_matviews` row, whose
+    /// `pg_class.reloptions` are `options`.
     ///
     /// # Errors
     ///
@@ -102,7 +123,7 @@ impl PgViewDefinition {
     ///   schema, name or definition.
     /// * [`ViewDefinitionError::Unparsable`] when `sqlparser` refuses the
     ///   definition the catalog reconstructed.
-    pub fn materialized(view: PgMatview) -> Result<Self, ViewDefinitionError> {
+    pub fn materialized(view: PgMatview, options: &[String]) -> Result<Self, ViewDefinitionError> {
         let schema = required(view.schemaname, "pg_matviews", "schemaname")?;
         let name = required(view.matviewname, "pg_matviews", "matviewname")?;
         let definition = required(view.definition, "pg_matviews", "definition")?;
@@ -112,6 +133,8 @@ impl PgViewDefinition {
             name,
             owner: view.matviewowner,
             materialized: true,
+            security_barrier: relation_option_is_set(options, "security_barrier"),
+            security_invoker: relation_option_is_set(options, "security_invoker"),
             definition,
         })
     }
@@ -138,6 +161,18 @@ impl PgViewDefinition {
     #[must_use]
     pub fn is_materialized(&self) -> bool {
         self.materialized
+    }
+
+    /// Returns whether the view is a security barrier.
+    #[must_use]
+    pub fn is_security_barrier(&self) -> bool {
+        self.security_barrier
+    }
+
+    /// Returns whether the view runs with the rights of its reader.
+    #[must_use]
+    pub fn is_security_invoker(&self) -> bool {
+        self.security_invoker
     }
 
     /// Returns the query defining the view.

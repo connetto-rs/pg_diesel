@@ -1,6 +1,9 @@
 //! Implementation of [`ViewLike`] for [`PgViewDefinition`].
 
-use sql_traits::traits::{Metadata, ViewLike};
+use sql_traits::{
+    errors::{LookupError, ObjectKind},
+    traits::{DatabaseLike, Metadata, ViewLike},
+};
 use sqlparser::ast::Query;
 
 use crate::{PgDieselDatabase, model_metadata::PgViewDefinition};
@@ -31,6 +34,29 @@ impl ViewLike for PgViewDefinition {
 
     fn is_materialized(&self) -> bool {
         PgViewDefinition::is_materialized(self)
+    }
+
+    fn is_security_invoker(&self) -> bool {
+        PgViewDefinition::is_security_invoker(self)
+    }
+
+    fn is_security_barrier(&self) -> bool {
+        PgViewDefinition::is_security_barrier(self)
+    }
+
+    fn owner<'db>(&self, database: &'db Self::DB) -> Result<Option<&'db str>, LookupError> {
+        let held = if self.is_materialized() {
+            database.materialized_views().find(|view| *view == self)
+        } else {
+            database.views().find(|view| *view == self)
+        };
+        match held {
+            Some(view) => Ok(view.owner()),
+            None => Err(LookupError::ObjectNotInDatabase {
+                object_kind: ObjectKind::View,
+                object: format!("{}.{}", self.schema(), self.name()),
+            }),
+        }
     }
 
     fn definition(&self) -> &Query {

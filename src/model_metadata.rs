@@ -1,9 +1,15 @@
 //! Metadata wrappers providing enriched information about database objects.
 
 mod table_metadata;
-pub use table_metadata::TableMetadata;
+pub use table_metadata::{TableMetadata, TableMetadataDetails};
 mod column_metadata;
 pub use column_metadata::ColumnMetadata;
+mod pg_check_constraint;
+pub use pg_check_constraint::PgCheckConstraint;
+mod pg_column;
+pub use pg_column::PgColumn;
+mod pg_data_type;
+pub use pg_data_type::PgDataType;
 mod trigger_metadata;
 pub use trigger_metadata::TriggerMetadata;
 mod policy_metadata;
@@ -19,6 +25,20 @@ pub use pg_policy::PgPolicy;
 mod pg_index_entry;
 pub use pg_index_entry::PgIndexEntry;
 mod pg_table;
-pub use pg_table::{PgTable, UnknownPartitionStrategy};
+pub use pg_table::{PgTable, PgTableError, storage_option_entries};
+mod pg_schema;
+pub use pg_schema::PgSchema;
 mod view_definition;
 pub use view_definition::{PgViewDefinition, ViewDefinitionError};
+mod pg_sequence_entry;
+pub use pg_sequence_entry::PgSequenceEntry;
+mod pg_rule_entry;
+pub use pg_rule_entry::{PgRuleEntry, RuleDefinitionError, RuleRelationKind};
+mod pg_extension_entry;
+pub use pg_extension_entry::PgExtensionEntry;
+mod pg_domain_entry;
+pub use pg_domain_entry::{DomainDefinitionError, PgDomainEntry};
+mod pg_role_membership;
+pub use pg_role_membership::PgRoleMembership;
+mod pg_user_defined_type;
+pub use pg_user_defined_type::PgUserDefinedType;

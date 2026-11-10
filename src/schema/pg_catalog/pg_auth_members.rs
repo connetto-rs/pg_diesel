@@ -40,3 +40,6 @@ diesel::table! {
 
 use super::pg_roles::pg_roles;
 diesel::allow_tables_to_appear_in_same_query!(pg_auth_members, pg_roles);
+
+use super::pg_authid::pg_authid;
+diesel::allow_tables_to_appear_in_same_query!(pg_auth_members, pg_authid);

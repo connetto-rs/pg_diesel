@@ -36,3 +36,6 @@ diesel::allow_tables_to_appear_in_same_query!(pg_depend, pg_namespace);
 
 use super::pg_attribute::pg_attribute;
 diesel::allow_tables_to_appear_in_same_query!(pg_depend, pg_attribute);
+
+use super::pg_attrdef::pg_attrdef;
+diesel::allow_tables_to_appear_in_same_query!(pg_depend, pg_attrdef);

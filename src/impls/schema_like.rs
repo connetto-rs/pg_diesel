@@ -1,21 +1,29 @@
-//! Implementation of [`SchemaLike`] for [`Schemata`].
+//! Implementation of [`SchemaLike`] for [`PgSchema`].
 
 use crate::PgDieselDatabase;
-use crate::models::Schemata;
+use crate::model_metadata::PgSchema;
 use sql_traits::traits::{Metadata, SchemaLike};
 
-impl Metadata for Schemata {
+impl Metadata for PgSchema {
     type Meta = ();
 }
 
-impl SchemaLike for Schemata {
+impl SchemaLike for PgSchema {
     type DB = PgDieselDatabase;
 
     fn name(&self) -> &str {
-        &self.schema_name
+        &self.model().schema_name
     }
 
     fn authorization(&self) -> Option<&str> {
-        Some(&self.schema_owner)
+        Some(&self.model().schema_owner)
+    }
+
+    fn public_holds_usage(&self) -> bool {
+        self.public_usage()
+    }
+
+    fn owner_holds_usage(&self) -> bool {
+        self.owner_usage()
     }
 }
