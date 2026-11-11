@@ -363,6 +363,16 @@ impl Table {
         table_catalog: &str,
         table_schema: &str,
     ) -> Result<Vec<Self>, diesel::result::Error> {
-        load_all_tables(table_catalog, table_schema, conn)
+        Self::load_filtered(conn, table_catalog, table_schema, None)
+    }
+
+    /// Loads tables within a schema, optionally restricted to exact names.
+    pub(crate) fn load_filtered(
+        conn: &mut PgConnection,
+        table_catalog: &str,
+        table_schema: &str,
+        table_names: Option<&[String]>,
+    ) -> Result<Vec<Self>, diesel::result::Error> {
+        load_all_tables(table_catalog, table_schema, table_names, conn)
     }
 }
