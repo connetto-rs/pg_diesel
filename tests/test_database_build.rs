@@ -200,6 +200,87 @@ fn select_expr(sql: &str) -> Expr {
     expr.clone()
 }
 
+/// Recorded table relations outside the loaded schemas report lookup errors.
+#[tokio::test]
+async fn unloaded_table_relations() {
+    let database_name = "unloaded_table_relations";
+    let docker = reference_docker(database_name)
+        .await
+        .expect("the database starts");
+    let mut conn: PgConnection =
+        establish_connection(docker.port, database_name).expect("the connection opens");
+    conn.batch_execute(
+        "
+        CREATE SCHEMA app;
+        CREATE SCHEMA audit;
+        CREATE TABLE app.base (local_id INTEGER);
+        CREATE TABLE audit.base (remote_id INTEGER);
+        CREATE TABLE app.child () INHERITS (audit.base);
+        CREATE TABLE app.mixed () INHERITS (app.base, audit.base);
+        CREATE TABLE app.events (id INTEGER);
+        CREATE TABLE audit.events (id INTEGER) PARTITION BY RANGE (id);
+        CREATE TABLE app.events_low PARTITION OF audit.events
+            FOR VALUES FROM (1) TO (9);
+        ",
+    )
+    .expect("the cross-schema fixture applies");
+
+    let partial: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+        .connection(&mut conn)
+        .catalog(database_name)
+        .schema("app")
+        .try_into()
+        .expect("the app schema loads");
+    for name in ["child", "mixed"] {
+        assert!(matches!(
+            table(&partial, name).inherits_from(&partial),
+            Err(LookupError::TableNotFound { object_name }) if object_name == "audit.base"
+        ));
+    }
+    assert!(matches!(
+        table(&partial, "events_low").partition_root(&partial),
+        Err(LookupError::TableNotFound { object_name }) if object_name == "audit.events"
+    ));
+    assert_eq!(
+        table(&partial, "base")
+            .inherits_from(&partial)
+            .expect("the base table has no parents")
+            .count(),
+        0
+    );
+    assert_eq!(
+        table(&partial, "events")
+            .partition_root(&partial)
+            .expect("the ordinary table has no partition root"),
+        None
+    );
+
+    let complete: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+        .connection(&mut conn)
+        .catalog(database_name)
+        .schemas(["app", "audit"])
+        .try_into()
+        .expect("both schemas load");
+    for (name, expected) in [
+        ("child", vec![("audit", "base")]),
+        ("mixed", vec![("app", "base"), ("audit", "base")]),
+    ] {
+        let parents: Vec<_> = table(&complete, name)
+            .inherits_from(&complete)
+            .expect("every parent is loaded")
+            .map(|parent| (parent.schema(), parent.name()))
+            .collect();
+        assert_eq!(parents, expected);
+    }
+    assert_eq!(
+        table(&complete, "events_low")
+            .partition_root(&complete)
+            .expect("the partition root is loaded")
+            .map(|root| (root.schema(), root.name())),
+        Some(("audit", "events"))
+    );
+}
+
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn test_database_build() {
