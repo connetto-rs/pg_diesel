@@ -7,8 +7,8 @@ use sql_traits::structs::{GenericDB, SchemaProfile};
 use crate::dialect::PostgresDialect;
 use crate::model_metadata::{
     PgCheckConstraint, PgColumn, PgDataType, PgDomainEntry, PgExtensionEntry, PgForeignKey,
-    PgFunction, PgIndexEntry, PgPolicy, PgRoleMembership, PgRuleEntry, PgSchema, PgSequenceEntry,
-    PgTable, PgUserDefinedType, PgViewDefinition, TableMetadata, TriggerMetadata,
+    PgFunction, PgIndexEntry, PgOperatorEntry, PgPolicy, PgRoleMembership, PgRuleEntry, PgSchema,
+    PgSequenceEntry, PgTable, PgUserDefinedType, PgViewDefinition, TableMetadata, TriggerMetadata,
 };
 use crate::models::{PgRole, RoleColumnGrants, RoleTableGrants};
 mod key_column_usage_metadata;
@@ -40,10 +40,9 @@ impl SchemaProfile for PgDieselProfile {
     type ForeignKey = PgForeignKey;
     type Function = PgFunction;
     type Index = PgIndexEntry;
-    /// A catalog read holds no statement-by-statement state: the whole
-    /// database is loaded in one pass and never resumed.
-    type Ingestion = ();
+    type Ingestion = Option<Arc<[PgOperatorEntry]>>;
     type MaterializedView = PgViewDefinition;
+    type Operator = PgOperatorEntry;
     type Policy = PgPolicy;
     type Role = PgRole;
     type RoleMembership = PgRoleMembership;
@@ -57,7 +56,19 @@ impl SchemaProfile for PgDieselProfile {
     type UserDefinedType = PgUserDefinedType;
     type View = PgViewDefinition;
 
-    fn default_ingestion(_dialect: &Self::Dialect) -> Self::Ingestion {}
+    fn default_ingestion(_dialect: &Self::Dialect) -> Self::Ingestion {
+        None
+    }
+
+    fn operators<'a>(
+        _dialect: &'a Self::Dialect,
+        ingestion: &'a Self::Ingestion,
+    ) -> Option<impl Iterator<Item = &'a Self::Operator>>
+    where
+        Self::Operator: 'a,
+    {
+        ingestion.as_ref().map(|operators| operators.iter())
+    }
 
     /// The schemas a fresh read of this profile starts with, none, since the
     /// catalog read adds every schema `pg_namespace` holds.

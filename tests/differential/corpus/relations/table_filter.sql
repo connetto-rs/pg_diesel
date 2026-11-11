@@ -36,3 +36,4 @@ CREATE TABLE other.skipped (id integer PRIMARY KEY);
 CREATE VIEW app.kept_view AS SELECT id FROM app.skipped;
 GRANT SELECT ON app.kept_view TO PUBLIC;
 CREATE SEQUENCE app.skipped_seq OWNED BY app.skipped.id;
+GRANT USAGE ON SEQUENCE app.skipped_seq TO PUBLIC;

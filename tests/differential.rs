@@ -20,6 +20,8 @@ mod deparse;
 mod expected;
 #[path = "differential/node_tree.rs"]
 mod node_tree;
+#[path = "differential/operators.rs"]
+mod operators;
 #[path = "differential/server.rs"]
 mod server;
 #[path = "differential/table_filter.rs"]

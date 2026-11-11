@@ -7,8 +7,8 @@ use pg_diesel::{
 };
 
 use pg_diesel::sql_traits::{
-    errors::LookupError,
-    traits::{ForeignKeyLike, TableLike},
+    errors::{LookupError, ObjectKind},
+    traits::{ForeignKeyLike, SequenceLike, SequenceOwner, TableLike, ViewLike},
 };
 
 use super::{
@@ -53,7 +53,7 @@ async fn selected_tables_preserve_local_facts() {
         .batch_execute(include_str!("corpus/relations/table_filter.sql"))
         .unwrap();
     connection
-        .batch_execute("GRANT USAGE ON SEQUENCE app.skipped_seq TO PUBLIC")
+        .batch_execute("ALTER SEQUENCE app.skipped_seq OWNED BY NONE")
         .unwrap();
     let whole: PgDieselDatabase = PgDieselDatabaseBuilder::default()
         .connection(&mut connection)
@@ -128,6 +128,93 @@ async fn selected_tables_preserve_local_facts() {
 }
 
 #[tokio::test]
+async fn sequences_require_loaded_owning_tables() {
+    let docker = reference_docker("table_filter").await.unwrap();
+    let mut connection: PgConnection = establish_connection(docker.port, "table_filter").unwrap();
+    connection
+        .batch_execute(include_str!("corpus/relations/table_filter.sql"))
+        .unwrap();
+    let whole = load(&mut connection, &[("app", "kept"), ("app", "skipped")]);
+    let sequence = whole.sequences().next().unwrap();
+    assert!(matches!(
+        SequenceLike::owner(sequence, &whole).unwrap(),
+        Some(SequenceOwner::Column(column))
+            if column.column_name() == "id" && column.model().table_name == "skipped"
+    ));
+
+    let selected = load(&mut connection, &[("app", "kept")]);
+    let sequence = selected.sequences().next().unwrap();
+    assert_eq!(
+        SequenceLike::owner(sequence, &selected).unwrap_err(),
+        ObjectKind::Table.not_in_database("app.skipped")
+    );
+    assert_eq!(selected.sequences().count(), 1);
+    assert_eq!(selected.table_grants().count(), 3);
+}
+
+#[tokio::test]
+async fn sequence_owners_follow_catalog_column_positions() {
+    let docker = reference_docker("table_filter").await.unwrap();
+    let mut connection: PgConnection = establish_connection(docker.port, "table_filter").unwrap();
+    connection
+        .batch_execute(
+            "CREATE SCHEMA app;
+             CREATE SCHEMA other;
+             CREATE TABLE app.gapped (removed integer, kept integer, owned integer);
+             ALTER TABLE app.gapped DROP COLUMN removed;
+             CREATE SEQUENCE app.table_seq OWNED BY app.gapped.owned;
+             CREATE VIEW app.owner_view AS SELECT 1 AS first, 2 AS owned;
+             CREATE SEQUENCE app.view_seq OWNED BY app.owner_view.owned;
+             CREATE SEQUENCE app.unowned;",
+        )
+        .unwrap();
+    let database = load(&mut connection, &[("app", "gapped")]);
+    let table_sequence = database
+        .sequences()
+        .find(|sequence| sequence.sequence_name() == "table_seq")
+        .unwrap();
+    assert!(matches!(
+        SequenceLike::owner(table_sequence, &database).unwrap(),
+        Some(SequenceOwner::Column(column))
+            if column.column_name() == "owned" && column.model().ordinal_position == 3
+    ));
+    let view_sequence = database
+        .sequences()
+        .find(|sequence| sequence.sequence_name() == "view_seq")
+        .unwrap();
+    assert!(matches!(
+        SequenceLike::owner(view_sequence, &database).unwrap(),
+        Some(SequenceOwner::ViewColumn { view, ordinal: 1 })
+            if view.view_name() == "owner_view"
+    ));
+    let unowned = database
+        .sequences()
+        .find(|sequence| sequence.sequence_name() == "unowned")
+        .unwrap();
+    assert!(SequenceLike::owner(unowned, &database).unwrap().is_none());
+
+    let without_view: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+        .connection(&mut connection)
+        .catalog("table_filter")
+        .schema("other")
+        .try_into()
+        .unwrap();
+    assert_eq!(
+        SequenceLike::owner(view_sequence, &without_view).unwrap_err(),
+        ObjectKind::View.not_in_database("app.owner_view")
+    );
+
+    connection
+        .batch_execute("ALTER TABLE app.gapped DROP COLUMN owned")
+        .unwrap();
+    let without_column = load(&mut connection, &[("app", "gapped")]);
+    assert_eq!(
+        SequenceLike::owner(table_sequence, &without_column).unwrap_err(),
+        ObjectKind::Column.not_in_database("app.gapped.owned")
+    );
+}
+
+#[tokio::test]
 async fn table_names_are_exact_and_intersect_schemas() {
     let docker = reference_docker("table_filter_names").await.unwrap();
     let mut connection: PgConnection =
@@ -181,9 +268,6 @@ async fn unfiltered_readers_return_all_schema_metadata() {
         establish_connection(docker.port, "unfiltered_readers").unwrap();
     connection
         .batch_execute(include_str!("corpus/relations/table_filter.sql"))
-        .unwrap();
-    connection
-        .batch_execute("GRANT USAGE ON SEQUENCE app.skipped_seq TO PUBLIC")
         .unwrap();
     let schemas = ["app".to_owned()];
 
