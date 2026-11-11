@@ -215,6 +215,32 @@ async fn sequence_owners_follow_catalog_column_positions() {
 }
 
 #[tokio::test]
+async fn catalog_errors_report_unnamed_sequence_owner() {
+    let docker = reference_docker("table_filter").await.unwrap();
+    let mut connection: PgConnection = establish_connection(docker.port, "table_filter").unwrap();
+    connection
+        .batch_execute(
+            "CREATE SCHEMA app;
+             CREATE SCHEMA other;
+             CREATE TABLE app.owner (id integer);
+             CREATE SEQUENCE app.owned_seq OWNED BY app.owner.id;
+             UPDATE pg_catalog.pg_depend SET refobjsubid = 999
+             WHERE classid = 'pg_class'::regclass
+               AND objid = 'app.owned_seq'::regclass
+               AND refclassid = 'pg_class'::regclass
+               AND refobjid = 'app.owner'::regclass
+               AND deptype = 'a';",
+        )
+        .unwrap();
+    let database = load(&mut connection, &[("app", "owner")]);
+    let sequence = database.sequences().next().unwrap();
+    assert_eq!(
+        SequenceLike::owner(sequence, &database).unwrap_err(),
+        ObjectKind::Column.not_in_database("app.owner column 999")
+    );
+}
+
+#[tokio::test]
 async fn table_names_are_exact_and_intersect_schemas() {
     let docker = reference_docker("table_filter_names").await.unwrap();
     let mut connection: PgConnection =

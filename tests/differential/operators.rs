@@ -110,3 +110,30 @@ async fn operators_preserve_signatures_shells_and_function_identity() {
         GenericDBBuilder::new("unloaded".to_owned(), PostgresDialect).into();
     assert!(unavailable.operators().is_none());
 }
+
+#[tokio::test]
+async fn catalog_errors_reject_unsupported_operator_kind() {
+    let docker = reference_docker("operators").await.unwrap();
+    let mut connection: PgConnection = establish_connection(docker.port, "operators").unwrap();
+    connection
+        .batch_execute(
+            "CREATE OPERATOR public.!! (
+                 FUNCTION = pg_catalog.int4abs, RIGHTARG = integer
+             );
+             UPDATE pg_catalog.pg_operator SET oprkind = 'r'
+             WHERE oprnamespace = 'public'::regnamespace AND oprname = '!!';",
+        )
+        .unwrap();
+    let result = PgDieselDatabase::try_from(
+        PgDieselDatabaseBuilder::default()
+            .connection(&mut connection)
+            .catalog("operators")
+            .schema("public"),
+    );
+    assert!(matches!(
+        result,
+        Err(pg_diesel::database::PgDatabaseBuildError::Diesel(
+            diesel::result::Error::DeserializationError(_)
+        ))
+    ));
+}
