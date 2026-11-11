@@ -9,6 +9,7 @@ mod foreign_key_like;
 mod function_like;
 mod index_like;
 mod oid;
+mod operator_like;
 mod policy_like;
 mod role_like;
 mod role_membership_like;

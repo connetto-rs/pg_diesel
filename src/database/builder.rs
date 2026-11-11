@@ -25,10 +25,10 @@ use crate::{
     dialect::PostgresDialect,
     impls::{RoleColumnGrantsMetadata, RoleTableGrantsMetadata, string_to_action},
     model_metadata::{
-        DomainDefinitionError, PgColumn, PgDomainEntry, PgExtensionEntry, PgFunction, PgPolicy,
-        PgRoleMembership, PgRuleEntry, PgSchema, PgSequenceEntry, PgTable, PgTableError,
-        PgUserDefinedType, PgViewDefinition, RuleDefinitionError, TriggerMetadata,
-        ViewDefinitionError,
+        DomainDefinitionError, PgColumn, PgDomainEntry, PgExtensionEntry, PgFunction,
+        PgOperatorEntry, PgPolicy, PgRoleMembership, PgRuleEntry, PgSchema, PgSequenceEntry,
+        PgTable, PgTableError, PgUserDefinedType, PgViewDefinition, RuleDefinitionError,
+        TriggerMetadata, ViewDefinitionError,
     },
     models::{
         PgDbRoleSetting, PgMatview, PgProc, PgRole, PgView, RoleColumnGrants, RoleSettingError,
@@ -311,7 +311,7 @@ impl<'conn> PgDieselDatabaseBuilder<'conn> {
     /// An empty selection loads no tables, and missing names are ignored.
     /// Each call replaces the selection, while omitting this method loads all tables.
     /// Non-table objects retain their existing loading scope.
-    /// Navigation to excluded relations behaves as it does for an unloaded schema.
+    /// [`SequenceLike::owner`](sql_traits::traits::SequenceLike::owner) returns a lookup error for excluded owners.
     #[must_use]
     pub fn tables<I, S, T>(mut self, tables: I) -> Self
     where
@@ -463,6 +463,7 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
             };
             generic_builder = generic_builder.add_function(function, metadata);
         }
+        let operators = PgOperatorEntry::load_all(&cache, &functions, connection)?;
 
         let mut tables = Vec::new();
         let mut table_oids = value.tables.as_ref().map(|_| Vec::new());
@@ -835,7 +836,7 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
             generic_builder = generic_builder.add_column_grant(Arc::new(model), metadata);
         }
 
-        Ok(generic_builder.into())
+        Ok(generic_builder.into_database(Some(operators.into())))
     }
 }
 

@@ -18,6 +18,8 @@ mod role_metadata;
 pub use role_metadata::RoleMetadata;
 mod pg_function;
 pub use pg_function::PgFunction;
+mod pg_operator_entry;
+pub use pg_operator_entry::PgOperatorEntry;
 mod pg_foreign_key;
 pub use pg_foreign_key::PgForeignKey;
 mod pg_policy;

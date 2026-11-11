@@ -21,6 +21,8 @@ pub struct PgDataType {
     dimensions: Option<NonZeroU32>,
     /// The most characters a value of the type can hold.
     max_character_length: Option<u64>,
+    /// The declared precision of an exact decimal type.
+    numeric_precision: Option<u64>,
     /// The scale an exact decimal type pins.
     numeric_scale: Option<i64>,
     /// The digits of fractional seconds a time type keeps.
@@ -83,6 +85,7 @@ impl PgDataType {
                 base_type: Some(Box::new(base_type)),
                 dimensions: None,
                 max_character_length: None,
+                numeric_precision: None,
                 numeric_scale: None,
                 fractional_seconds_precision: None,
                 interval_fields: None,
@@ -108,6 +111,7 @@ impl PgDataType {
                 dimensions,
                 base_type: None,
                 max_character_length: None,
+                numeric_precision: None,
                 numeric_scale: None,
                 fractional_seconds_precision: None,
                 interval_fields: None,
@@ -174,19 +178,36 @@ fn scalar(pg_type: &PgType, typmod: i32, cache: &CatalogCache, in_progress: &[u3
         .type_name(pg_type.oid)
         .unwrap_or(&pg_type.typname)
         .to_string();
-    let (max_character_length, numeric_scale, fractional_seconds_precision, interval_fields) =
-        match pg_type.typname.as_str() {
-            "varchar" | "bpchar" => (character_length(typmod), None, None, None),
-            "numeric" => (None, numeric_scale(typmod), None, None),
-            "time" | "timetz" | "timestamp" | "timestamptz" => {
-                (None, None, time_precision(typmod), None)
-            }
-            "interval" => {
-                let (interval_fields, fractional_seconds_precision) = interval_parts(typmod);
-                (None, None, fractional_seconds_precision, interval_fields)
-            }
-            _ => (None, None, None, None),
-        };
+    let (
+        max_character_length,
+        numeric_precision,
+        numeric_scale,
+        fractional_seconds_precision,
+        interval_fields,
+    ) = match pg_type.typname.as_str() {
+        "varchar" | "bpchar" => (character_length(typmod), None, None, None, None),
+        "numeric" => {
+            let (precision, scale) = numeric_modifiers(typmod)
+                .map_or((None, None), |(precision, scale)| {
+                    (Some(precision), Some(scale))
+                });
+            (None, precision, scale, None, None)
+        }
+        "time" | "timetz" | "timestamp" | "timestamptz" => {
+            (None, None, None, time_precision(typmod), None)
+        }
+        "interval" => {
+            let (interval_fields, fractional_seconds_precision) = interval_parts(typmod);
+            (
+                None,
+                None,
+                None,
+                fractional_seconds_precision,
+                interval_fields,
+            )
+        }
+        _ => (None, None, None, None, None),
+    };
     PgDataType {
         send_function: Some(pg_type.typsend != 0),
         range_subtype: range_subtype(pg_type, cache, in_progress),
@@ -196,6 +217,7 @@ fn scalar(pg_type: &PgType, typmod: i32, cache: &CatalogCache, in_progress: &[u3
         base_type: None,
         dimensions: None,
         max_character_length,
+        numeric_precision,
         numeric_scale,
         fractional_seconds_precision,
         interval_fields,
@@ -266,14 +288,13 @@ fn character_length(typmod: i32) -> Option<u64> {
         .and_then(|length| u64::try_from(length).ok())
 }
 
-/// The scale an exact decimal type's modifier pins, or `None` when the
-/// modifier stores none.
-fn numeric_scale(typmod: i32) -> Option<i64> {
-    let value = typmod.checked_sub(VARHDRSZ)?;
-    if value < 0 {
-        return None;
-    }
-    Some(i64::from(((value & 0x7ff) ^ 1024) - 1024))
+/// The declared precision and signed scale stored in a numeric type modifier.
+fn numeric_modifiers(typmod: i32) -> Option<(u64, i64)> {
+    let value = u32::try_from(typmod.checked_sub(VARHDRSZ)?).ok()?;
+    Some((
+        u64::from(value >> 16),
+        i64::from((value & 0x7ff) ^ 1024) - 1024,
+    ))
 }
 
 /// The digits of fractional seconds a time type's modifier pins, or the
@@ -363,6 +384,9 @@ impl DataTypeLike for PgDataType {
     fn max_character_length(&self, _database: &Self::DB) -> Option<u64> {
         self.max_character_length
     }
+    fn numeric_precision(&self, _database: &Self::DB) -> Option<u64> {
+        self.numeric_precision
+    }
 
     fn numeric_scale(&self, _database: &Self::DB) -> Option<i64> {
         self.numeric_scale
@@ -423,13 +447,17 @@ mod tests {
     }
 
     #[test]
-    fn numeric_scale_decodes_precision_and_scale() {
-        assert_eq!(numeric_scale(-1), None);
-        assert_eq!(numeric_scale(3), None);
-        assert_eq!(numeric_scale(4), Some(0));
-        assert_eq!(numeric_scale(655_366), Some(2));
-        assert_eq!(numeric_scale(327_684), Some(0));
-        assert_eq!(numeric_scale(657_410), Some(-2));
+    fn numeric_modifiers_decode_precision_and_scale() {
+        assert_eq!(numeric_modifiers(i32::MIN), None);
+        assert_eq!(numeric_modifiers(-1), None);
+        assert_eq!(numeric_modifiers(3), None);
+        assert_eq!(numeric_modifiers(4), Some((0, 0)));
+        assert_eq!(numeric_modifiers(65_540), Some((1, 0)));
+        assert_eq!(numeric_modifiers(655_366), Some((10, 2)));
+        assert_eq!(numeric_modifiers(327_684), Some((5, 0)));
+        assert_eq!(numeric_modifiers(657_410), Some((10, -2)));
+        assert_eq!(numeric_modifiers(327_693), Some((5, 9)));
+        assert_eq!(numeric_modifiers(65_537_004), Some((1000, 1000)));
     }
 
     #[test]
@@ -524,6 +552,7 @@ mod tests {
             base_type: None,
             dimensions: None,
             max_character_length: None,
+            numeric_precision: None,
             numeric_scale: None,
             fractional_seconds_precision: None,
             interval_fields: None,

@@ -2,9 +2,9 @@
 
 mod test_utils;
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
-use diesel::{PgConnection, connection::SimpleConnection};
+use diesel::{PgConnection, RunQueryDsl, connection::SimpleConnection, dsl::sql, sql_types::Oid};
 use pg_diesel::dialect::PostgresDialect;
 use pg_diesel::sqlparser::{
     ast::{
@@ -17,17 +17,17 @@ use pg_diesel::sqlparser::{
 };
 use pg_diesel::{
     PgDieselDatabase,
-    database::PgDieselDatabaseBuilder,
-    model_metadata::PgTable,
+    database::{PgDieselDatabaseBuilder, PgDieselProfile},
+    model_metadata::{PgOperatorEntry, PgTable},
     sql_traits::{
         errors::LookupError,
-        structs::{FunctionKind, PrivilegeHolder, SequenceType},
+        structs::{FunctionKind, PrivilegeHolder, SequenceType, generic_db::GenericDBBuilder},
         traits::{
             CheckConstraintLike, ColumnCollation, ColumnGrantLike, ColumnLike, DatabaseLike,
             DialectLike, ExtensionLike, ForeignKeyLike, FunctionLike, GrantLike, IndexLike,
-            PartitionStrategy, PolicyLike, Relation, RoleLike, SchemaLike, SequenceLike,
-            TableGrantLike, TableLike, TriggerLike, TypeMatch, UserDefinedTypeKind, ViewLike,
-            grant::GrantTarget,
+            OperatorKind, OperatorLike, PartitionStrategy, PolicyLike, Relation, RoleLike,
+            SchemaLike, SequenceLike, SequenceOwner, TableGrantLike, TableLike, TriggerLike,
+            TypeMatch, UserDefinedTypeKind, ViewLike, grant::GrantTarget,
         },
     },
 };
@@ -279,6 +279,289 @@ async fn unloaded_table_relations() {
             .map(|root| (root.schema(), root.name())),
         Some(("audit", "events"))
     );
+}
+
+/// A table filter preserves sequence ownership even when the owner is unloaded.
+#[tokio::test]
+async fn unloaded_sequence_owner() {
+    let database_name = "unloaded_sequence_owner";
+    let docker = reference_docker(database_name).await.unwrap();
+    let mut conn: PgConnection = establish_connection(docker.port, database_name).unwrap();
+    conn.batch_execute(
+        "
+        CREATE SCHEMA app;
+        CREATE TABLE app.base (id INTEGER, retained INTEGER);
+        CREATE TABLE app.other (id INTEGER);
+        CREATE SEQUENCE app.s OWNED BY app.base.id;
+        CREATE SEQUENCE app.unowned OWNED BY NONE;
+        ",
+    )
+    .unwrap();
+    let partial: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+        .connection(&mut conn)
+        .catalog(database_name)
+        .schema("app")
+        .tables([("app", "other")])
+        .try_into()
+        .unwrap();
+    let sequence = partial
+        .sequences()
+        .find(|sequence| sequence.name() == "s")
+        .unwrap();
+    assert!(matches!(
+        SequenceLike::owner(sequence, &partial),
+        Err(LookupError::TableNotFound { object_name }) if object_name == "app.base"
+    ));
+    let unowned = partial
+        .sequences()
+        .find(|sequence| sequence.name() == "unowned")
+        .unwrap();
+    assert!(matches!(SequenceLike::owner(unowned, &partial), Ok(None)));
+
+    let complete: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+        .connection(&mut conn)
+        .catalog(database_name)
+        .schema("app")
+        .tables([("app", "other"), ("app", "base")])
+        .try_into()
+        .unwrap();
+    let sequence = complete
+        .sequences()
+        .find(|sequence| sequence.name() == "s")
+        .unwrap();
+    let Some(SequenceOwner::Column(column)) = SequenceLike::owner(sequence, &complete).unwrap()
+    else {
+        panic!("the sequence is owned by a table column");
+    };
+    let owner = column.table(&complete);
+    assert_eq!(
+        (owner.schema(), owner.name(), column.column_name()),
+        ("app", "base", "id")
+    );
+    conn.batch_execute("ALTER TABLE app.base DROP COLUMN id CASCADE")
+        .unwrap();
+    let changed: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+        .connection(&mut conn)
+        .catalog(database_name)
+        .schema("app")
+        .try_into()
+        .unwrap();
+    assert!(matches!(
+        SequenceLike::owner(sequence, &changed),
+        Err(LookupError::ColumnNotFound { table_name, column_name })
+            if table_name == "app.base" && column_name == "id"
+    ));
+}
+
+/// View-owned sequences resolve their ordinal or report an unloaded view.
+#[tokio::test]
+async fn unloaded_sequence_view_owner() {
+    let database_name = "unloaded_sequence_view_owner";
+    let docker = reference_docker(database_name).await.unwrap();
+    let mut conn: PgConnection = establish_connection(docker.port, database_name).unwrap();
+    conn.batch_execute(
+        "
+        CREATE SCHEMA app;
+        CREATE SCHEMA other;
+        CREATE VIEW app.owner AS SELECT 1 AS first, 2 AS second;
+        CREATE SEQUENCE app.s OWNED BY app.owner.second;
+        ",
+    )
+    .unwrap();
+    let complete: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+        .connection(&mut conn)
+        .catalog(database_name)
+        .schema("app")
+        .try_into()
+        .unwrap();
+    let sequence = complete.sequences().next().unwrap();
+    let Some(SequenceOwner::ViewColumn { view, ordinal }) =
+        SequenceLike::owner(sequence, &complete).unwrap()
+    else {
+        panic!("the sequence is owned by a view column");
+    };
+    assert_eq!(
+        (view.view_schema(), view.view_name(), ordinal),
+        (Some("app"), "owner", 1)
+    );
+    let partial: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+        .connection(&mut conn)
+        .catalog(database_name)
+        .schema("other")
+        .try_into()
+        .unwrap();
+    assert!(matches!(
+        SequenceLike::owner(sequence, &partial),
+        Err(LookupError::RelationNotFound { object_name }) if object_name == "app.owner"
+    ));
+}
+
+#[test]
+fn operator_catalog_unavailable_and_loaded_empty() {
+    let unloaded: PgDieselDatabase =
+        GenericDBBuilder::<PgDieselProfile>::new("unloaded".to_owned(), PostgresDialect).into();
+    assert!(unloaded.operators().is_none());
+
+    let empty =
+        GenericDBBuilder::<PgDieselProfile>::new("loaded_empty".to_owned(), PostgresDialect)
+            .into_database(Some(Arc::<[PgOperatorEntry]>::from([])));
+    assert_eq!(empty.operators().unwrap().count(), 0);
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fixture exercises related operator signatures"
+)]
+async fn global_operator_catalog_metadata() {
+    let database_name = "global_operator_catalog_metadata";
+    let docker = reference_docker(database_name).await.unwrap();
+    let mut conn: PgConnection = establish_connection(docker.port, database_name).unwrap();
+    conn.batch_execute(
+        r#"
+        CREATE SCHEMA app;
+        CREATE TABLE app.retained (id INTEGER);
+        CREATE TABLE app.omitted (id INTEGER);
+        CREATE SCHEMA "CatalogOps";
+        CREATE SCHEMA "OperandTypes";
+        CREATE TYPE "OperandTypes"."LeftArg" AS ENUM ('left');
+        CREATE TYPE "OperandTypes"."RightArg" AS ENUM ('right');
+        CREATE TYPE "OperandTypes"."ResultValue" AS ENUM ('result');
+        CREATE FUNCTION "CatalogOps"."Apply"("OperandTypes"."LeftArg")
+            RETURNS "OperandTypes"."ResultValue" LANGUAGE sql
+            AS $$ SELECT 'result'::"OperandTypes"."ResultValue" $$;
+        CREATE FUNCTION "CatalogOps"."Apply"(
+            "OperandTypes"."LeftArg", "OperandTypes"."RightArg"
+        ) RETURNS "OperandTypes"."ResultValue" LANGUAGE sql
+            AS $$ SELECT 'result'::"OperandTypes"."ResultValue" $$;
+        CREATE FUNCTION "CatalogOps"."Apply"(
+            "OperandTypes"."RightArg", "OperandTypes"."LeftArg"
+        ) RETURNS "OperandTypes"."ResultValue" LANGUAGE sql
+            AS $$ SELECT 'result'::"OperandTypes"."ResultValue" $$;
+        CREATE OPERATOR "CatalogOps".! (
+            FUNCTION = "CatalogOps"."Apply",
+            RIGHTARG = "OperandTypes"."LeftArg"
+        );
+        CREATE OPERATOR "CatalogOps".#> (
+            FUNCTION = "CatalogOps"."Apply",
+            LEFTARG = "OperandTypes"."LeftArg",
+            RIGHTARG = "OperandTypes"."RightArg",
+            COMMUTATOR = OPERATOR("CatalogOps".<#)
+        );
+        CREATE OPERATOR "CatalogOps".># (
+            FUNCTION = "CatalogOps"."Apply",
+            LEFTARG = "OperandTypes"."RightArg",
+            RIGHTARG = "OperandTypes"."LeftArg"
+        );
+        "#,
+    )
+    .unwrap();
+    let complete: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+        .connection(&mut conn)
+        .catalog(database_name)
+        .schema("app")
+        .try_into()
+        .unwrap();
+    let filtered: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+        .connection(&mut conn)
+        .catalog(database_name)
+        .schema("app")
+        .tables([("app", "retained")])
+        .try_into()
+        .unwrap();
+    assert_eq!(complete.tables().count(), 2);
+    assert_eq!(
+        filtered.tables().map(PgTable::name).collect::<Vec<_>>(),
+        ["retained"]
+    );
+    assert_eq!(
+        complete.operators().unwrap().collect::<BTreeSet<_>>(),
+        filtered.operators().unwrap().collect::<BTreeSet<_>>()
+    );
+    let cloned = filtered.clone();
+    assert_eq!(
+        filtered.operators().unwrap().collect::<Vec<_>>(),
+        cloned.operators().unwrap().collect::<Vec<_>>()
+    );
+
+    let mut implementation_oids = BTreeSet::new();
+    for (name, kind, left, right, signature) in [
+        (
+            "!",
+            OperatorKind::Prefix,
+            None,
+            "LeftArg",
+            r#"'"CatalogOps"."Apply"("OperandTypes"."LeftArg")'::regprocedure::oid"#,
+        ),
+        (
+            "#>",
+            OperatorKind::Binary,
+            Some("LeftArg"),
+            "RightArg",
+            r#"'"CatalogOps"."Apply"("OperandTypes"."LeftArg","OperandTypes"."RightArg")'::regprocedure::oid"#,
+        ),
+        (
+            ">#",
+            OperatorKind::Binary,
+            Some("RightArg"),
+            "LeftArg",
+            r#"'"CatalogOps"."Apply"("OperandTypes"."RightArg","OperandTypes"."LeftArg")'::regprocedure::oid"#,
+        ),
+    ] {
+        let oid = diesel::select(sql::<Oid>(signature))
+            .get_result::<u32>(&mut conn)
+            .unwrap();
+        assert!(implementation_oids.insert(oid));
+        for database in [&complete, &filtered, &cloned] {
+            let operator = database
+                .operators()
+                .unwrap()
+                .find(|operator| {
+                    operator.target_name().schema() == Some("CatalogOps")
+                        && operator.target_name().name() == name
+                })
+                .unwrap();
+            assert_eq!(operator.kind(), kind);
+            for (actual, expected) in [
+                (operator.left_type(database), left),
+                (operator.right_type(database), Some(right)),
+                (operator.result_type(database), Some("ResultValue")),
+            ] {
+                if let Some(expected) = expected {
+                    let actual = actual.unwrap();
+                    assert_eq!(actual.schema(), Some("OperandTypes"));
+                    assert_eq!(actual.name(), expected);
+                } else {
+                    assert!(actual.is_none());
+                }
+            }
+            let function = operator.implementation(database).unwrap();
+            assert_eq!(function.oid(), oid);
+            assert_eq!(function.target_name().schema(), Some("CatalogOps"));
+            assert_eq!(function.target_name().name(), "Apply");
+        }
+    }
+    for database in [&complete, &filtered, &cloned] {
+        let operators: Vec<_> = database
+            .operators()
+            .unwrap()
+            .filter(|operator| operator.target_name().schema() == Some("CatalogOps"))
+            .collect();
+        assert_eq!(operators.len(), 4);
+        let shell = operators
+            .into_iter()
+            .find(|operator| operator.target_name().name() == "<#")
+            .unwrap();
+        assert_eq!(shell.kind(), OperatorKind::Binary);
+        let left = shell.left_type(database).unwrap();
+        assert_eq!(left.schema(), Some("OperandTypes"));
+        assert_eq!(left.name(), "RightArg");
+        let right = shell.right_type(database).unwrap();
+        assert_eq!(right.schema(), Some("OperandTypes"));
+        assert_eq!(right.name(), "LeftArg");
+        assert!(shell.result_type(database).is_none());
+        assert!(shell.implementation(database).is_none());
+    }
 }
 
 #[tokio::test]

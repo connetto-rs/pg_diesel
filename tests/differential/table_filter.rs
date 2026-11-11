@@ -12,8 +12,8 @@ use pg_diesel::sql_traits::{
 };
 
 use super::{
-    AlreadyStored, BTreeSet, DatabaseLike, Facts, PgConnection, PgDieselDatabase,
-    PgDieselDatabaseBuilder, SUPERUSER, Scope, SimpleConnection, describe, establish_connection,
+    AlreadyStored, BTreeSet, DatabaseLike, PgConnection, PgDieselDatabase, PgDieselDatabaseBuilder,
+    SUPERUSER, Scope, SimpleConnection, compare::describe_table, establish_connection,
     reference_docker,
 };
 
@@ -26,23 +26,6 @@ fn load(connection: &mut PgConnection, tables: &[(&str, &str)]) -> PgDieselDatab
         .tables(tables.iter().copied())
         .try_into()
         .expect("the selected tables load")
-}
-
-/// Selects facts owned by the named table.
-fn table_facts(facts: Facts, table: &str) -> Facts {
-    let table_prefix = format!("table {table} / ");
-    let grant_target = format!(" on {table} to ");
-    let column_target = format!(" on {table}.");
-    let rule_target = format!(" on {table} / ");
-    facts
-        .into_iter()
-        .filter(|(key, _)| {
-            key.starts_with(&table_prefix)
-                || (key.starts_with("grant ")
-                    && (key.contains(&grant_target) || key.contains(&column_target)))
-                || (key.starts_with("rule ") && key.contains(&rule_target))
-        })
-        .collect()
 }
 
 #[tokio::test]
@@ -69,11 +52,14 @@ async fn selected_tables_preserve_local_facts() {
     };
     let selected = load(&mut connection, &[("app", "kept"), ("app", "kept")]);
     assert_eq!(scope.tables(&selected), [("app".into(), "kept".into())]);
-    let whole_facts = describe(&whole, &scope, &mut AlreadyStored).unwrap();
-    let selected_facts = describe(&selected, &scope, &mut AlreadyStored).unwrap();
+    let whole_table = whole
+        .tables()
+        .find(|table| table.name() == "kept" && table.schema() == "app")
+        .unwrap();
+    let selected_table = selected.tables().next().unwrap();
     assert_eq!(
-        table_facts(selected_facts, "app.kept"),
-        table_facts(whole_facts, "app.kept")
+        describe_table(&selected, selected_table, &scope, &mut AlreadyStored).unwrap(),
+        describe_table(&whole, whole_table, &scope, &mut AlreadyStored).unwrap()
     );
     assert_eq!(selected.table_grants().count(), 3);
     assert_eq!(selected.column_grants().count(), 1);
