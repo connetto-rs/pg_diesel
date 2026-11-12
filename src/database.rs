@@ -6,9 +6,10 @@ use sql_traits::structs::{GenericDB, SchemaProfile};
 
 use crate::dialect::PostgresDialect;
 use crate::model_metadata::{
-    PgCheckConstraint, PgColumn, PgDataType, PgDomainEntry, PgExtensionEntry, PgForeignKey,
-    PgFunction, PgIndexEntry, PgOperatorEntry, PgPolicy, PgRoleMembership, PgRuleEntry, PgSchema,
-    PgSequenceEntry, PgTable, PgUserDefinedType, PgViewDefinition, TableMetadata, TriggerMetadata,
+    PgCastEntry, PgCheckConstraint, PgColumn, PgDataType, PgDomainEntry, PgExtensionEntry,
+    PgForeignKey, PgFunction, PgIndexEntry, PgOperatorEntry, PgPolicy, PgRoleMembership,
+    PgRuleEntry, PgSchema, PgSequenceEntry, PgTable, PgUserDefinedType, PgViewDefinition,
+    TableMetadata, TriggerMetadata,
 };
 use crate::models::{PgRole, RoleColumnGrants, RoleTableGrants};
 mod key_column_usage_metadata;
@@ -25,11 +26,21 @@ pub use catalog_cache::{CatalogCache, FIRST_NORMAL_OBJECT_ID};
 mod builder;
 pub use builder::{PgDatabaseBuildError, PgDieselDatabaseBuilder};
 
+/// Loaded operator and cast catalogs, including an explicitly loaded empty catalog.
+#[derive(Debug, Default)]
+pub struct PgCatalogMetadata {
+    /// The operator signatures loaded from `pg_operator`.
+    operators: Box<[PgOperatorEntry]>,
+    /// The casts loaded from `pg_cast`.
+    casts: Box<[PgCastEntry]>,
+}
+
 /// The kinds of schema object a database read through `pg_catalog` holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PgDieselProfile;
 
 impl SchemaProfile for PgDieselProfile {
+    type Cast = PgCastEntry;
     type CheckConstraint = PgCheckConstraint;
     type Column = PgColumn;
     type ColumnGrant = RoleColumnGrants;
@@ -40,7 +51,7 @@ impl SchemaProfile for PgDieselProfile {
     type ForeignKey = PgForeignKey;
     type Function = PgFunction;
     type Index = PgIndexEntry;
-    type Ingestion = Option<Arc<[PgOperatorEntry]>>;
+    type Ingestion = Option<Arc<PgCatalogMetadata>>;
     type MaterializedView = PgViewDefinition;
     type Operator = PgOperatorEntry;
     type Policy = PgPolicy;
@@ -67,7 +78,17 @@ impl SchemaProfile for PgDieselProfile {
     where
         Self::Operator: 'a,
     {
-        ingestion.as_ref().map(|operators| operators.iter())
+        ingestion.as_ref().map(|catalog| catalog.operators.iter())
+    }
+
+    fn casts<'a>(
+        _dialect: &'a Self::Dialect,
+        ingestion: &'a Self::Ingestion,
+    ) -> Option<impl Iterator<Item = &'a Self::Cast>>
+    where
+        Self::Cast: 'a,
+    {
+        ingestion.as_ref().map(|catalog| catalog.casts.iter())
     }
 
     /// The schemas a fresh read of this profile starts with, none, since the
