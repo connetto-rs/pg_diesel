@@ -1,6 +1,7 @@
 //! Implementation of [`SequenceLike`] for [`PgSequenceEntry`].
 
 use sql_traits::{
+    errors::{LookupError, ObjectKind},
     structs::SequenceParameters,
     traits::{
         DatabaseLike, Metadata, SequenceLike, SequenceOrigin, SequenceOwner, TableLike, ViewLike,
@@ -37,30 +38,57 @@ impl SequenceLike for PgSequenceEntry {
         PgSequenceEntry::parameters(self)
     }
 
-    fn owner<'db>(&'db self, database: &'db Self::DB) -> Option<SequenceOwner<'db, Self::DB>>
+    fn owner<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<Option<SequenceOwner<'db, Self::DB>>, LookupError>
     where
         Self: 'db,
     {
-        let owned = self.owner()?;
-        let ordinal =
-            usize::try_from(owned.attnum - 1).expect("a stored column number is one-based");
+        let Some(owned) = self.owner() else {
+            return Ok(None);
+        };
+        let missing_column = || {
+            let name = owned.column.as_deref().map_or_else(
+                || format!("{}.{} column {}", owned.schema, owned.name, owned.attnum),
+                |column| format!("{}.{}.{column}", owned.schema, owned.name),
+            );
+            ObjectKind::Column.not_in_database(&name)
+        };
         if owned.is_view {
-            database
+            let view = database
                 .views()
                 .find(|view| {
                     view.view_schema() == Some(&owned.schema) && view.view_name() == owned.name
                 })
-                .map(|view| SequenceOwner::ViewColumn { view, ordinal })
+                .ok_or_else(|| {
+                    ObjectKind::View.not_in_database(&format!("{}.{}", owned.schema, owned.name))
+                })?;
+            owned.column.as_deref().ok_or_else(missing_column)?;
+            let ordinal = owned
+                .attnum
+                .checked_sub(1)
+                .and_then(|ordinal| usize::try_from(ordinal).ok())
+                .ok_or_else(missing_column)?;
+            Ok(Some(SequenceOwner::ViewColumn { view, ordinal }))
         } else {
-            let table = database.tables_and_foreign_tables().find(|table| {
-                table.table_schema() == Some(&owned.schema) && table.table_name() == owned.name
-            })?;
-            let column = owned.column.as_deref()?;
+            let table = database
+                .tables_and_foreign_tables()
+                .find(|table| {
+                    table.table_schema() == Some(&owned.schema) && table.table_name() == owned.name
+                })
+                .ok_or_else(|| {
+                    ObjectKind::Table.not_in_database(&format!("{}.{}", owned.schema, owned.name))
+                })?;
+            let column = owned.column.as_deref().ok_or_else(missing_column)?;
             table
-                .columns(database)
-                .ok()?
-                .find(|candidate| candidate.column_name() == column)
-                .map(SequenceOwner::Column)
+                .columns(database)?
+                .find(|candidate| {
+                    candidate.column_name() == column
+                        && candidate.model().ordinal_position == owned.attnum
+                })
+                .map(|column| Some(SequenceOwner::Column(column)))
+                .ok_or_else(missing_column)
         }
     }
 

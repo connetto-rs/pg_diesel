@@ -854,7 +854,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         self.memberships();
         self.role_privileges();
         self.grants()?;
-        self.sequences();
+        self.sequences()?;
         self.rules()?;
         self.extensions();
         self.domains();
@@ -1080,6 +1080,10 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         self.text(
             format!("{subject} / length"),
             format!("{:?}", data_type.max_character_length(database)),
+        );
+        self.text(
+            format!("{subject} / precision"),
+            format!("{:?}", data_type.numeric_precision(database)),
         );
         self.text(
             format!("{subject} / scale"),
@@ -1924,7 +1928,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
     }
 
     /// Records the sequences in scope.
-    fn sequences(&mut self) {
+    fn sequences(&mut self) -> Result<(), DescribeError> {
         let database = self.database;
         for sequence in database.sequences() {
             let schema = self
@@ -1942,7 +1946,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 format!("{subject} / origin"),
                 format!("{:?}", sequence.origin()),
             );
-            let owner = sequence.owner(database).map(|owner| match owner {
+            let owner = sequence.owner(database)?.map(|owner| match owner {
                 SequenceOwner::Column(column) => {
                     let (schema, name) = self.table_name(column.table(database));
                     format!("{schema}.{name}.{}", column.stored_column_name())
@@ -1958,6 +1962,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 format!("{:?}", sequence.parameters()),
             );
         }
+        Ok(())
     }
 
     /// Records the rewrite rules on relations in scope, each brought into
