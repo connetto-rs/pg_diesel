@@ -7,8 +7,9 @@ use std::{borrow::Cow, sync::Arc};
 use sql_traits::{
     structs::TargetName,
     traits::{
-        ColumnCollation, DataTypeLike, IntervalFields, MapEntry, NamedColumnCollation,
-        StructureKind, StructuredField, VectorKind, VectorType,
+        CharacterLengthUnit, ColumnCollation, DataTypeLike, Enumeration, EnumerationKind,
+        EnumerationMember, IntervalFields, MapEntry, NamedColumnCollation, StructureKind,
+        StructuredField, VectorKind, VectorType,
     },
     utils::scalar_family::ScalarFamily,
 };
@@ -32,6 +33,8 @@ pub struct PgDataType {
     dimensions: Option<NonZeroU32>,
     /// The most characters a value of the type can hold.
     max_character_length: Option<u64>,
+    /// The most bits a value of a bit-string type can hold.
+    max_bit_length: Option<u64>,
     /// The declared decimal digits, including fractional digits.
     numeric_precision: Option<u64>,
     /// The scale an exact decimal type pins.
@@ -50,6 +53,8 @@ pub struct PgDataType {
     range_subtype: Option<Box<PgDataType>>,
     /// The attributes of the composite type, in order.
     composite_fields: Option<Vec<PgCompositeField>>,
+    /// The labels of a direct enum type, in catalog sort order.
+    enum_labels: Option<Arc<[String]>>,
 }
 
 /// A composite field sharing its catalog metadata across type occurrences.
@@ -101,6 +106,7 @@ impl PgDataType {
                 base_type: Some(Box::new(base_type)),
                 dimensions: None,
                 max_character_length: None,
+                max_bit_length: None,
                 numeric_precision: None,
                 numeric_scale: None,
                 fractional_seconds_precision: None,
@@ -111,6 +117,7 @@ impl PgDataType {
                 send_function,
                 range_subtype: None,
                 composite_fields: None,
+                enum_labels: None,
             });
         }
         if pg_type.typcategory == "A" {
@@ -127,6 +134,7 @@ impl PgDataType {
                 dimensions,
                 base_type: None,
                 max_character_length: None,
+                max_bit_length: None,
                 numeric_precision: None,
                 numeric_scale: None,
                 fractional_seconds_precision: None,
@@ -135,6 +143,7 @@ impl PgDataType {
                 send_function: Some(pg_type.typsend != 0),
                 range_subtype: None,
                 composite_fields: None,
+                enum_labels: None,
             });
         }
         scalar(pg_type, typmod, cache, in_progress)
@@ -238,11 +247,20 @@ fn scalar(
         send_function: Some(pg_type.typsend != 0),
         range_subtype: range_subtype(pg_type, cache, in_progress),
         composite_fields,
+        enum_labels: if pg_type.typtype == "e" {
+            Some(Arc::clone(cache.enum_labels(pg_type.oid)?))
+        } else {
+            None
+        },
         name,
         element: None,
         base_type: None,
         dimensions: None,
         max_character_length,
+        max_bit_length: match pg_type.typname.as_str() {
+            "bit" | "varbit" => u64::try_from(typmod).ok(),
+            _ => None,
+        },
         numeric_precision,
         numeric_scale,
         fractional_seconds_precision,
@@ -432,8 +450,21 @@ impl DataTypeLike for PgDataType {
         true
     }
 
+    fn max_binary_length(&self, _database: &Self::DB) -> Option<u64> {
+        None
+    }
+
+    fn max_bit_length(&self, _database: &Self::DB) -> Option<u64> {
+        self.max_bit_length
+    }
+
     fn max_character_length(&self, _database: &Self::DB) -> Option<u64> {
         self.max_character_length
+    }
+
+    fn character_length_unit(&self, _database: &Self::DB) -> Option<CharacterLengthUnit> {
+        self.max_character_length
+            .map(|_| CharacterLengthUnit::Characters)
     }
 
     fn numeric_precision(&self, _database: &Self::DB) -> Option<u64> {
@@ -446,6 +477,10 @@ impl DataTypeLike for PgDataType {
 
     fn fractional_seconds_precision(&self, _database: &Self::DB) -> Option<u64> {
         self.fractional_seconds_precision
+    }
+
+    fn time_zone<'db>(&'db self, _database: &'db Self::DB) -> Option<&'db str> {
+        None
     }
 
     fn interval_fields(&self, _database: &Self::DB) -> Option<IntervalFields> {
@@ -510,6 +545,21 @@ impl DataTypeLike for PgDataType {
 
     fn map_entry<'db>(&'db self, _database: &'db Self::DB) -> Option<MapEntry<'db, Self>> {
         None
+    }
+
+    fn enumeration<'db>(
+        &'db self,
+        _database: &'db Self::DB,
+    ) -> Option<Enumeration<impl Iterator<Item = EnumerationMember<'db>>>> {
+        self.enum_labels.as_deref().map(|labels| {
+            Enumeration::new(
+                EnumerationKind::Enum,
+                None,
+                labels
+                    .iter()
+                    .map(|label| EnumerationMember::new(label, None)),
+            )
+        })
     }
 }
 
@@ -648,6 +698,7 @@ mod tests {
             base_type: None,
             dimensions: None,
             max_character_length: None,
+            max_bit_length: None,
             numeric_precision: None,
             numeric_scale: None,
             fractional_seconds_precision: None,
@@ -656,6 +707,7 @@ mod tests {
             send_function: None,
             range_subtype: None,
             composite_fields: None,
+            enum_labels: None,
         };
         assert_eq!(array_name(&element, 1), "integer[]");
         assert_eq!(array_name(&element, 3), "integer[][][]");

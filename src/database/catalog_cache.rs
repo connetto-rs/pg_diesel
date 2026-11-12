@@ -61,6 +61,8 @@ pub struct CatalogCache {
     range_subtypes: HashMap<u32, u32>,
     /// Every composite relation's live attributes in `attnum` order.
     composite_attributes: HashMap<u32, Vec<Arc<CompositeAttribute>>>,
+    /// Every enum's labels in catalog sort order.
+    enum_labels: HashMap<u32, Arc<[String]>>,
 }
 
 impl CatalogCache {
@@ -135,6 +137,7 @@ impl CatalogCache {
             .collect();
 
         let composite_attributes = Self::load_composite_attributes(conn, &types)?;
+        let enum_labels = Self::load_enum_labels(conn, &types)?;
 
         Ok(Self {
             types,
@@ -145,7 +148,35 @@ impl CatalogCache {
             collations,
             range_subtypes,
             composite_attributes,
+            enum_labels,
         })
+    }
+
+    /// Loads enum labels in sort order, retaining empty enum types.
+    fn load_enum_labels(
+        conn: &mut PgConnection,
+        types: &HashMap<u32, PgType>,
+    ) -> Result<HashMap<u32, Arc<[String]>>, diesel::result::Error> {
+        use crate::schema::pg_catalog::pg_enum::pg_enum;
+
+        let mut rows = pg_enum::table
+            .order((pg_enum::enumtypid.asc(), pg_enum::enumsortorder.asc()))
+            .select((pg_enum::enumtypid, pg_enum::enumlabel))
+            .load::<(u32, String)>(conn)?
+            .into_iter()
+            .peekable();
+        let mut enums = HashMap::new();
+        while let Some((oid, label)) = rows.next() {
+            let mut labels = vec![label];
+            while let Some((_, label)) = rows.next_if(|(next, _)| *next == oid) {
+                labels.push(label);
+            }
+            enums.insert(oid, Arc::from(labels));
+        }
+        for row in types.values().filter(|row| row.typtype == "e") {
+            enums.entry(row.oid).or_insert_with(|| Arc::from([]));
+        }
+        Ok(enums)
     }
 
     /// Loads live composite declarations, retaining empty relations.
@@ -252,5 +283,10 @@ impl CatalogCache {
     #[must_use]
     pub fn composite_attributes(&self, oid: u32) -> Option<&[Arc<CompositeAttribute>]> {
         self.composite_attributes.get(&oid).map(Vec::as_slice)
+    }
+
+    /// Returns shared enum labels, including an empty slice for an empty enum.
+    pub(crate) fn enum_labels(&self, oid: u32) -> Option<&Arc<[String]>> {
+        self.enum_labels.get(&oid)
     }
 }
