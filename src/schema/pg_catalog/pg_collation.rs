@@ -37,3 +37,8 @@ diesel::table! {
         collversion -> Nullable<Text>,
     }
 }
+
+use super::{pg_attribute::pg_attribute, pg_namespace::pg_namespace, pg_type::pg_type};
+diesel::allow_tables_to_appear_in_same_query!(pg_collation, pg_attribute);
+diesel::allow_tables_to_appear_in_same_query!(pg_collation, pg_namespace);
+diesel::allow_tables_to_appear_in_same_query!(pg_collation, pg_type);

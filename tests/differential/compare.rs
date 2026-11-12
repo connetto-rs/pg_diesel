@@ -1141,8 +1141,8 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             format!("{subject} / composite fields"),
             format!(
                 "{:?}",
-                data_type.composite_fields(database).map(|fields| fields
-                    .map(|field| field.normalized_name(database))
+                data_type.structured_fields(database).map(|fields| fields
+                    .map(|field| field.data_type().normalized_name(database))
                     .collect::<Vec<_>>())
             ),
         );
