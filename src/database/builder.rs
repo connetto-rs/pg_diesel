@@ -21,14 +21,16 @@ use sqlparser::{
 
 use crate::{
     PgDieselDatabase,
-    database::{AclSchemaGrant, AclTableGrant, CatalogCache, FIRST_NORMAL_OBJECT_ID},
+    database::{
+        AclSchemaGrant, AclTableGrant, CatalogCache, FIRST_NORMAL_OBJECT_ID, PgCatalogMetadata,
+    },
     dialect::PostgresDialect,
     impls::{RoleColumnGrantsMetadata, RoleTableGrantsMetadata, string_to_action},
     model_metadata::{
-        DomainDefinitionError, PgColumn, PgDomainEntry, PgExtensionEntry, PgFunction,
+        DomainDefinitionError, PgCastEntry, PgColumn, PgDomainEntry, PgExtensionEntry, PgFunction,
         PgOperatorEntry, PgPolicy, PgRoleMembership, PgRuleEntry, PgSchema, PgSequenceEntry,
         PgTable, PgTableError, PgUserDefinedType, PgViewDefinition, RuleDefinitionError,
-        TriggerMetadata, ViewDefinitionError,
+        TriggerMetadata, ViewDefinitionError, catalog_identity::CatalogObjects,
     },
     models::{
         PgDbRoleSetting, PgMatview, PgProc, PgRole, PgView, RoleColumnGrants, RoleSettingError,
@@ -463,7 +465,13 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
             };
             generic_builder = generic_builder.add_function(function, metadata);
         }
-        let operators = PgOperatorEntry::load(connection, &cache, &functions)?;
+        let (operators, casts) = {
+            let mut objects = CatalogObjects::new(&cache, &functions);
+            (
+                PgOperatorEntry::load(connection, &mut objects)?,
+                PgCastEntry::load(connection, &mut objects)?,
+            )
+        };
 
         let mut tables = Vec::new();
         let mut table_oids = value.tables.as_ref().map(|_| Vec::new());
@@ -836,7 +844,12 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
             generic_builder = generic_builder.add_column_grant(Arc::new(model), metadata);
         }
 
-        Ok(generic_builder.into_database(Some(operators.into())))
+        Ok(
+            generic_builder.into_database(Some(Arc::new(PgCatalogMetadata {
+                operators: operators.into(),
+                casts: casts.into(),
+            }))),
+        )
     }
 }
 

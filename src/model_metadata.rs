@@ -1,5 +1,8 @@
 //! Metadata wrappers providing enriched information about database objects.
 
+pub(crate) mod catalog_identity;
+mod pg_cast_entry;
+pub use pg_cast_entry::PgCastEntry;
 mod table_metadata;
 pub use table_metadata::{TableMetadata, TableMetadataDetails};
 mod column_metadata;

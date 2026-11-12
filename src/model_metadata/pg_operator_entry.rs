@@ -1,6 +1,6 @@
 //! Stored operator signatures and exact implementing functions.
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use diesel::{PgConnection, QueryDsl, RunQueryDsl, SelectableHelper};
 use sql_traits::{
@@ -8,25 +8,9 @@ use sql_traits::{
     traits::{Metadata, OperatorKind, OperatorLike},
 };
 
-use crate::{
-    PgDieselDatabase, database::CatalogCache, model_metadata::PgFunction, models::PgOperator,
-};
+use crate::{PgDieselDatabase, model_metadata::PgFunction, models::PgOperator};
 
-/// A stored catalog identity with a shared schema name.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct CatalogIdentity {
-    /// The schema name as stored in `pg_namespace`.
-    schema: Arc<str>,
-    /// The object name as stored in its catalog.
-    name: String,
-}
-
-impl CatalogIdentity {
-    /// Returns the qualified identity without identifier folding.
-    fn target(&self) -> TargetName<'_> {
-        TargetName::new(self.name.as_str(), true).with_schema(self.schema.as_ref(), true)
-    }
-}
+use super::catalog_identity::{CatalogIdentity, CatalogObjects};
 
 /// An operator signature resolved by catalog OIDs.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -45,39 +29,6 @@ pub struct PgOperatorEntry {
     implementation: Option<Arc<PgFunction>>,
 }
 
-/// Shares a stored schema name across catalog identities.
-fn namespace(
-    oid: u32,
-    cache: &CatalogCache,
-    namespaces: &mut HashMap<u32, Arc<str>>,
-) -> Option<Arc<str>> {
-    if let Some(name) = namespaces.get(&oid) {
-        return Some(Arc::clone(name));
-    }
-    let name: Arc<str> = cache.namespace(oid)?.into();
-    namespaces.insert(oid, Arc::clone(&name));
-    Some(name)
-}
-
-/// Resolves a type OID without replacing its stored name with a display spelling.
-fn operand_type(
-    oid: u32,
-    cache: &CatalogCache,
-    types: &mut HashMap<u32, Arc<CatalogIdentity>>,
-    namespaces: &mut HashMap<u32, Arc<str>>,
-) -> Option<Arc<CatalogIdentity>> {
-    if let Some(identity) = types.get(&oid) {
-        return Some(Arc::clone(identity));
-    }
-    let model = cache.pg_type(oid)?;
-    let identity = Arc::new(CatalogIdentity {
-        schema: namespace(model.typnamespace, cache, namespaces)?,
-        name: model.typname.clone(),
-    });
-    types.insert(oid, Arc::clone(&identity));
-    Some(identity)
-}
-
 impl PgOperatorEntry {
     /// Loads operator signatures with their exact loaded function objects.
     ///
@@ -86,17 +37,10 @@ impl PgOperatorEntry {
     /// Returns an error if a catalog query fails or an operator kind is unsupported.
     pub(crate) fn load(
         connection: &mut PgConnection,
-        cache: &CatalogCache,
-        functions: &[Arc<PgFunction>],
+        objects: &mut CatalogObjects<'_>,
     ) -> Result<Vec<Self>, diesel::result::Error> {
         use crate::schema::pg_catalog::pg_operator::pg_operator;
 
-        let functions: HashMap<_, _> = functions
-            .iter()
-            .map(|function| (function.oid(), function))
-            .collect();
-        let mut types = HashMap::new();
-        let mut namespaces = HashMap::new();
         pg_operator::table
             .select(PgOperator::as_select())
             .load::<PgOperator>(connection)?
@@ -113,17 +57,16 @@ impl PgOperatorEntry {
                 };
                 Ok(Self {
                     target: CatalogIdentity {
-                        schema: namespace(model.oprnamespace, cache, &mut namespaces)
+                        schema: objects
+                            .namespace(model.oprnamespace)
                             .ok_or(diesel::result::Error::NotFound)?,
                         name: model.oprname,
                     },
                     kind,
-                    left: operand_type(model.oprleft, cache, &mut types, &mut namespaces),
-                    right: operand_type(model.oprright, cache, &mut types, &mut namespaces),
-                    result: operand_type(model.oprresult, cache, &mut types, &mut namespaces),
-                    implementation: functions
-                        .get(&model.oprcode)
-                        .map(|function| Arc::clone(function)),
+                    left: objects.type_identity(model.oprleft),
+                    right: objects.type_identity(model.oprright),
+                    result: objects.type_identity(model.oprresult),
+                    implementation: objects.function(model.oprcode),
                 })
             })
             .collect()
