@@ -137,16 +137,21 @@ async fn incomplete_or_cyclic_composites_fail_type_construction() {
     connection
         .batch_execute("CREATE TYPE broken AS (value text);")
         .unwrap();
-    for target in ["0", "'broken'::regtype::oid", "'broken[]'::regtype::oid"] {
+    for assignment in [
+        "atttypid = 0",
+        "atttypid = 'broken'::regtype::oid",
+        "atttypid = 'broken[]'::regtype::oid",
+        "attcollation = 4294967295",
+    ] {
         connection.batch_execute(&format!(
-            "BEGIN; UPDATE pg_catalog.pg_attribute SET atttypid = {target}
+            "BEGIN; UPDATE pg_catalog.pg_attribute SET {assignment}
              WHERE attrelid = (SELECT typrelid FROM pg_catalog.pg_type WHERE oid = 'broken'::regtype)
              AND attnum = 1;"
         )).unwrap();
         let cache = CatalogCache::load(&mut connection).unwrap();
         assert!(
             declared_type(&mut connection, &cache, "broken").is_none(),
-            "{target}"
+            "{assignment}"
         );
         connection.batch_execute("ROLLBACK").unwrap();
     }
