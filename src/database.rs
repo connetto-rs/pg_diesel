@@ -21,7 +21,7 @@ pub use acl_schema_grant::AclSchemaGrant;
 mod acl_table_grant;
 pub use acl_table_grant::AclTableGrant;
 mod catalog_cache;
-pub use catalog_cache::{CatalogCache, FIRST_NORMAL_OBJECT_ID};
+pub use catalog_cache::{CatalogCache, CompositeAttribute, FIRST_NORMAL_OBJECT_ID};
 
 mod builder;
 pub use builder::{PgDatabaseBuildError, PgDieselDatabaseBuilder};

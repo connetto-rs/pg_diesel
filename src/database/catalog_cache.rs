@@ -1,18 +1,40 @@
 //! The catalog lookups a build resolves in one query instead of many.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use diesel::dsl::sql;
-use diesel::sql_types::Text;
-use diesel::{ExpressionMethods, PgConnection, QueryDsl, RunQueryDsl, SelectableHelper};
+use diesel::sql_types::{Integer, Text};
+use diesel::{
+    BoolExpressionMethods, ExpressionMethods, JoinOnDsl, NullableExpressionMethods, PgConnection,
+    QueryDsl, RunQueryDsl, SelectableHelper,
+};
 
-use crate::models::{PgAttribute, PgType};
+use crate::models::PgType;
 
 /// The first OID `PostgreSQL` hands to an object created after `initdb`.
 ///
 /// Objects below it are built in and pinned, so the server records no
 /// `pg_depend` row on one and no user-defined type lives under it.
 pub const FIRST_NORMAL_OBJECT_ID: u32 = 16384;
+
+/// A live composite attribute with its declared type and collation.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, diesel::Queryable)]
+pub struct CompositeAttribute {
+    /// The stored field name.
+    pub name: String,
+    /// The declared type OID.
+    pub type_oid: u32,
+    /// The declared type modifier.
+    pub typmod: i32,
+    /// The declared array dimension count.
+    pub dimensions: i32,
+    /// Whether the field carries a `NOT NULL` constraint.
+    pub not_null: bool,
+    /// The effective collation OID.
+    pub collation_oid: u32,
+    /// The nondefault collation's schema, name and determinism.
+    pub collation: Option<(String, String, bool)>,
+}
 
 /// The catalog rows a build resolves by OID, loaded once.
 ///
@@ -37,11 +59,8 @@ pub struct CatalogCache {
     /// The subtype a range or multirange type holds, by the OID
     /// `pg_range` records the range or the multirange under.
     range_subtypes: HashMap<u32, u32>,
-    /// The live attributes of every composite type's relation, by the OID
-    /// `pg_type` records the relation under, in `attnum` order, each as the
-    /// OID of its type, the typmod it holds and the array dimensions it
-    /// declares.
-    composite_attributes: HashMap<u32, Vec<(u32, i32, i32)>>,
+    /// Every composite relation's live attributes in `attnum` order.
+    composite_attributes: HashMap<u32, Vec<Arc<CompositeAttribute>>>,
 }
 
 impl CatalogCache {
@@ -52,11 +71,11 @@ impl CatalogCache {
     /// * If one of the catalogs cannot be read.
     pub fn load(conn: &mut PgConnection) -> Result<Self, diesel::result::Error> {
         use crate::schema::pg_catalog::{
-            pg_attribute::pg_attribute, pg_collation::pg_collation, pg_language::pg_language,
-            pg_namespace::pg_namespace, pg_range::pg_range, pg_roles::pg_roles, pg_type::pg_type,
+            pg_collation::pg_collation, pg_language::pg_language, pg_namespace::pg_namespace,
+            pg_range::pg_range, pg_roles::pg_roles, pg_type::pg_type,
         };
 
-        let types = pg_type::table
+        let types: HashMap<u32, PgType> = pg_type::table
             .select(PgType::as_select())
             .load::<PgType>(conn)?
             .into_iter()
@@ -115,45 +134,7 @@ impl CatalogCache {
             .flat_map(|(range, subtype, multirange)| [(range, subtype), (multirange, subtype)])
             .collect();
 
-        // A composite type sends each live attribute of its relation, in
-        // `attnum` order.
-        let composite_attributes: HashMap<u32, Vec<(u32, i32, i32)>> = pg_attribute::table
-            .filter(pg_attribute::attisdropped.eq(false))
-            .filter(pg_attribute::attnum.gt(0))
-            .filter(
-                pg_attribute::attrelid.eq_any(
-                    pg_type::table
-                        .filter(pg_type::typtype.eq("c"))
-                        .filter(pg_type::typrelid.ne(0))
-                        .select(pg_type::typrelid),
-                ),
-            )
-            .order(pg_attribute::attnum.asc())
-            .select(PgAttribute::as_select())
-            .load::<PgAttribute>(conn)?
-            .into_iter()
-            .map(|attribute| {
-                #[cfg(not(any(
-                    feature = "postgres-16",
-                    feature = "postgres-17",
-                    feature = "postgres-18"
-                )))]
-                let ndims = attribute.attndims;
-                #[cfg(any(
-                    feature = "postgres-16",
-                    feature = "postgres-17",
-                    feature = "postgres-18"
-                ))]
-                let ndims = i32::from(attribute.attndims);
-                (
-                    attribute.attrelid,
-                    (attribute.atttypid, attribute.atttypmod, ndims),
-                )
-            })
-            .fold(HashMap::new(), |mut attributes, (relation, field)| {
-                attributes.entry(relation).or_default().push(field);
-                attributes
-            });
+        let composite_attributes = Self::load_composite_attributes(conn, &types)?;
 
         Ok(Self {
             types,
@@ -165,6 +146,60 @@ impl CatalogCache {
             range_subtypes,
             composite_attributes,
         })
+    }
+
+    /// Loads live composite declarations, retaining empty relations.
+    fn load_composite_attributes(
+        conn: &mut PgConnection,
+        types: &HashMap<u32, PgType>,
+    ) -> Result<HashMap<u32, Vec<Arc<CompositeAttribute>>>, diesel::result::Error> {
+        use crate::schema::pg_catalog::{
+            pg_attribute::pg_attribute, pg_collation::pg_collation, pg_namespace::pg_namespace,
+            pg_type::pg_type,
+        };
+
+        let mut composite_attributes: HashMap<u32, Vec<Arc<CompositeAttribute>>> = types
+            .values()
+            .filter(|data_type| data_type.typtype == "c" && data_type.typrelid != 0)
+            .map(|data_type| (data_type.typrelid, Vec::new()))
+            .collect();
+        let attributes = pg_attribute::table
+            .left_join(pg_type::table.on(pg_type::oid.eq(pg_attribute::atttypid)))
+            .left_join(
+                pg_collation::table.on(pg_collation::oid
+                    .eq(pg_attribute::attcollation)
+                    .and(pg_collation::oid.ne(pg_type::typcollation))),
+            )
+            .left_join(pg_namespace::table.on(pg_namespace::oid.eq(pg_collation::collnamespace)))
+            .filter(pg_attribute::attisdropped.eq(false))
+            .filter(pg_attribute::attnum.gt(0))
+            .filter(pg_attribute::attrelid.eq_any(composite_attributes.keys().copied()))
+            .order(pg_attribute::attnum.asc())
+            .select((
+                pg_attribute::attrelid,
+                (
+                    pg_attribute::attname,
+                    pg_attribute::atttypid,
+                    pg_attribute::atttypmod,
+                    sql::<Integer>("attndims::integer"),
+                    pg_attribute::attnotnull,
+                    pg_attribute::attcollation,
+                    (
+                        pg_namespace::nspname,
+                        pg_collation::collname,
+                        pg_collation::collisdeterministic,
+                    )
+                        .nullable(),
+                ),
+            ))
+            .load::<(u32, CompositeAttribute)>(conn)?;
+        for (relation, attribute) in attributes {
+            composite_attributes
+                .entry(relation)
+                .or_default()
+                .push(Arc::new(attribute));
+        }
+        Ok(composite_attributes)
     }
 
     /// Returns the type recorded under `oid`.
@@ -213,11 +248,9 @@ impl CatalogCache {
         self.range_subtypes.get(&oid).copied()
     }
 
-    /// Returns the live attributes of the relation `pg_type` records under
-    /// `oid`, in `attnum` order, each as the OID of its type, the typmod it
-    /// holds and the array dimensions it declares.
+    /// Returns a composite relation's live attributes in `attnum` order.
     #[must_use]
-    pub fn composite_attributes(&self, oid: u32) -> Option<&[(u32, i32, i32)]> {
+    pub fn composite_attributes(&self, oid: u32) -> Option<&[Arc<CompositeAttribute>]> {
         self.composite_attributes.get(&oid).map(Vec::as_slice)
     }
 }

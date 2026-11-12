@@ -16,6 +16,8 @@ mod test_utils;
 mod casts;
 #[path = "differential/compare.rs"]
 mod compare;
+#[path = "differential/data_types.rs"]
+mod data_types;
 #[path = "differential/deparse.rs"]
 mod deparse;
 #[path = "differential/expected.rs"]

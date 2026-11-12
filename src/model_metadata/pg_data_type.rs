@@ -2,11 +2,22 @@
 //! read from `pg_attribute` and `pg_type`.
 
 use core::num::NonZeroU32;
-use std::borrow::Cow;
+use std::{borrow::Cow, sync::Arc};
 
-use sql_traits::traits::{DataTypeLike, IntervalFields, VectorKind, VectorType};
+use sql_traits::{
+    structs::TargetName,
+    traits::{
+        ColumnCollation, DataTypeLike, IntervalFields, MapEntry, NamedColumnCollation,
+        StructureKind, StructuredField, VectorKind, VectorType,
+    },
+    utils::scalar_family::ScalarFamily,
+};
 
-use crate::{PgDieselDatabase, database::CatalogCache, models::PgType};
+use crate::{
+    PgDieselDatabase,
+    database::{CatalogCache, CompositeAttribute},
+    models::PgType,
+};
 
 /// The declared type of a column, with every fact the catalogs hold about it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -38,7 +49,16 @@ pub struct PgDataType {
     /// holds.
     range_subtype: Option<Box<PgDataType>>,
     /// The attributes of the composite type, in order.
-    composite_fields: Option<Vec<PgDataType>>,
+    composite_fields: Option<Vec<PgCompositeField>>,
+}
+
+/// A composite field sharing its catalog metadata across type occurrences.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct PgCompositeField {
+    /// The stored field declaration.
+    attribute: Arc<CompositeAttribute>,
+    /// The complete declared field type.
+    data_type: PgDataType,
 }
 
 impl PgDataType {
@@ -49,8 +69,7 @@ impl PgDataType {
     /// array holds. `ndims` is the `attndims` the column carries, the number
     /// of array dimensions it declares.
     ///
-    /// Returns `None` when an array element or a domain base is missing from
-    /// `cache`.
+    /// Returns `None` when required catalog metadata is missing or cyclic.
     #[must_use]
     pub fn from_type(
         pg_type: &PgType,
@@ -61,10 +80,7 @@ impl PgDataType {
         Self::from_type_through(pg_type, typmod, cache, ndims, &[])
     }
 
-    /// Builds the type under `pg_type`, where `in_progress` holds the OIDs of
-    /// the composite types whose attributes are being read, so a composite
-    /// that reaches itself through an array or a domain reads its own
-    /// attributes once and stops.
+    /// Builds a type while tracking the enclosing composite OIDs.
     fn from_type_through(
         pg_type: &PgType,
         typmod: i32,
@@ -121,7 +137,7 @@ impl PgDataType {
                 composite_fields: None,
             });
         }
-        Some(scalar(pg_type, typmod, cache, in_progress))
+        scalar(pg_type, typmod, cache, in_progress)
     }
 
     /// Whether `typname` names one of the integer types a serial column
@@ -173,7 +189,12 @@ fn final_base<'a>(
 }
 
 /// The facts of a scalar type, with its type modifier decoded.
-fn scalar(pg_type: &PgType, typmod: i32, cache: &CatalogCache, in_progress: &[u32]) -> PgDataType {
+fn scalar(
+    pg_type: &PgType,
+    typmod: i32,
+    cache: &CatalogCache,
+    in_progress: &[u32],
+) -> Option<PgDataType> {
     let name = cache
         .type_name(pg_type.oid)
         .unwrap_or(&pg_type.typname)
@@ -208,10 +229,15 @@ fn scalar(pg_type: &PgType, typmod: i32, cache: &CatalogCache, in_progress: &[u3
         }
         _ => (None, None, None, None, None),
     };
-    PgDataType {
+    let composite_fields = if pg_type.typtype == "c" {
+        Some(composite_fields(pg_type, cache, in_progress)?)
+    } else {
+        None
+    };
+    Some(PgDataType {
         send_function: Some(pg_type.typsend != 0),
         range_subtype: range_subtype(pg_type, cache, in_progress),
-        composite_fields: composite_fields(pg_type, cache, in_progress),
+        composite_fields,
         name,
         element: None,
         base_type: None,
@@ -222,7 +248,7 @@ fn scalar(pg_type: &PgType, typmod: i32, cache: &CatalogCache, in_progress: &[u3
         fractional_seconds_precision,
         interval_fields,
         vector: vector_type(&pg_type.typname, typmod),
-    }
+    })
 }
 
 /// The subtype a range or multirange type holds, read from `pg_range`, or
@@ -246,16 +272,12 @@ fn range_subtype(
     )?))
 }
 
-/// The attributes of a composite type, in order, read from the live
-/// attributes of the relation `pg_type` records under `typrelid`, or `None`
-/// for a type that is no composite, one whose relation the cache does not
-/// hold, and one whose own attributes are being read, which a composite
-/// reaching itself through an array or a domain reads once and stops.
+/// Loads every live composite field, rejecting missing or cyclic metadata.
 fn composite_fields(
     pg_type: &PgType,
     cache: &CatalogCache,
     in_progress: &[u32],
-) -> Option<Vec<PgDataType>> {
+) -> Option<Vec<PgCompositeField>> {
     if !(pg_type.typtype == "c" && pg_type.typrelid != 0) {
         return None;
     }
@@ -267,15 +289,25 @@ fn composite_fields(
     with_self.push(pg_type.oid);
     attributes
         .iter()
-        .map(|(type_oid, field_typmod, field_ndims)| {
-            let field_type = cache.pg_type(*type_oid)?;
-            PgDataType::from_type_through(
+        .map(|attribute| {
+            let field_type = cache.pg_type(attribute.type_oid)?;
+            if attribute.collation_oid != 0
+                && attribute.collation_oid != field_type.typcollation
+                && attribute.collation.is_none()
+            {
+                return None;
+            }
+            let data_type = PgDataType::from_type_through(
                 field_type,
-                *field_typmod,
+                attribute.typmod,
                 cache,
-                *field_ndims,
+                attribute.dimensions,
                 &with_self,
-            )
+            )?;
+            Some(PgCompositeField {
+                attribute: Arc::clone(attribute),
+                data_type,
+            })
         })
         .collect()
 }
@@ -388,6 +420,18 @@ impl DataTypeLike for PgDataType {
         Cow::Borrowed(self.name.as_str())
     }
 
+    fn is_unsigned(&self, database: &Self::DB) -> Option<bool> {
+        matches!(
+            self.scalar_family(database),
+            Some(ScalarFamily::Int | ScalarFamily::Float | ScalarFamily::Decimal)
+        )
+        .then_some(false)
+    }
+
+    fn admits_null(&self, _database: &Self::DB) -> bool {
+        true
+    }
+
     fn max_character_length(&self, _database: &Self::DB) -> Option<u64> {
         self.max_character_length
     }
@@ -432,11 +476,40 @@ impl DataTypeLike for PgDataType {
         self.range_subtype.as_deref()
     }
 
-    fn composite_fields<'db>(
+    fn structure_kind(&self, _database: &Self::DB) -> Option<StructureKind> {
+        self.composite_fields
+            .as_ref()
+            .map(|_| StructureKind::Struct)
+    }
+
+    fn structured_fields<'db>(
         &'db self,
         _database: &'db Self::DB,
-    ) -> Option<impl Iterator<Item = &'db Self>> {
-        self.composite_fields.as_deref().map(<[_]>::iter)
+    ) -> Option<impl Iterator<Item = StructuredField<'db, Self>>> {
+        self.composite_fields.as_deref().map(|fields| {
+            fields.iter().map(|field| {
+                let attribute = &field.attribute;
+                let collation = attribute.collation.as_ref().map_or(
+                    ColumnCollation::DatabaseDefault,
+                    |(schema, name, deterministic)| {
+                        ColumnCollation::Named(
+                            NamedColumnCollation::new(
+                                TargetName::new(name.as_str(), true)
+                                    .with_schema(schema.as_str(), true),
+                            )
+                            .with_postgres_deterministic(Some(*deterministic)),
+                        )
+                    },
+                );
+                StructuredField::new(&field.data_type, !attribute.not_null)
+                    .with_name(&attribute.name, true)
+                    .with_collation(collation)
+            })
+        })
+    }
+
+    fn map_entry<'db>(&'db self, _database: &'db Self::DB) -> Option<MapEntry<'db, Self>> {
+        None
     }
 }
 
