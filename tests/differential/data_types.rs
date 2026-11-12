@@ -1,4 +1,4 @@
-//! Structured type facts loaded from PostgreSQL catalogs.
+//! Declared type facts loaded from PostgreSQL catalogs.
 
 use diesel::{
     RunQueryDsl,
@@ -155,4 +155,174 @@ async fn incomplete_or_cyclic_composites_fail_type_construction() {
         );
         connection.batch_execute("ROLLBACK").unwrap();
     }
+}
+
+#[tokio::test]
+async fn enumeration_preserves_catalog_order_labels_and_type_boundaries() {
+    use pg_diesel::sql_traits::traits::EnumerationKind;
+
+    let docker = reference_docker("enumeration").await.unwrap();
+    let mut connection: PgConnection = establish_connection(docker.port, "enumeration").unwrap();
+    connection
+        .batch_execute(
+            r#"
+            CREATE SCHEMA "Enums";
+            CREATE TYPE "Enums"."Mood" AS ENUM ('z', 'a');
+            ALTER TYPE "Enums"."Mood" ADD VALUE ' middle ' BEFORE 'a';
+            ALTER TYPE "Enums"."Mood" ADD VALUE 'first' BEFORE 'z';
+            ALTER TYPE "Enums"."Mood" ADD VALUE 'quote''label' AFTER 'z';
+            ALTER TYPE "Enums"."Mood" RENAME VALUE 'a' TO 'end';
+            CREATE TYPE public."Mood" AS ENUM ('other');
+            CREATE TYPE "Enums"."Empty" AS ENUM ();
+            CREATE DOMAIN "Enums"."Domain" AS "Enums"."Mood";
+            "#,
+        )
+        .unwrap();
+    let cache = CatalogCache::load(&mut connection).unwrap();
+    let database: PgDieselDatabase =
+        GenericDBBuilder::new("enumeration".to_owned(), PostgresDialect).into();
+    let check = |data_type: &PgDataType, expected: &[&str]| {
+        let enumeration = data_type.enumeration(&database).unwrap();
+        assert_eq!(enumeration.kind(), EnumerationKind::Enum);
+        assert_eq!(enumeration.width(), None);
+        let labels: Vec<_> = enumeration
+            .into_members()
+            .map(|member| {
+                assert_eq!(member.value(), None);
+                member.label()
+            })
+            .collect();
+        assert_eq!(labels, expected);
+    };
+    let expected = ["first", "z", "quote'label", " middle ", "end"];
+    let mood = declared_type(&mut connection, &cache, r#""Enums"."Mood""#).unwrap();
+    check(&mood, &expected);
+    let other = declared_type(&mut connection, &cache, r#"public."Mood""#).unwrap();
+    check(&other, &["other"]);
+    let empty = declared_type(&mut connection, &cache, r#""Enums"."Empty""#).unwrap();
+    check(&empty, &[]);
+    let domain = declared_type(&mut connection, &cache, r#""Enums"."Domain""#).unwrap();
+    assert!(domain.enumeration(&database).is_none());
+    check(domain.base_type(&database).unwrap(), &expected);
+    let array = declared_type(&mut connection, &cache, r#""Enums"."Mood"[]"#).unwrap();
+    assert!(array.enumeration(&database).is_none());
+    check(array.array_element(&database).unwrap(), &expected);
+    let integer = declared_type(&mut connection, &cache, "integer").unwrap();
+    assert!(integer.enumeration(&database).is_none());
+}
+
+#[tokio::test]
+async fn enum_without_cached_members_fails_type_construction() {
+    use diesel::{ExpressionMethods, QueryDsl, SelectableHelper};
+    use pg_diesel::{models::PgType, schema::pg_catalog::pg_type::pg_type};
+
+    let docker = reference_docker("uncached_enum").await.unwrap();
+    let mut connection: PgConnection = establish_connection(docker.port, "uncached_enum").unwrap();
+    let cache = CatalogCache::load(&mut connection).unwrap();
+    connection
+        .batch_execute("CREATE TYPE later AS ENUM ('ready')")
+        .unwrap();
+    let row = pg_type::table
+        .filter(pg_type::typname.eq("later"))
+        .select(PgType::as_select())
+        .first::<PgType>(&mut connection)
+        .unwrap();
+    assert!(PgDataType::from_type(&row, -1, &cache, 0).is_none());
+}
+
+#[tokio::test]
+async fn lengths_and_units_preserve_declared_type_boundaries() {
+    use pg_diesel::sql_traits::traits::CharacterLengthUnit;
+
+    let docker = reference_docker("type_lengths").await.unwrap();
+    let mut connection: PgConnection = establish_connection(docker.port, "type_lengths").unwrap();
+    connection
+        .batch_execute(
+            r"
+            CREATE DOMAIN bit_domain AS bit varying(13);
+            CREATE DOMAIN text_domain AS varchar(5);
+            CREATE TYPE lengths AS (
+                flag bit, mask bit(8), bits bit varying(16), any_bits varbit,
+                letter char, code char(3), title varchar(7), any_title varchar,
+                body text, payload bytea, number integer,
+                zoned_timestamp timestamp with time zone, zoned_time time with time zone,
+                plain_timestamp timestamp without time zone, plain_time time without time zone
+            );
+            CREATE TYPE wrapped_lengths AS (
+                domain_bits bit_domain, array_bits bit(9)[],
+                domain_text text_domain, array_text varchar(11)[]
+            );
+            ",
+        )
+        .unwrap();
+    let cache = CatalogCache::load(&mut connection).unwrap();
+    let database: PgDieselDatabase =
+        GenericDBBuilder::new("type_lengths".to_owned(), PostgresDialect).into();
+    let lengths = declared_type(&mut connection, &cache, "lengths").unwrap();
+    let facts: Vec<_> = lengths
+        .structured_fields(&database)
+        .unwrap()
+        .map(|field| {
+            let data_type = field.data_type();
+            assert_eq!(data_type.max_binary_length(&database), None);
+            assert_eq!(data_type.time_zone(&database), None);
+            (
+                field.name().unwrap(),
+                data_type.max_bit_length(&database),
+                data_type.max_character_length(&database),
+                data_type.character_length_unit(&database),
+            )
+        })
+        .collect();
+    let characters = Some(CharacterLengthUnit::Characters);
+    assert_eq!(
+        facts,
+        [
+            ("flag", Some(1), None, None),
+            ("mask", Some(8), None, None),
+            ("bits", Some(16), None, None),
+            ("any_bits", None, None, None),
+            ("letter", None, Some(1), characters),
+            ("code", None, Some(3), characters),
+            ("title", None, Some(7), characters),
+            ("any_title", None, None, None),
+            ("body", None, None, None),
+            ("payload", None, None, None),
+            ("number", None, None, None),
+            ("zoned_timestamp", None, None, None),
+            ("zoned_time", None, None, None),
+            ("plain_timestamp", None, None, None),
+            ("plain_time", None, None, None),
+        ]
+    );
+    let wrapped = declared_type(&mut connection, &cache, "wrapped_lengths").unwrap();
+    let nested_facts: Vec<_> = wrapped
+        .structured_fields(&database)
+        .unwrap()
+        .map(|field| {
+            let data_type = field.data_type();
+            assert_eq!(data_type.max_bit_length(&database), None);
+            assert_eq!(data_type.max_character_length(&database), None);
+            assert_eq!(data_type.character_length_unit(&database), None);
+            let nested = data_type
+                .base_type(&database)
+                .or_else(|| data_type.array_element(&database))
+                .unwrap();
+            (
+                field.name().unwrap(),
+                nested.max_bit_length(&database),
+                nested.max_character_length(&database),
+                nested.character_length_unit(&database),
+            )
+        })
+        .collect();
+    assert_eq!(
+        nested_facts,
+        [
+            ("domain_bits", Some(13), None, None),
+            ("array_bits", Some(9), None, None),
+            ("domain_text", None, Some(5), characters),
+            ("array_text", None, Some(11), characters),
+        ]
+    );
 }
