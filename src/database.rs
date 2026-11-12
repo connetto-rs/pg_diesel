@@ -22,17 +22,20 @@ mod acl_table_grant;
 pub use acl_table_grant::AclTableGrant;
 mod catalog_cache;
 pub use catalog_cache::{CatalogCache, CompositeAttribute, FIRST_NORMAL_OBJECT_ID};
+mod type_facts;
 
 mod builder;
 pub use builder::{PgDatabaseBuildError, PgDieselDatabaseBuilder};
 
-/// Loaded operator and cast catalogs, including an explicitly loaded empty catalog.
+/// Loaded operator, cast and type catalogs, including an explicitly loaded empty catalog.
 #[derive(Debug, Default)]
 pub struct PgCatalogMetadata {
     /// The operator signatures loaded from `pg_operator`.
     operators: Box<[PgOperatorEntry]>,
     /// The casts loaded from `pg_cast`.
     casts: Box<[PgCastEntry]>,
+    /// The conversion facts loaded from `pg_type`.
+    types: type_facts::PgTypeCatalog,
 }
 
 /// The kinds of schema object a database read through `pg_catalog` holds.
@@ -89,6 +92,14 @@ impl SchemaProfile for PgDieselProfile {
         Self::Cast: 'a,
     {
         ingestion.as_ref().map(|catalog| catalog.casts.iter())
+    }
+
+    fn type_facts<'a>(
+        database: &'a GenericDB<Self>,
+        ingestion: &'a Self::Ingestion,
+        type_name: sql_traits::structs::TargetName<'_>,
+    ) -> Option<sql_traits::structs::TypeFacts<'a>> {
+        ingestion.as_ref()?.types.find(database, &type_name)
     }
 
     /// The schemas a fresh read of this profile starts with, none, since the

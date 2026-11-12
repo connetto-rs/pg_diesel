@@ -239,6 +239,11 @@ impl CatalogCache {
         self.types.get(&oid)
     }
 
+    /// Iterates every cached type row.
+    pub(super) fn types(&self) -> impl ExactSizeIterator<Item = &PgType> {
+        self.types.values()
+    }
+
     /// Returns the name `format_type` resolves the type under `oid` to in
     /// the reading session.
     #[must_use]

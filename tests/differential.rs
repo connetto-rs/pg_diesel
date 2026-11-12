@@ -30,6 +30,8 @@ mod operators;
 mod server;
 #[path = "differential/table_filter.rs"]
 mod table_filter;
+#[path = "differential/type_facts.rs"]
+mod type_facts;
 
 use std::{
     collections::BTreeSet,
