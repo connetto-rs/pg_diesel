@@ -24,6 +24,12 @@ mod deparse;
 mod expected;
 #[path = "differential/node_tree.rs"]
 mod node_tree;
+#[path = "differential/operator_coercion.rs"]
+mod operator_coercion;
+#[path = "differential/operator_fixtures.rs"]
+mod operator_fixtures;
+#[path = "differential/operator_resolution.rs"]
+mod operator_resolution;
 #[path = "differential/operators.rs"]
 mod operators;
 #[path = "differential/server.rs"]
