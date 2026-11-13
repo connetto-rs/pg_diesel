@@ -2,14 +2,16 @@
 
 use std::collections::HashMap;
 
-use diesel::{QueryDsl, RunQueryDsl, SelectableHelper, dsl::sql, sql_types::Oid};
+use diesel::{
+    ExpressionMethods, QueryDsl, RunQueryDsl, SelectableHelper, dsl::sql, sql_types::Oid,
+};
 use pg_diesel::{
     PgDieselDatabase,
     dialect::PostgresDialect,
     models::PgType,
     schema::pg_catalog::{pg_namespace::pg_namespace, pg_type::pg_type},
     sql_traits::{
-        structs::{TargetName, TypeCategory, generic_db::GenericDBBuilder},
+        structs::{TargetName, TypeCategory, TypeKind, generic_db::GenericDBBuilder},
         traits::DatabaseLike,
     },
 };
@@ -105,6 +107,64 @@ async fn type_facts_preserve_catalog_categories_arrays_and_domain_bases() {
         );
         assert_eq!(domain.base_typmod(), typmod);
     }
+}
+
+#[tokio::test]
+async fn type_kinds_distinguish_catalog_definitions_from_categories() {
+    let docker = reference_docker("type_kinds").await.unwrap();
+    let mut connection: PgConnection = establish_connection(docker.port, "type_kinds").unwrap();
+    connection
+        .batch_execute(
+            r#"
+            CREATE SCHEMA "Types";
+            CREATE TYPE "Types"."Pair" AS (value integer);
+            CREATE TYPE "Types"."Mood" AS ENUM ('calm', 'busy');
+            CREATE DOMAIN "Types"."MoodDomain" AS "Types"."Mood";
+            CREATE TYPE "Types"."Shell";
+            CREATE TYPE "Types"."UnknownKind";
+            CREATE TYPE "Types"."FalseEnum";
+            CREATE FUNCTION "Types".fake_enum_in(cstring)
+                RETURNS "Types"."FalseEnum" AS 'int4in' LANGUAGE internal IMMUTABLE STRICT;
+            CREATE FUNCTION "Types".fake_enum_out("Types"."FalseEnum")
+                RETURNS cstring AS 'int4out' LANGUAGE internal IMMUTABLE STRICT;
+            CREATE TYPE "Types"."FalseEnum" (
+                INPUT = "Types".fake_enum_in, OUTPUT = "Types".fake_enum_out,
+                INTERNALLENGTH = 4, PASSEDBYVALUE, ALIGNMENT = int4, CATEGORY = 'E'
+            );
+            "#,
+        )
+        .unwrap();
+    diesel::update(pg_type::table.filter(pg_type::typname.eq("UnknownKind")))
+        .set(pg_type::typtype.eq("z"))
+        .execute(&mut connection)
+        .unwrap();
+    let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+        .connection(&mut connection)
+        .catalog("type_kinds")
+        .schema("public")
+        .try_into()
+        .unwrap();
+    for (schema, name, kind) in [
+        ("pg_catalog", "int4", Some(TypeKind::Base)),
+        ("pg_catalog", "record", Some(TypeKind::Pseudo)),
+        ("pg_catalog", "int4range", Some(TypeKind::Range)),
+        ("pg_catalog", "int4multirange", Some(TypeKind::Multirange)),
+        ("Types", "Pair", Some(TypeKind::Composite)),
+        ("Types", "Mood", Some(TypeKind::Enum)),
+        ("Types", "_Mood", Some(TypeKind::Base)),
+        ("Types", "MoodDomain", Some(TypeKind::Domain)),
+        ("Types", "Shell", Some(TypeKind::Pseudo)),
+        ("Types", "FalseEnum", Some(TypeKind::Base)),
+        ("Types", "UnknownKind", None),
+    ] {
+        let target = TargetName::new(name, true).with_schema(schema, true);
+        let facts = database.type_facts(target).unwrap();
+        assert_eq!(facts.kind(), kind, "{schema}.{name}");
+    }
+    let false_enum = database
+        .type_facts(TargetName::new("FalseEnum", true).with_schema("Types", true))
+        .unwrap();
+    assert_eq!(false_enum.category(), TypeCategory::ENUM);
 }
 
 #[tokio::test]
