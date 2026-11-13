@@ -391,8 +391,8 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
         }
 
         let cache = CatalogCache::load(connection)?;
-        let search_path = session_search_path(connection)?;
-        let search_path: Vec<(&str, bool)> = search_path
+        let owned_search_path = session_search_path(connection)?;
+        let search_path: Vec<(&str, bool)> = owned_search_path
             .iter()
             .map(|(schema, quoted)| (schema.as_str(), *quoted))
             .collect();
@@ -465,11 +465,12 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
             };
             generic_builder = generic_builder.add_function(function, metadata);
         }
-        let (operators, casts) = {
+        let (operators, casts, types) = {
             let mut objects = CatalogObjects::new(&cache, &functions);
             (
                 PgOperatorEntry::load(connection, &mut objects)?,
                 PgCastEntry::load(connection, &mut objects)?,
+                super::type_facts::PgTypeCatalog::load(connection, &cache, &mut objects)?,
             )
         };
 
@@ -844,12 +845,13 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
             generic_builder = generic_builder.add_column_grant(Arc::new(model), metadata);
         }
 
-        Ok(
-            generic_builder.into_database(Some(Arc::new(PgCatalogMetadata {
+        Ok(generic_builder
+            .with_search_path(owned_search_path)
+            .into_database(Some(Arc::new(PgCatalogMetadata {
                 operators: operators.into(),
                 casts: casts.into(),
-            }))),
-        )
+                types,
+            }))))
     }
 }
 
