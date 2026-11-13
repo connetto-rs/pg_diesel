@@ -7,9 +7,9 @@ use std::{borrow::Cow, sync::Arc};
 use sql_traits::{
     structs::TargetName,
     traits::{
-        CharacterLengthUnit, ColumnCollation, DataTypeLike, Enumeration, EnumerationKind,
-        EnumerationMember, IntervalFields, MapEntry, NamedColumnCollation, StructureKind,
-        StructuredField, VectorKind, VectorType,
+        ArrayDimension, CharacterLengthUnit, ColumnCollation, DataTypeLike, Enumeration,
+        EnumerationKind, EnumerationMember, IntervalFields, MapEntry, NamedColumnCollation,
+        StructureKind, StructuredField, VectorKind, VectorType,
     },
     utils::scalar_family::ScalarFamily,
 };
@@ -497,6 +497,22 @@ impl DataTypeLike for PgDataType {
 
     fn array_dimensions(&self, _database: &Self::DB) -> Option<NonZeroU32> {
         self.dimensions
+    }
+
+    fn enforces_array_dimensions(&self, _database: &Self::DB) -> Option<bool> {
+        self.element.as_ref().map(|_| false)
+    }
+
+    fn array_dimension_declarations<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Option<impl Iterator<Item = ArrayDimension>> {
+        let element = self.element.as_deref()?;
+        let dimensions = self.dimensions.map_or(0, NonZeroU32::get);
+        let admits_null_elements = element.admits_null(database);
+        Some((0..dimensions).map(move |dimension| {
+            ArrayDimension::new(None, dimension + 1 == dimensions && admits_null_elements)
+        }))
     }
 
     fn base_type<'db>(&'db self, _database: &'db Self::DB) -> Option<&'db Self> {

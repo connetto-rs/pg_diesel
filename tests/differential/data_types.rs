@@ -12,7 +12,7 @@ use pg_diesel::{
     model_metadata::PgDataType,
     sql_traits::{
         structs::{TargetName, generic_db::GenericDBBuilder},
-        traits::{ColumnCollation, DataTypeLike, StructureKind},
+        traits::{ArrayDimension, ColumnCollation, DataTypeLike, StructureKind},
     },
 };
 
@@ -324,5 +324,187 @@ async fn lengths_and_units_preserve_declared_type_boundaries() {
             ("domain_text", None, Some(5), characters),
             ("array_text", None, Some(11), characters),
         ]
+    );
+}
+
+#[tokio::test]
+async fn arrays_preserve_declared_dimensions_and_domain_boundaries() {
+    let docker = reference_docker("array_dimensions").await.unwrap();
+    let mut connection: PgConnection =
+        establish_connection(docker.port, "array_dimensions").unwrap();
+    connection
+        .batch_execute(
+            r"
+            CREATE DOMAIN array_domain AS integer[2][3];
+            CREATE DOMAIN nested_array_domain AS array_domain;
+            CREATE DOMAIN scalar_domain AS integer;
+            CREATE TABLE array_values (
+                id integer PRIMARY KEY,
+                ordinary integer[2] NOT NULL,
+                matrix integer[3][4] NOT NULL,
+                cube integer[][][],
+                scalar integer,
+                wrapped nested_array_domain,
+                members scalar_domain[]
+            );
+            CREATE TABLE copied_arrays (LIKE array_values);
+            CREATE TABLE selected_arrays AS SELECT * FROM array_values;
+            ",
+        )
+        .unwrap();
+    let cache = CatalogCache::load(&mut connection).unwrap();
+    let database: PgDieselDatabase =
+        GenericDBBuilder::new("array_dimensions".to_owned(), PostgresDialect).into();
+    let row = declared_type(&mut connection, &cache, "array_values").unwrap();
+    let fields: Vec<_> = row.structured_fields(&database).unwrap().collect();
+    assert_eq!(fields.len(), 7);
+    let nullable = ArrayDimension::new(None, true);
+    let rectangular = ArrayDimension::new(None, false);
+    for (field, expected) in fields.iter().zip([
+        None,
+        Some(vec![nullable]),
+        Some(vec![rectangular, nullable]),
+        Some(vec![rectangular, rectangular, nullable]),
+        None,
+        None,
+        Some(vec![nullable]),
+    ]) {
+        let data_type = field.data_type();
+        assert_eq!(
+            data_type.enforces_array_dimensions(&database),
+            expected.as_ref().map(|_| false),
+            "{:?}",
+            field.name()
+        );
+        assert_eq!(
+            data_type
+                .array_dimensions(&database)
+                .map(core::num::NonZeroU32::get),
+            expected
+                .as_ref()
+                .map(|dimensions| u32::try_from(dimensions.len()).unwrap())
+        );
+        assert_eq!(
+            data_type
+                .array_dimension_declarations(&database)
+                .map(Iterator::collect::<Vec<_>>),
+            expected
+        );
+    }
+    let domain = fields[5].data_type();
+    assert!(domain.array_element(&database).is_none());
+    let base = domain.base_type(&database).unwrap();
+    assert!(base.base_type(&database).is_none());
+    assert_eq!(base.enforces_array_dimensions(&database), Some(false));
+    assert_eq!(
+        base.array_dimensions(&database)
+            .map(core::num::NonZeroU32::get),
+        Some(2)
+    );
+    assert_eq!(
+        base.array_dimension_declarations(&database)
+            .unwrap()
+            .collect::<Vec<_>>(),
+        [rectangular, nullable]
+    );
+    let member = fields[6].data_type().array_element(&database).unwrap();
+    assert!(member.base_type(&database).is_some());
+    assert!(member.admits_null(&database));
+    assert!(member.array_dimension_declarations(&database).is_none());
+
+    for name in ["copied_arrays", "selected_arrays"] {
+        let copied = declared_type(&mut connection, &cache, name).unwrap();
+        let mut array_names = Vec::new();
+        for field in copied.structured_fields(&database).unwrap() {
+            let data_type = field.data_type();
+            if data_type.array_element(&database).is_some() {
+                array_names.push(field.name().unwrap());
+                assert_eq!(data_type.array_dimensions(&database), None);
+                assert_eq!(data_type.enforces_array_dimensions(&database), Some(false));
+                let mut declarations = data_type.array_dimension_declarations(&database).unwrap();
+                assert_eq!(declarations.next(), None);
+            }
+        }
+        assert_eq!(array_names, ["ordinary", "matrix", "cube", "members"]);
+    }
+}
+
+#[tokio::test]
+async fn array_values_ignore_declared_shape_and_require_rectangular_elements() {
+    use diesel::{
+        ExpressionMethods, QueryDsl,
+        dsl::{array, array_fill, array_length, array_ndims},
+        sql_types::{Array, Integer, Nullable},
+    };
+
+    diesel::table! {
+        array_values (id) {
+            id -> Integer,
+            ordinary -> Array<Nullable<Integer>>,
+            matrix -> Array<Nullable<Integer>>,
+        }
+    }
+
+    let docker = reference_docker("array_values").await.unwrap();
+    let mut connection: PgConnection = establish_connection(docker.port, "array_values").unwrap();
+    connection
+        .batch_execute(
+            r"
+            CREATE TABLE array_values (
+                id integer PRIMARY KEY,
+                ordinary integer[2] NOT NULL,
+                matrix integer[3][4] NOT NULL
+            );
+            ",
+        )
+        .unwrap();
+    diesel::insert_into(array_values::table)
+        .values((
+            array_values::id.eq(1),
+            array_values::ordinary.eq(array_fill::<Nullable<Integer>, _, _>(Some(7), vec![2, 3])),
+            array_values::matrix.eq(vec![Some(1), None]),
+        ))
+        .execute(&mut connection)
+        .unwrap();
+    let shape = array_values::table
+        .select((
+            array_ndims(array_values::ordinary),
+            array_length(array_values::ordinary, 1),
+            array_length(array_values::ordinary, 2),
+            array_ndims(array_values::matrix),
+            array_values::matrix,
+        ))
+        .get_result::<(i32, Option<i32>, Option<i32>, i32, Vec<Option<i32>>)>(&mut connection)
+        .unwrap();
+    assert_eq!(shape, (2, Some(2), Some(3), 1, vec![Some(1), None]));
+
+    let rectangular_nulls =
+        array::<Array<Nullable<Integer>>, _>((vec![Some(1), None], vec![None, Some(2)]));
+    assert_eq!(
+        diesel::select(array_length(rectangular_nulls, 2))
+            .get_result::<Option<i32>>(&mut connection)
+            .unwrap(),
+        Some(2)
+    );
+    let ragged = array::<Array<Nullable<Integer>>, _>((vec![Some(1), None], vec![Some(2)]));
+    let error = diesel::select(array_length(ragged, 2))
+        .get_result::<Option<i32>>(&mut connection)
+        .unwrap_err();
+    assert!(
+        error.to_string().contains(
+            "multidimensional arrays must have array expressions with matching dimensions"
+        )
+    );
+    let null_subarray = array::<Nullable<Array<Nullable<Integer>>>, _>((
+        Some(vec![Some(1), None]),
+        None::<Vec<Option<i32>>>,
+    ));
+    let error = diesel::select(array_length(null_subarray, 2))
+        .get_result::<Option<i32>>(&mut connection)
+        .unwrap_err();
+    assert!(
+        error.to_string().contains(
+            "multidimensional arrays must have array expressions with matching dimensions"
+        )
     );
 }
