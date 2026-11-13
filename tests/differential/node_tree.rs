@@ -62,6 +62,26 @@ fn tokens(text: &str) -> Vec<String> {
     tokens
 }
 
+/// Returns the tag `PostgreSQL` 15 and later write for a node that
+/// `PostgreSQL` 14 writes as `tag`, so trees from every server share one
+/// spelling.
+fn current_tag(tag: &str) -> &str {
+    match tag {
+        "COLLATE" => "COLLATEEXPR",
+        "CASE" => "CASEEXPR",
+        "WHEN" => "CASEWHEN",
+        "ARRAY" => "ARRAYEXPR",
+        "ROW" => "ROWEXPR",
+        "ROWCOMPARE" => "ROWCOMPAREEXPR",
+        "COALESCE" => "COALESCEEXPR",
+        "MINMAX" => "MINMAXEXPR",
+        "NOTIFY" => "NOTIFYSTMT",
+        "DECLARECURSOR" => "DECLARECURSORSTMT",
+        "RTE" => "RANGETBLENTRY",
+        tag => tag,
+    }
+}
+
 /// Reads node trees out of a token sequence.
 struct Reader {
     /// Every token of the text.
@@ -93,6 +113,7 @@ impl Reader {
                 let name = self
                     .peek()
                     .filter(|name| !name.starts_with(':') && *name != "}")
+                    .map(current_tag)
                     .ok_or_else(|| self.error("a node name"))?
                     .to_owned();
                 self.position += 1;
