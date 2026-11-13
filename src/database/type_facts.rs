@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use diesel::{PgConnection, RunQueryDsl, dsl::sql, result::Error, sql_types::Oid};
 use sql_traits::{
-    structs::{DomainFacts, TargetName, TypeCategory, TypeFacts},
+    structs::{DomainFacts, TargetName, TypeCategory, TypeFacts, TypeKind},
     traits::DatabaseLike,
     utils::identifier_resolution::stored_identifier,
 };
@@ -40,6 +40,8 @@ struct PgDomainFacts {
 struct PgTypeFacts {
     /// The qualified stored type name.
     identity: Arc<CatalogIdentity>,
+    /// The catalog's type definition kind, when recognized.
+    kind: Option<TypeKind>,
     /// The catalog's type category.
     category: TypeCategory,
     /// Whether this type is preferred within its category.
@@ -71,6 +73,16 @@ impl PgTypeCatalog {
             };
             entries.push(PgTypeFacts {
                 identity: objects.type_identity(row.oid).ok_or(Error::NotFound)?,
+                kind: match row.typtype.as_str() {
+                    "b" => Some(TypeKind::Base),
+                    "c" => Some(TypeKind::Composite),
+                    "d" => Some(TypeKind::Domain),
+                    "e" => Some(TypeKind::Enum),
+                    "m" => Some(TypeKind::Multirange),
+                    "p" => Some(TypeKind::Pseudo),
+                    "r" => Some(TypeKind::Range),
+                    _ => None,
+                },
                 category: TypeCategory::new(*category),
                 preferred: row.typispreferred,
                 domain: (row.typtype == "d")
@@ -170,6 +182,9 @@ impl PgTypeFacts {
     /// Borrows all names from the loaded catalog without allocating.
     fn borrowed(&self) -> TypeFacts<'_> {
         let mut facts = TypeFacts::new(self.category, self.preferred);
+        if let Some(kind) = self.kind {
+            facts = facts.with_kind(kind);
+        }
         if let Some(domain) = &self.domain {
             facts = facts.with_domain(DomainFacts::new(domain.base.target(), domain.typmod));
         }
