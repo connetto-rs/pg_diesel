@@ -9,7 +9,7 @@ use pg_diesel::{
     database::{PgDatabaseBuildError, ServerVersion, VersionCatalog},
     model_metadata::MembershipGrant,
 };
-use test_utils::{docker_helpers::TESTED_MAJOR, establish_connection, reference_docker};
+use test_utils::{COMPILED_MAJORS, establish_connection, reference_docker};
 
 /// The schema both servers hold, a column whose `NOT NULL` only
 /// `PostgreSQL` 18 records as a named constraint.
@@ -24,7 +24,6 @@ const FIXTURE: &str = "
 /// constraint on `app.notes.id`.
 #[cfg(all(feature = "postgres-17", feature = "postgres-18"))]
 async fn not_null_constraint_name(major: u32) -> Option<String> {
-    use crate::test_utils::docker_helpers::reference_docker_of;
     use diesel::connection::SimpleConnection;
     use pg_diesel::{
         database::PgDieselDatabaseBuilder,
@@ -32,7 +31,7 @@ async fn not_null_constraint_name(major: u32) -> Option<String> {
     };
 
     let database_name = format!("server_versions_{major}");
-    let docker = reference_docker_of(major, &database_name)
+    let docker = reference_docker(major, &database_name)
         .await
         .expect("the database starts");
     let mut conn: PgConnection =
@@ -92,21 +91,23 @@ impl VersionCatalog for NoVersions {
 /// its version, before any catalog query.
 #[tokio::test]
 async fn an_uncompiled_server_version_is_refused() {
-    let database_name = "uncompiled_server_version";
-    let docker = reference_docker(database_name)
-        .await
-        .expect("the database starts");
-    let mut conn: PgConnection =
-        establish_connection(docker.port, database_name).expect("the connection opens");
-    let result: Result<PgDieselDatabase, _> =
-        pg_diesel_core::database::PgDieselDatabaseBuilder::<NoVersions>::default()
-            .connection(&mut conn)
-            .catalog(database_name)
-            .schema("public")
-            .try_into();
-    assert!(matches!(
-        result,
-        Err(PgDatabaseBuildError::UnsupportedServerVersion { server, compiled: [] })
-            if server == TESTED_MAJOR
-    ));
+    for &major in COMPILED_MAJORS {
+        let database_name = "uncompiled_server_version";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("the database starts");
+        let mut conn: PgConnection =
+            establish_connection(docker.port, database_name).expect("the connection opens");
+        let result: Result<PgDieselDatabase, _> =
+            pg_diesel_core::database::PgDieselDatabaseBuilder::<NoVersions>::default()
+                .connection(&mut conn)
+                .catalog(database_name)
+                .schema("public")
+                .try_into();
+        assert!(matches!(
+            result,
+            Err(PgDatabaseBuildError::UnsupportedServerVersion { server, compiled: [] })
+                if server == major
+        ));
+    }
 }

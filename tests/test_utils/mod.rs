@@ -4,7 +4,7 @@ pub mod docker_helpers;
 pub mod model_parser;
 pub mod schema_parser;
 
-pub use docker_helpers::{establish_connection, reference_docker};
+pub use docker_helpers::{COMPILED_MAJORS, establish_connection, reference_docker};
 
 /// Represents a feature gate condition.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -87,11 +87,17 @@ impl FeatureGate {
     }
 }
 
-/// The features a version-shaped gate is read against, the version of the
-/// server the tests start beside `routines` and `serde` when enabled.
+/// The features a version-shaped gate is read against on a `PostgreSQL`
+/// `major` server, its version beside `routines` and `serde` when enabled.
 #[allow(unused_mut, clippy::vec_init_then_push, dead_code)]
-pub fn get_active_postgres_features() -> Vec<&'static str> {
-    let mut features = vec![docker_helpers::TESTED_FEATURE];
+pub fn get_active_postgres_features(major: u32) -> Vec<&'static str> {
+    let mut features = vec![match major {
+        14 => "postgres-14",
+        15 => "postgres-15",
+        16 => "postgres-16",
+        17 => "postgres-17",
+        _ => "postgres-18",
+    }];
 
     #[cfg(feature = "routines")]
     features.push("routines");
@@ -102,10 +108,11 @@ pub fn get_active_postgres_features() -> Vec<&'static str> {
     features
 }
 
-/// Checks if a column/field should be enabled given the active features.
+/// Checks if a column/field should be enabled on a `PostgreSQL` `major`
+/// server.
 #[allow(dead_code)]
-pub fn is_enabled_for_current_features(gate: &FeatureGate) -> bool {
-    let active = get_active_postgres_features();
+pub fn is_enabled_for_current_features(gate: &FeatureGate, major: u32) -> bool {
+    let active = get_active_postgres_features(major);
     gate.is_enabled(&active)
 }
 

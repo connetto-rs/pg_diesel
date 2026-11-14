@@ -3,17 +3,52 @@
 mod test_utils;
 
 use diesel::{PgConnection, QueryDsl, RunQueryDsl, SelectableHelper};
-use test_utils::{docker_helpers::catalog, establish_connection, reference_docker};
+use test_utils::{COMPILED_MAJORS, establish_connection, reference_docker};
+
+/// Expands `$body` once per compiled `PostgreSQL` version, with `$catalog`
+/// naming that version's `pg_diesel::vN`.
+macro_rules! for_each_catalog {
+    ($catalog:ident => $body:block) => {
+        #[cfg(feature = "postgres-14")]
+        {
+            use pg_diesel::v14 as $catalog;
+            $body
+        }
+        #[cfg(feature = "postgres-15")]
+        {
+            use pg_diesel::v15 as $catalog;
+            $body
+        }
+        #[cfg(feature = "postgres-16")]
+        {
+            use pg_diesel::v16 as $catalog;
+            $body
+        }
+        #[cfg(feature = "postgres-17")]
+        {
+            use pg_diesel::v17 as $catalog;
+            $body
+        }
+        #[cfg(feature = "postgres-18")]
+        {
+            use pg_diesel::v18 as $catalog;
+            $body
+        }
+    };
+}
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn test_load_all_models() {
+    let mut loaded = Vec::new();
+    for_each_catalog!(catalog => {
     let database_name = "test_load_all";
-    let docker = reference_docker(database_name)
+    let docker = reference_docker(catalog::MAJOR, database_name)
         .await
         .expect("Failed to start docker");
     let mut conn: PgConnection = establish_connection(docker.port, database_name)
         .expect("Failed to establish connection to database");
+    loaded.push(catalog::MAJOR);
 
     // information_schema
     {
@@ -468,14 +503,6 @@ async fn test_load_all_models() {
         let _ = pg_aggregate
             .select(PgAggregate::as_select())
             .load::<PgAggregate>(&mut conn);
-    }
-    #[cfg(feature = "postgres-18")]
-    {
-        use catalog::models::PgAios;
-        use catalog::schema::pg_catalog::pg_aios::pg_aios::dsl::*;
-        let _ = pg_aios
-            .select(PgAios::as_select())
-            .load::<PgAios>(&mut conn);
     }
     {
         use catalog::models::PgAm;
@@ -1469,5 +1496,28 @@ async fn test_load_all_models() {
         let _ = geometry_columns
             .select(GeometryColumn::as_select())
             .load::<GeometryColumn>(&mut conn);
+    }
+    });
+    assert_eq!(loaded, COMPILED_MAJORS);
+}
+
+/// `pg_aios` exists from `PostgreSQL` 18 on.
+#[cfg(feature = "postgres-18")]
+#[tokio::test]
+async fn test_load_aios() {
+    use pg_diesel::v18 as catalog;
+
+    let database_name = "test_load_aios";
+    let docker = reference_docker(catalog::MAJOR, database_name)
+        .await
+        .expect("Failed to start docker");
+    let mut conn: PgConnection = establish_connection(docker.port, database_name)
+        .expect("Failed to establish connection to database");
+    {
+        use catalog::models::PgAios;
+        use catalog::schema::pg_catalog::pg_aios::pg_aios::dsl::*;
+        let _ = pg_aios
+            .select(PgAios::as_select())
+            .load::<PgAios>(&mut conn);
     }
 }

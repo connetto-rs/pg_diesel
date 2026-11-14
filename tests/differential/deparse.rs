@@ -10,12 +10,12 @@ use diesel::{
     dsl::sql,
     sql_types::{Nullable, Oid, Text},
 };
-use pg_diesel::sqlparser::ast::{CreateRule, Expr, Query};
-
-use crate::test_utils::docker_helpers::catalog::schema::pg_catalog::{
-    pg_attrdef::pg_attrdef, pg_attribute::pg_attribute, pg_class::pg_class,
-    pg_constraint::pg_constraint, pg_index::pg_index, pg_policy::pg_policy, pg_rewrite::pg_rewrite,
+use pg_diesel::{
+    schema::pg_catalog::{pg_attrdef::pg_attrdef, pg_policy::pg_policy, pg_rewrite::pg_rewrite},
+    sqlparser::ast::{CreateRule, Expr, Query},
 };
+
+use crate::catalog::{pg_attribute, pg_class, pg_constraint, pg_index};
 
 use crate::compare::{
     Slot, StoredForm, StoredFormError, parse_expression, parse_query, parse_rule,

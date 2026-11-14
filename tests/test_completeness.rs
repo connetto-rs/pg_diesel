@@ -8,193 +8,192 @@ use std::collections::HashSet;
 use diesel::{PgConnection, RunQueryDsl};
 
 use test_utils::{
-    docker_helpers::{TESTED_MAJOR, postgres_version_tag},
-    establish_connection, get_active_postgres_features, is_enabled_for_current_features,
-    model_parser::parse_model_file,
-    reference_docker,
-    schema_parser::parse_schema_file,
+    COMPILED_MAJORS, docker_helpers::postgres_version_tag, establish_connection,
+    get_active_postgres_features, is_enabled_for_current_features, model_parser::parse_model_file,
+    reference_docker, schema_parser::parse_schema_file,
 };
 
 #[tokio::test]
 /// Test retrieval of extensions from a column
 async fn test_schema_completeness() {
-    use diesel::QueryableByName;
-    use diesel::sql_types::Text;
+    for &major in COMPILED_MAJORS {
+        use diesel::QueryableByName;
+        use diesel::sql_types::Text;
 
-    #[derive(QueryableByName, Debug)]
-    struct TableInfo {
-        #[diesel(sql_type = Text)]
-        table_schema: String,
-        #[diesel(sql_type = Text)]
-        table_name: String,
-    }
-
-    #[derive(QueryableByName, Debug)]
-    struct ColumnInfo {
-        #[diesel(sql_type = Text)]
-        column_name: String,
-        #[diesel(sql_type = Text)]
-        udt_name: String,
-    }
-
-    /// Types PostgreSQL has no binary output function for.
-    const UNREADABLE_UDT_NAMES: [&str; 2] = ["aclitem", "_aclitem"];
-
-    let database_name = "test_schema_completeness";
-    let docker = reference_docker(database_name)
-        .await
-        .expect("Failed to start docker container");
-    let mut conn: PgConnection = establish_connection(docker.port, database_name)
-        .expect("Failed to establish connection to database");
-
-    let source_roots = source_roots();
-
-    // Get all tables from information_schema
-    let tables: Vec<TableInfo> = diesel::sql_query(
-        "SELECT table_schema, table_name FROM information_schema.tables 
-         WHERE table_schema IN ('pg_catalog', 'information_schema') 
-         AND table_type IN ('BASE TABLE', 'VIEW')
-         ORDER BY table_schema, table_name",
-    )
-    .load(&mut conn)
-    .expect("Failed to load tables");
-
-    for table in tables {
-        let table_schema = &table.table_schema;
-        let table_name = &table.table_name;
-
-        if table_name.starts_with('_') {
-            continue;
+        #[derive(QueryableByName, Debug)]
+        struct TableInfo {
+            #[diesel(sql_type = Text)]
+            table_schema: String,
+            #[diesel(sql_type = Text)]
+            table_name: String,
         }
 
-        let Some(source_root) = source_roots.iter().find(|root| {
-            root.join("schema")
-                .join(table_schema)
-                .join(format!("{table_name}.rs"))
-                .exists()
-        }) else {
-            continue;
-        };
-        let expected_schema_path = source_root
-            .join("schema")
-            .join(table_schema)
-            .join(format!("{table_name}.rs"));
+        #[derive(QueryableByName, Debug)]
+        struct ColumnInfo {
+            #[diesel(sql_type = Text)]
+            column_name: String,
+            #[diesel(sql_type = Text)]
+            udt_name: String,
+        }
 
-        let model_filename = match table_name.as_str() {
-            "pg_policy" => "pg_policy_table",
-            _ => table_name,
-        };
+        /// Types PostgreSQL has no binary output function for.
+        const UNREADABLE_UDT_NAMES: [&str; 2] = ["aclitem", "_aclitem"];
 
-        let expected_model_path = source_root
-            .join("models")
-            .join(table_schema)
-            .join(format!("{model_filename}.rs"));
+        let database_name = "test_schema_completeness";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("Failed to start docker container");
+        let mut conn: PgConnection = establish_connection(docker.port, database_name)
+            .expect("Failed to establish connection to database");
 
-        let schema_result = parse_schema_file(&expected_schema_path).unwrap_or_else(|e| {
-            panic!(
-                "Failed to parse schema file {}: {e}",
-                expected_schema_path.display(),
-            )
-        });
+        let source_roots = source_roots();
 
-        let enabled_schema_columns: HashSet<String> = schema_result
-            .columns
-            .iter()
-            .filter(|col| is_enabled_for_current_features(&col.feature_gate))
-            .map(|col| col.name.clone())
-            .collect();
+        // Get all tables from information_schema
+        let tables: Vec<TableInfo> = diesel::sql_query(
+            "SELECT table_schema, table_name FROM information_schema.tables 
+     WHERE table_schema IN ('pg_catalog', 'information_schema') 
+     AND table_type IN ('BASE TABLE', 'VIEW')
+     ORDER BY table_schema, table_name",
+        )
+        .load(&mut conn)
+        .expect("Failed to load tables");
 
-        let enabled_model_fields: HashSet<String> = if expected_model_path.exists() {
-            match parse_model_file(&expected_model_path) {
-                Ok(model_result) => model_result
-                    .fields
-                    .iter()
-                    .filter(|field| is_enabled_for_current_features(&field.feature_gate))
-                    .map(|field| field.name.clone())
-                    .collect(),
-                Err(_) => HashSet::new(),
+        for table in tables {
+            let table_schema = &table.table_schema;
+            let table_name = &table.table_name;
+
+            if table_name.starts_with('_') {
+                continue;
             }
-        } else {
-            HashSet::new()
-        };
 
-        let query = format!(
-            "SELECT column_name, udt_name FROM information_schema.columns WHERE table_schema = '{table_schema}' AND table_name = '{table_name}' ORDER BY ordinal_position"
-        );
-        let columns: Vec<ColumnInfo> =
-            diesel::sql_query(&query)
+            let Some(source_root) = source_roots.iter().find(|root| {
+                root.join("schema")
+                    .join(table_schema)
+                    .join(format!("{table_name}.rs"))
+                    .exists()
+            }) else {
+                continue;
+            };
+            let expected_schema_path = source_root
+                .join("schema")
+                .join(table_schema)
+                .join(format!("{table_name}.rs"));
+
+            let model_filename = match table_name.as_str() {
+                "pg_policy" => "pg_policy_table",
+                _ => table_name,
+            };
+
+            let expected_model_path = source_root
+                .join("models")
+                .join(table_schema)
+                .join(format!("{model_filename}.rs"));
+
+            let schema_result = parse_schema_file(&expected_schema_path).unwrap_or_else(|e| {
+                panic!(
+                    "Failed to parse schema file {}: {e}",
+                    expected_schema_path.display(),
+                )
+            });
+
+            let enabled_schema_columns: HashSet<String> = schema_result
+                .columns
+                .iter()
+                .filter(|col| is_enabled_for_current_features(&col.feature_gate, major))
+                .map(|col| col.name.clone())
+                .collect();
+
+            let enabled_model_fields: HashSet<String> = if expected_model_path.exists() {
+                match parse_model_file(&expected_model_path) {
+                    Ok(model_result) => model_result
+                        .fields
+                        .iter()
+                        .filter(|field| is_enabled_for_current_features(&field.feature_gate, major))
+                        .map(|field| field.name.clone())
+                        .collect(),
+                    Err(_) => HashSet::new(),
+                }
+            } else {
+                HashSet::new()
+            };
+
+            let query = format!(
+                "SELECT column_name, udt_name FROM information_schema.columns WHERE table_schema = '{table_schema}' AND table_name = '{table_name}' ORDER BY ordinal_position"
+            );
+            let columns: Vec<ColumnInfo> = diesel::sql_query(&query)
                 .load(&mut conn)
                 .unwrap_or_else(|e| {
                     panic!("Failed to load columns for {table_schema}.{table_name}: {e}")
                 });
 
-        let db_columns: HashSet<String> = columns
-            .into_iter()
-            .filter(|col| !UNREADABLE_UDT_NAMES.contains(&col.udt_name.as_str()))
-            .map(|col| col.column_name)
-            .collect();
+            let db_columns: HashSet<String> = columns
+                .into_iter()
+                .filter(|col| !UNREADABLE_UDT_NAMES.contains(&col.udt_name.as_str()))
+                .map(|col| col.column_name)
+                .collect();
 
-        for db_col in &db_columns {
-            let schema_col_candidates =
-                [db_col.clone(), format!("__{db_col}"), format!("r#{db_col}")];
-            let found = schema_col_candidates
-                .iter()
-                .any(|c| enabled_schema_columns.contains(c));
+            for db_col in &db_columns {
+                let schema_col_candidates =
+                    [db_col.clone(), format!("__{db_col}"), format!("r#{db_col}")];
+                let found = schema_col_candidates
+                    .iter()
+                    .any(|c| enabled_schema_columns.contains(c));
 
-            assert!(
-                found,
-                "Database column `{table_schema}.{table_name}.{db_col}` exists in postgres {} but is not enabled in schema file.\n\
-                 Active features: {:?}\n\
-                 Enabled schema columns: {enabled_schema_columns:?}",
-                postgres_version_tag(TESTED_MAJOR),
-                get_active_postgres_features(),
-            );
-        }
-
-        for schema_col in &enabled_schema_columns {
-            let db_col_candidates: Vec<String> =
-                if let Some(stripped) = schema_col.strip_prefix("__") {
-                    vec![schema_col.clone(), stripped.to_string()]
-                } else if let Some(stripped) = schema_col.strip_prefix("r#") {
-                    vec![schema_col.clone(), stripped.to_string()]
-                } else {
-                    vec![schema_col.clone()]
-                };
-
-            let found = db_col_candidates.iter().any(|c| db_columns.contains(c));
-
-            assert!(
-                found,
-                "Schema column `{table_schema}.{table_name}.{schema_col}` is enabled for current features but doesn't exist in database.\n\
-                 This might indicate an incorrect feature gate.\n\
-                 Active features: {:?}\n\
-                 Database columns: {db_columns:?}",
-                get_active_postgres_features(),
-            );
-        }
-
-        if !enabled_model_fields.is_empty() {
-            for model_field in &enabled_model_fields {
                 assert!(
-                    enabled_schema_columns.contains(model_field),
-                    "Model field `{table_schema}.{table_name}.{model_field}` is enabled but not found in enabled schema columns.\n\
-                     This indicates a mismatch between model and schema feature gates.\n\
-                     Active features: {:?}\n\
-                     Enabled schema columns: {enabled_schema_columns:?}",
-                    get_active_postgres_features(),
+                    found,
+                    "Database column `{table_schema}.{table_name}.{db_col}` exists in postgres {} but is not enabled in schema file.\n\
+             Active features: {:?}\n\
+             Enabled schema columns: {enabled_schema_columns:?}",
+                    postgres_version_tag(major),
+                    get_active_postgres_features(major),
                 );
             }
 
             for schema_col in &enabled_schema_columns {
+                let db_col_candidates: Vec<String> =
+                    if let Some(stripped) = schema_col.strip_prefix("__") {
+                        vec![schema_col.clone(), stripped.to_string()]
+                    } else if let Some(stripped) = schema_col.strip_prefix("r#") {
+                        vec![schema_col.clone(), stripped.to_string()]
+                    } else {
+                        vec![schema_col.clone()]
+                    };
+
+                let found = db_col_candidates.iter().any(|c| db_columns.contains(c));
+
                 assert!(
-                    enabled_model_fields.contains(schema_col)
-                        || enabled_model_fields.contains(&format!("__{schema_col}")),
-                    "Schema column `{table_schema}.{table_name}.{schema_col}` is enabled but has no corresponding model field.\n\
-                     This indicates a mismatch between model and schema.\n\
-                     Active features: {:?}\n\
-                     Enabled model fields: {enabled_model_fields:?}",
-                    get_active_postgres_features(),
+                    found,
+                    "Schema column `{table_schema}.{table_name}.{schema_col}` is enabled for current features but doesn't exist in database.\n\
+             This might indicate an incorrect feature gate.\n\
+             Active features: {:?}\n\
+             Database columns: {db_columns:?}",
+                    get_active_postgres_features(major),
                 );
+            }
+
+            if !enabled_model_fields.is_empty() {
+                for model_field in &enabled_model_fields {
+                    assert!(
+                        enabled_schema_columns.contains(model_field),
+                        "Model field `{table_schema}.{table_name}.{model_field}` is enabled but not found in enabled schema columns.\n\
+                 This indicates a mismatch between model and schema feature gates.\n\
+                 Active features: {:?}\n\
+                 Enabled schema columns: {enabled_schema_columns:?}",
+                        get_active_postgres_features(major),
+                    );
+                }
+
+                for schema_col in &enabled_schema_columns {
+                    assert!(
+                        enabled_model_fields.contains(schema_col)
+                            || enabled_model_fields.contains(&format!("__{schema_col}")),
+                        "Schema column `{table_schema}.{table_name}.{schema_col}` is enabled but has no corresponding model field.\n\
+                 This indicates a mismatch between model and schema.\n\
+                 Active features: {:?}\n\
+                 Enabled model fields: {enabled_model_fields:?}",
+                        get_active_postgres_features(major),
+                    );
+                }
             }
         }
     }

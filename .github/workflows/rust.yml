@@ -12,28 +12,6 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Test (postgres-${{ matrix.postgres }})
-    runs-on: ubuntu-26.04
-    strategy:
-      fail-fast: false
-      matrix:
-        postgres: [14, 15, 16, 17, 18]
-    steps:
-    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@master
-      with:
-        toolchain: stable
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libfontconfig1-dev libpq-dev
-    - name: Build and Test (postgres-${{ matrix.postgres }})
-      run: cargo test --workspace --release --no-default-features --features postgres-${{ matrix.postgres }}
-    - name: Build and Test with serde (postgres-${{ matrix.postgres }})
-      run: cargo test --workspace --release --no-default-features --features "postgres-${{ matrix.postgres }},serde"
-
   fmt:
     name: Rustfmt
     runs-on: ubuntu-26.04
@@ -59,12 +37,18 @@ jobs:
       run: cargo xtask generate --check
 
   clippy:
-    name: Clippy (postgres-${{ matrix.postgres }})
+    name: Clippy (${{ matrix.features }})
     runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
-        postgres: [14, 15, 16, 17, 18]
+        features:
+          - postgres-14
+          - postgres-15
+          - postgres-16
+          - postgres-17
+          - postgres-18
+          - postgres-14,postgres-15,postgres-16,postgres-17,postgres-18,serde
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
     - name: Install Rust
@@ -75,8 +59,8 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y libfontconfig1-dev libpq-dev
-    - name: Run clippy (postgres-${{ matrix.postgres }})
-      run: cargo clippy --workspace --all-targets --no-default-features --features postgres-${{ matrix.postgres }} -- -D warnings
+    - name: Run clippy (${{ matrix.features }})
+      run: cargo clippy --workspace --all-targets --no-default-features --features "${{ matrix.features }}" -- -D warnings
 
   doc:
     name: Documentation
@@ -95,7 +79,7 @@ jobs:
         RUSTDOCFLAGS: -D warnings
 
   coverage:
-    name: Code Coverage
+    name: Test and coverage (PostgreSQL 14 to 18)
     runs-on: ubuntu-26.04
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -105,20 +89,19 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
       with:
         components: llvm-tools-preview
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libfontconfig1-dev libpq-dev
     - name: Install cargo-llvm-cov
       uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
       with:
         tool: cargo-llvm-cov
-    - name: Generate coverage for each PostgreSQL version
-      run: |
-        mkdir -p target/coverage
-        for version in 14 15 16 17 18; do
-          cargo llvm-cov --workspace --all-targets --no-default-features --features "postgres-$version" \
-            --lcov --output-path "target/coverage/postgres-$version.lcov"
-        done
+    - name: Test every compiled version and measure coverage
+      run: cargo llvm-cov --workspace --all-targets --lcov --output-path target/lcov.info
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
-        files: target/coverage/postgres-14.lcov,target/coverage/postgres-15.lcov,target/coverage/postgres-16.lcov,target/coverage/postgres-17.lcov,target/coverage/postgres-18.lcov
+        files: target/lcov.info
         fail_ci_if_error: false
