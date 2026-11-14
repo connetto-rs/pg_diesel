@@ -11,11 +11,11 @@ Not published on `crates.io` yet, so the registry and docs.rs badges are still m
 
 ## Features
 
-`serde` derives `Serialize`/`Deserialize` on the models. `routines` adds the 88-column `routines` table, which needs Diesel's `128-column-tables` and roughly triples compile time. One of `postgres-14` through `postgres-18` selects the server version whose columns the schemas expose; `postgres-18` is the default.
+`serde` derives `Serialize`/`Deserialize` on the models. `routines` adds the 88-column `routines` table, which needs Diesel's `128-column-tables` and roughly triples compile time. Each of `postgres-14` to `postgres-18` compiles the catalog of that server version, and all five are on by default. `PgDieselDatabaseBuilder` reads the server's version when it connects and loads it through the matching catalog, so one build reads servers of different versions and refuses a version no feature compiled in. `pg_diesel::v14` to `pg_diesel::v18` hold the full catalog of each version, while `pg_diesel::schema` and `pg_diesel::models` hold the tables and models every version shares. A build that only meets some versions can leave the others out.
 
 ```toml
 [dependencies]
-pg_diesel = { version = "*", default-features = false, features = ["postgres-16"] }
+pg_diesel = { version = "*", default-features = false, features = ["serde", "postgres-16", "postgres-17"] }
 ```
 
 ## Known limitations

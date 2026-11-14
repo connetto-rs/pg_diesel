@@ -8,8 +8,10 @@ use std::collections::HashSet;
 use diesel::{PgConnection, RunQueryDsl};
 
 use test_utils::{
-    docker_helpers::get_postgres_version_tag, establish_connection, get_active_postgres_features,
-    is_enabled_for_current_features, model_parser::parse_model_file, reference_docker,
+    docker_helpers::{TESTED_MAJOR, postgres_version_tag},
+    establish_connection, get_active_postgres_features, is_enabled_for_current_features,
+    model_parser::parse_model_file,
+    reference_docker,
     schema_parser::parse_schema_file,
 };
 
@@ -144,7 +146,7 @@ async fn test_schema_completeness() {
                 "Database column `{table_schema}.{table_name}.{db_col}` exists in postgres {} but is not enabled in schema file.\n\
                  Active features: {:?}\n\
                  Enabled schema columns: {enabled_schema_columns:?}",
-                get_postgres_version_tag(),
+                postgres_version_tag(TESTED_MAJOR),
                 get_active_postgres_features(),
             );
         }
@@ -230,7 +232,7 @@ fn test_load_all_coverage() {
             continue;
         }
 
-        if let Some(rest) = trimmed.strip_prefix("use pg_diesel::models::")
+        if let Some(rest) = trimmed.strip_prefix("use catalog::models::")
             && let Some(end) = rest.find(';')
         {
             let model_name = rest[..end].trim().to_string();
@@ -356,12 +358,12 @@ fn test_load_all_coverage() {
     );
 }
 
-/// The source directories of the facade and of `pg_diesel_core`, between
-/// them holding every schema and model file.
+/// The version templates in `versioned/` and the source of `pg_diesel_core`,
+/// between them holding every schema and model file.
 fn source_roots() -> [std::path::PathBuf; 2] {
     let crate_root_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     [
-        crate_root_path.join("src"),
+        crate_root_path.join("versioned"),
         crate_root_path.join("crates/pg_diesel_core/src"),
     ]
 }
