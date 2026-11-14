@@ -24,7 +24,7 @@ pub fn member_of(
     role: &PgRole,
     conn: &mut PgConnection,
 ) -> Result<Vec<u32>, diesel::result::Error> {
-    use crate::schema::pg_catalog::pg_auth_members::pg_auth_members;
+    use crate::shared::schema::pg_catalog::pg_auth_members;
     use diesel::ExpressionMethods;
 
     // The role's OID might be None, in which case we can't find memberships

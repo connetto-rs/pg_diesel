@@ -8,8 +8,8 @@ use diesel::{
 use sql_traits::structs::RoleSetting;
 
 use crate::{
-    database::CatalogCache,
-    schema::pg_catalog::{pg_database::pg_database, pg_db_role_setting::pg_db_role_setting},
+    database::CatalogCache, schema::pg_catalog::pg_db_role_setting::pg_db_role_setting,
+    shared::schema::pg_catalog::pg_database,
 };
 
 /// Represents a row from the `pg_db_role_setting` table.

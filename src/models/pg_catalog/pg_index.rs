@@ -1,12 +1,6 @@
 //! `PostgreSQL` index catalog model.
 
-use diesel::{PgConnection, Queryable, QueryableByName, Selectable};
-
-mod cached_queries;
-pub(crate) use cached_queries::*;
-use sqlparser::parser::Parser;
-
-use crate::models::Column;
+use diesel::{Queryable, QueryableByName, Selectable};
 
 /// Represents the `pg_index` system catalog table in `PostgreSQL`.
 /// This table stores information about indexes on tables.
@@ -66,43 +60,4 @@ pub struct PgIndex {
     pub indexprs: Option<String>,
     /// Partial index predicate (if it's a partial index).
     pub indpred: Option<String>,
-}
-
-impl PgIndex {
-    /// Returns the expression the index is defined over.
-    ///
-    /// # Errors
-    ///
-    /// * If an error occurs while loading the expression from the database
-    #[allow(clippy::missing_panics_doc)]
-    pub fn index_expression(
-        &self,
-        conn: &mut PgConnection,
-    ) -> Result<sqlparser::ast::Expr, diesel::result::Error> {
-        if let Some(expression) = expression(self, conn)? {
-            return Ok(expression);
-        }
-        let expression_string = format!(
-            "({})",
-            self.columns(conn)?
-                .iter()
-                .map(|column| column.column_name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        Ok(Parser::new(&sqlparser::dialect::GenericDialect {})
-            .try_with_sql(expression_string.as_str())
-            .expect("Failed to parse unique constraint expression")
-            .parse_expr()
-            .expect("No expression found in parsed unique constraint"))
-    }
-
-    /// Returns the columns that are involved in the index
-    ///
-    /// # Errors
-    ///
-    /// If an error occurs while loading the columns from the database
-    pub fn columns(&self, conn: &mut PgConnection) -> Result<Vec<Column>, diesel::result::Error> {
-        cached_queries::columns(self, conn)
-    }
 }

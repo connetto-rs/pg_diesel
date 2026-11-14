@@ -139,10 +139,7 @@ impl Table {
         let attributes = cached_queries::attributes(facts.oid, conn)?;
         let descriptions = cached_queries::descriptions(facts.oid, conn)?;
         let serial_numbers = cached_queries::serial_attributes(facts.oid, conn)?;
-        #[cfg(feature = "postgres-18")]
         let not_null_names = cached_queries::not_null_constraint_names(facts.oid, conn)?;
-        #[cfg(not(feature = "postgres-18"))]
-        let not_null_names: Vec<(i32, String)> = Vec::new();
 
         let mut sql_metadata = sql_traits::structs::TableMetadata::default();
         let mut column_metadata = HashMap::new();

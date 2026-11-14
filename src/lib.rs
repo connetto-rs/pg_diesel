@@ -13,3 +13,4 @@ pub mod schema;
 pub mod traits;
 pub use database::PgDieselDatabase;
 pub mod model_metadata;
+mod shared;
