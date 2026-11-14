@@ -863,24 +863,10 @@ impl<'a, C: VersionCatalog> TryFrom<PgDieselDatabaseBuilder<'a, C>> for PgDiesel
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model_metadata::MembershipGrant;
 
-    /// A catalog whose version-dependent reads hold nothing, enough for
-    /// tests that never reach the server.
-    #[derive(Default)]
-    struct NoVersionReads;
-
-    impl VersionCatalog for NoVersionReads {
-        fn membership_grants(
-            &self,
-            _conn: &mut PgConnection,
-        ) -> Result<Vec<MembershipGrant>, diesel::result::Error> {
-            Ok(Vec::new())
-        }
-    }
-
-    /// The builder under test.
-    type Builder<'conn> = PgDieselDatabaseBuilder<'conn, NoVersionReads>;
+    /// The builder under test. Its configuration methods hold for any
+    /// version catalog, so the unit type stands in for one.
+    type Builder<'conn> = PgDieselDatabaseBuilder<'conn, ()>;
 
     #[test]
     fn test_denylist_type() {
@@ -952,15 +938,5 @@ mod tests {
         let builder = builder.schema("public");
         // schema() does not check for duplicates
         assert_eq!(builder.schemas, vec!["public", "public"]);
-    }
-
-    #[test]
-    fn test_try_from_missing_connection() {
-        let builder = Builder::default();
-        let result: Result<PgDieselDatabase, _> = builder.try_into();
-        match result {
-            Err(PgDatabaseBuildError::MissingAttribute(attr)) => assert_eq!(attr, "connection"),
-            _ => panic!("Unexpected result: {result:?}"),
-        }
     }
 }

@@ -46,3 +46,17 @@ impl VersionCatalog for CompiledCatalog {
         MembershipGrant::load_before_16(conn)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{PgDatabaseBuildError, PgDieselDatabase, PgDieselDatabaseBuilder};
+
+    #[test]
+    fn test_try_from_missing_connection() {
+        let result: Result<PgDieselDatabase, _> = PgDieselDatabaseBuilder::default().try_into();
+        match result {
+            Err(PgDatabaseBuildError::MissingAttribute(attr)) => assert_eq!(attr, "connection"),
+            _ => panic!("Unexpected result: {result:?}"),
+        }
+    }
+}
