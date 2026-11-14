@@ -5,54 +5,71 @@ use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt, TestcontainersError};
 
-/// Get the postgres docker image tag based on the active feature.
-pub fn get_postgres_version_tag() -> &'static str {
-    #[cfg(feature = "postgres-18")]
-    {
-        "18-3.6"
-    }
-    #[cfg(all(feature = "postgres-17", not(feature = "postgres-18")))]
-    {
-        "17-3.5"
-    }
-    #[cfg(all(
-        feature = "postgres-16",
-        not(feature = "postgres-17"),
-        not(feature = "postgres-18")
-    ))]
-    {
-        "16-3.5"
-    }
-    #[cfg(all(
-        feature = "postgres-15",
-        not(feature = "postgres-16"),
-        not(feature = "postgres-17"),
-        not(feature = "postgres-18")
-    ))]
-    {
-        "15-3.5"
-    }
-    #[cfg(all(
-        feature = "postgres-14",
-        not(feature = "postgres-15"),
-        not(feature = "postgres-16"),
-        not(feature = "postgres-17"),
-        not(feature = "postgres-18")
-    ))]
-    {
-        "14-3.5"
-    }
-    #[cfg(not(any(
-        feature = "postgres-14",
+/// The `PostgreSQL` major version the tests start a server of, the highest
+/// one whose catalog the features compiled in.
+pub const TESTED_MAJOR: u32 = catalog::MAJOR;
+#[cfg(not(any(
+    feature = "postgres-14",
+    feature = "postgres-15",
+    feature = "postgres-16",
+    feature = "postgres-17",
+    feature = "postgres-18"
+)))]
+compile_error!(
+    "No postgres version feature enabled. Enable one of: postgres-14, postgres-15, postgres-16, postgres-17, postgres-18"
+);
+
+/// The catalog of the server version the tests start.
+#[cfg(all(
+    feature = "postgres-14",
+    not(any(
         feature = "postgres-15",
         feature = "postgres-16",
         feature = "postgres-17",
         feature = "postgres-18"
-    )))]
-    {
-        compile_error!(
-            "No postgres version feature enabled. Enable one of: postgres-14, postgres-15, postgres-16, postgres-17, postgres-18"
-        )
+    ))
+))]
+pub use pg_diesel::v14 as catalog;
+/// The catalog of the server version the tests start.
+#[cfg(all(
+    feature = "postgres-15",
+    not(any(
+        feature = "postgres-16",
+        feature = "postgres-17",
+        feature = "postgres-18"
+    ))
+))]
+pub use pg_diesel::v15 as catalog;
+/// The catalog of the server version the tests start.
+#[cfg(all(
+    feature = "postgres-16",
+    not(any(feature = "postgres-17", feature = "postgres-18"))
+))]
+pub use pg_diesel::v16 as catalog;
+/// The catalog of the server version the tests start.
+#[cfg(all(feature = "postgres-17", not(feature = "postgres-18")))]
+pub use pg_diesel::v17 as catalog;
+/// The catalog of the server version the tests start.
+#[cfg(feature = "postgres-18")]
+pub use pg_diesel::v18 as catalog;
+
+/// The `postgres-N` feature naming [`TESTED_MAJOR`].
+pub const TESTED_FEATURE: &str = match TESTED_MAJOR {
+    14 => "postgres-14",
+    15 => "postgres-15",
+    16 => "postgres-16",
+    17 => "postgres-17",
+    _ => "postgres-18",
+};
+
+/// The `postgis/postgis` image tag of the `PostgreSQL` `major` version.
+pub fn postgres_version_tag(major: u32) -> &'static str {
+    match major {
+        14 => "14-3.5",
+        15 => "15-3.5",
+        16 => "16-3.5",
+        17 => "17-3.5",
+        _ => "18-3.6",
     }
 }
 
@@ -68,16 +85,31 @@ pub struct ReferenceDocker {
     pub port: u16,
 }
 
-/// Starts a `PostgreSQL` container holding the database `database_name`,
-/// published on a host port Docker picks, so concurrent runs never contend
-/// for one.
+/// Starts a `PostgreSQL` [`TESTED_MAJOR`] container holding the database
+/// `database_name`, published on a host port Docker picks, so concurrent
+/// runs never contend for one.
 ///
 /// # Errors
 ///
 /// Returns the [`TestcontainersError`] when the container does not start or
 /// Docker reports no published port.
 pub async fn reference_docker(database_name: &str) -> Result<ReferenceDocker, TestcontainersError> {
-    let tag = get_postgres_version_tag();
+    reference_docker_of(TESTED_MAJOR, database_name).await
+}
+
+/// Starts a `PostgreSQL` `major` container holding the database
+/// `database_name`, the way [`reference_docker`] starts one of the tested
+/// version.
+///
+/// # Errors
+///
+/// Returns the [`TestcontainersError`] when the container does not start or
+/// Docker reports no published port.
+pub async fn reference_docker_of(
+    major: u32,
+    database_name: &str,
+) -> Result<ReferenceDocker, TestcontainersError> {
+    let tag = postgres_version_tag(major);
 
     let container = GenericImage::new("postgis/postgis", tag)
         .with_exposed_port(CONTAINER_PORT.tcp())
