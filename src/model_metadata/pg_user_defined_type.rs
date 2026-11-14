@@ -16,7 +16,10 @@ use diesel::{
 use sql_traits::traits::UserDefinedTypeKind;
 
 use crate::database::FIRST_NORMAL_OBJECT_ID;
-use crate::schema::pg_catalog::{pg_class::pg_class, pg_namespace::pg_namespace, pg_type::pg_type};
+use crate::{
+    schema::pg_catalog::{pg_namespace::pg_namespace, pg_type::pg_type},
+    shared::schema::pg_catalog::pg_class,
+};
 
 /// A user-defined type read from `pg_type`, beside the form it takes.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -47,7 +47,7 @@ impl PgCheckConstraint {
         oid: u32,
         conn: &mut PgConnection,
     ) -> Result<Vec<Self>, diesel::result::Error> {
-        use crate::schema::pg_catalog::pg_constraint::pg_constraint;
+        use crate::shared::schema::pg_catalog::pg_constraint;
 
         let rows = pg_constraint::table
             .filter(pg_constraint::conrelid.eq(oid))

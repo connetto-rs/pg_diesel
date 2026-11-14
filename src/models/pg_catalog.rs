@@ -36,7 +36,7 @@ mod pg_group;
 mod pg_hba_file_rule;
 #[cfg(not(feature = "postgres-14"))]
 mod pg_ident_file_mapping;
-pub(crate) mod pg_index;
+mod pg_index;
 mod pg_inherit;
 mod pg_init_priv;
 mod pg_language;
