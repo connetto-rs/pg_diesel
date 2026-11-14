@@ -10,6 +10,7 @@ use sql_traits::{
         NamedColumnCollation,
     },
 };
+use sqlparser::ast::{Expr, Function};
 
 use crate::{
     PgDieselDatabase,
@@ -127,8 +128,30 @@ impl ColumnLike for PgColumn {
         Ok(PgColumn::not_null_constraint_name(self).map(Cow::Borrowed))
     }
 
-    fn default_value(&self) -> Option<String> {
-        self.model().column_default.clone()
+    fn default_expression(&self) -> Option<&Expr> {
+        PgColumn::default_expression(self)
+    }
+
+    fn generation_expression(&self) -> Option<&Expr> {
+        PgColumn::generation_expression(self)
+    }
+
+    fn functions_reached_by<'db>(
+        &'db self,
+        call: &Function,
+        database: &'db Self::DB,
+    ) -> Result<impl Iterator<Item = &'db <Self::DB as DatabaseLike>::Function> + 'db, LookupError>
+    {
+        let metadata = metadata(self, database)?;
+        PgColumn::default_expression(self)
+            .and_then(|default| metadata.default_calls().reached_by(default, call))
+            .or_else(|| {
+                PgColumn::generation_expression(self)
+                    .and_then(|generation| metadata.generation_calls().reached_by(generation, call))
+            })
+            .ok_or_else(|| LookupError::CallNotInExpression {
+                call: call.to_string(),
+            })
     }
 
     fn foreign_options(&self) -> impl Iterator<Item = (Cow<'_, str>, &str)> {

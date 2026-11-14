@@ -3,7 +3,12 @@
 
 use std::sync::Arc;
 
-use crate::{model_metadata::PgTable, models::PgDescription};
+use sql_traits::structs::metadata::ExpressionCalls;
+
+use crate::{
+    model_metadata::{PgFunction, PgTable},
+    models::PgDescription,
+};
 
 #[derive(Clone, Debug)]
 /// Rich metadata about a `PostgreSQL` table column.
@@ -15,10 +20,14 @@ pub struct ColumnMetadata {
     /// Whether the collation the column declares compares deterministically,
     /// or [`None`] when the column declares none.
     collation_is_deterministic: Option<bool>,
+    /// The functions each call of the default expression may reach.
+    default_calls: ExpressionCalls<PgFunction>,
+    /// The functions each call of the generation expression may reach.
+    generation_calls: ExpressionCalls<PgFunction>,
 }
 
 impl ColumnMetadata {
-    /// Creates a new `ColumnMetadata` instance.
+    /// Creates a new `ColumnMetadata` instance, with no calls resolved.
     #[must_use]
     pub fn new(
         table: Arc<PgTable>,
@@ -29,7 +38,35 @@ impl ColumnMetadata {
             table,
             description,
             collation_is_deterministic,
+            default_calls: ExpressionCalls::default(),
+            generation_calls: ExpressionCalls::default(),
         }
+    }
+
+    /// Sets the functions the calls of the default and generation
+    /// expressions may reach, resolved under the search path in force where
+    /// `PostgreSQL` printed them.
+    #[must_use]
+    pub fn with_calls(
+        mut self,
+        default_calls: ExpressionCalls<PgFunction>,
+        generation_calls: ExpressionCalls<PgFunction>,
+    ) -> Self {
+        self.default_calls = default_calls;
+        self.generation_calls = generation_calls;
+        self
+    }
+
+    /// Returns the call record of the default expression.
+    #[must_use]
+    pub fn default_calls(&self) -> &ExpressionCalls<PgFunction> {
+        &self.default_calls
+    }
+
+    /// Returns the call record of the generation expression.
+    #[must_use]
+    pub fn generation_calls(&self) -> &ExpressionCalls<PgFunction> {
+        &self.generation_calls
     }
 
     /// Returns whether the collation the column declares is deterministic.

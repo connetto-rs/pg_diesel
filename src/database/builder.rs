@@ -29,10 +29,11 @@ use crate::{
     dialect::PostgresDialect,
     impls::{RoleColumnGrantsMetadata, RoleTableGrantsMetadata, string_to_action},
     model_metadata::{
-        DomainDefinitionError, PgCastEntry, PgColumn, PgDomainEntry, PgExtensionEntry, PgFunction,
-        PgOperatorEntry, PgPolicy, PgRoleMembership, PgRuleEntry, PgSchema, PgSequenceEntry,
-        PgTable, PgTableError, PgUserDefinedType, PgViewDefinition, RuleDefinitionError,
-        TriggerMetadata, ViewDefinitionError, catalog_identity::CatalogObjects,
+        DomainDefinitionError, DomainMetadata, PgCastEntry, PgColumn, PgDomainEntry,
+        PgExtensionEntry, PgFunction, PgOperatorEntry, PgPolicy, PgRoleMembership, PgRuleEntry,
+        PgSchema, PgSequenceEntry, PgTable, PgTableError, PgUserDefinedType, PgViewDefinition,
+        RuleDefinitionError, TriggerMetadata, ViewDefinitionError,
+        catalog_identity::CatalogObjects,
     },
     models::{
         PgDbRoleSetting, PgMatview, PgProc, PgRole, PgView, RoleColumnGrants, RoleSettingError,
@@ -535,7 +536,11 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
                 let metadata = table_metadata
                     .column_metadata(column.column_name())
                     .expect("a column of the table carries the metadata read with it")
-                    .clone();
+                    .clone()
+                    .with_calls(
+                        expression_calls(column.default_expression(), &functions, &search_path),
+                        expression_calls(column.generation_expression(), &functions, &search_path),
+                    );
                 generic_builder = generic_builder.add_column(Arc::clone(column), metadata);
             }
 
@@ -656,7 +661,15 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
         }
 
         for domain in PgDomainEntry::load_all(&table_schemas, &cache, connection)? {
-            generic_builder = generic_builder.add_domain(Arc::new(domain), ());
+            let metadata = DomainMetadata::new(
+                expression_calls(domain.default_expression(), &functions, &search_path),
+                domain
+                    .check_expressions()
+                    .iter()
+                    .map(|check| expression_calls(Some(check), &functions, &search_path))
+                    .collect(),
+            );
+            generic_builder = generic_builder.add_domain(Arc::new(domain), metadata);
         }
 
         for user_defined_type in PgUserDefinedType::load_all(&table_schemas, connection)? {

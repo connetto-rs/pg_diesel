@@ -4,15 +4,20 @@ use std::{collections::HashMap, fmt::Display, sync::Arc};
 
 use diesel::{PgConnection, Queryable, QueryableByName, Selectable};
 use sql_traits::structs::ForeignTableSource;
-use sqlparser::ast::Action;
+use sqlparser::{
+    ast::{Action, Expr},
+    parser::ParserError,
+};
 
 use crate::{
     database::CatalogCache,
     impls::string_to_action,
     model_metadata::{
         ColumnMetadata, PgCheckConstraint, PgColumn, PgDataType, PgForeignKey, PgIndexEntry,
-        PgPolicy, PgTable, TableMetadata, TableMetadataDetails, storage_option_entries,
+        PgPolicy, PgTable, TableMetadata, TableMetadataDetails, parse_printed_expression,
+        storage_option_entries,
     },
+    models::Column,
 };
 
 mod cached_queries;
@@ -136,15 +141,60 @@ pub enum TableMetadataError {
         /// The name of the column.
         column: String,
     },
+    /// The default or generation expression a column's
+    /// `information_schema` row prints does not parse.
+    #[error(
+        "the expression `{expression}` of column {column} of table {schema}.{table} does not parse: {source}"
+    )]
+    UnparsableColumnExpression {
+        /// The schema of the table.
+        schema: String,
+        /// The name of the table.
+        table: String,
+        /// The name of the column.
+        column: String,
+        /// The expression as `PostgreSQL` printed it.
+        expression: String,
+        /// Why the parser rejected it, boxed to keep the error small.
+        source: Box<ParserError>,
+    },
 }
 
 impl Table {
+    /// Parses `printed`, an expression the `information_schema` row of
+    /// `column` prints.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TableMetadataError::UnparsableColumnExpression`] when
+    /// `printed` does not parse.
+    fn column_expression(
+        &self,
+        column: &Column,
+        printed: Option<&str>,
+    ) -> Result<Option<Expr>, TableMetadataError> {
+        printed
+            .map(|printed| {
+                parse_printed_expression(printed).map_err(|source| {
+                    TableMetadataError::UnparsableColumnExpression {
+                        schema: self.table_schema.clone(),
+                        table: self.table_name.clone(),
+                        column: column.column_name.clone(),
+                        expression: printed.to_owned(),
+                        source: Box::new(source),
+                    }
+                })
+            })
+            .transpose()
+    }
+
     /// Initializes and returns the metadata for the table.
     ///
     /// # Errors
     ///
-    /// Returns a [`TableMetadataError`] when a catalog query fails or a
-    /// column's type reaches a type the catalog cache does not hold.
+    /// Returns a [`TableMetadataError`] when a catalog query fails, a
+    /// column's type reaches a type the catalog cache does not hold, or a
+    /// column's default or generation expression does not parse.
     #[allow(clippy::too_many_lines)]
     pub fn metadata(
         &self,
@@ -200,6 +250,15 @@ impl Table {
                 .iter()
                 .find(|(number, _)| *number == i32::from(attribute.number))
                 .map(|(_, name)| name.clone());
+            let default_expression =
+                self.column_expression(&column, column.column_default.as_deref())?;
+            let generation_expression = self.column_expression(
+                &column,
+                column
+                    .generation_expression
+                    .as_deref()
+                    .filter(|_| column.is_generated == "ALWAYS"),
+            )?;
             column_metadata.insert(
                 column.column_name.clone(),
                 ColumnMetadata::new(Arc::clone(table), description, collation),
@@ -210,6 +269,8 @@ impl Table {
                 foreign_options,
                 not_null,
                 serial,
+                default_expression,
+                generation_expression,
             )));
         }
         for check_constraint in PgCheckConstraint::load(table, facts.oid, conn)? {
