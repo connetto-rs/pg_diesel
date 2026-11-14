@@ -7,7 +7,7 @@ use sql_traits::structs::ForeignTableSource;
 use sqlparser::ast::Action;
 
 use crate::{
-    database::CatalogCache,
+    database::{CatalogCache, ServerVersion},
     impls::string_to_action,
     model_metadata::{
         ColumnMetadata, PgCheckConstraint, PgColumn, PgDataType, PgForeignKey, PgIndexEntry,
@@ -19,37 +19,17 @@ mod cached_queries;
 pub use cached_queries::TableFacts;
 pub(crate) use cached_queries::*;
 
-/// The table privileges `PostgreSQL` hands the owner of a table, in the
-/// order the server lists them, which a `REVOKE` naming the owner takes from.
-#[cfg(not(any(feature = "postgres-17", feature = "postgres-18")))]
-const OWNER_PRIVILEGES: [&str; 7] = [
-    "SELECT",
-    "INSERT",
-    "UPDATE",
-    "DELETE",
-    "TRUNCATE",
-    "REFERENCES",
-    "TRIGGER",
-];
-
-/// The table privileges `PostgreSQL` hands the owner of a table, in the
-/// order the server lists them, which a `REVOKE` naming the owner takes from.
-#[cfg(any(feature = "postgres-17", feature = "postgres-18"))]
-const OWNER_PRIVILEGES: [&str; 8] = [
-    "SELECT",
-    "INSERT",
-    "UPDATE",
-    "DELETE",
-    "TRUNCATE",
-    "REFERENCES",
-    "TRIGGER",
-    "MAINTAIN",
-];
-
-/// The table-level privileges the owner's own `pg_class.relacl` entry holds,
-/// every one of them while `PostgreSQL` left the ACL itself implicit.
-fn owner_privileges(acl_is_null: bool, owner: u32, entries: &[TableAclEntry]) -> Vec<Action> {
-    OWNER_PRIVILEGES
+/// The table-level privileges the owner's own `pg_class.relacl` entry holds
+/// on a server of `version`, every one of them while `PostgreSQL` left the
+/// ACL itself implicit.
+fn owner_privileges(
+    version: ServerVersion,
+    acl_is_null: bool,
+    owner: u32,
+    entries: &[TableAclEntry],
+) -> Vec<Action> {
+    version
+        .table_privileges()
         .iter()
         .filter(|privilege| {
             acl_is_null
@@ -139,7 +119,8 @@ pub enum TableMetadataError {
 }
 
 impl Table {
-    /// Initializes and returns the metadata for the table.
+    /// Initializes and returns the metadata for the table, read from a server
+    /// of `version`.
     ///
     /// # Errors
     ///
@@ -150,6 +131,7 @@ impl Table {
         &self,
         table: &Arc<PgTable>,
         conn: &mut PgConnection,
+        version: ServerVersion,
         denylist_types: &[String],
         cache: &CatalogCache,
     ) -> Result<TableMetadata, TableMetadataError> {
@@ -323,7 +305,12 @@ impl Table {
                 parents,
                 partition_root,
                 column_metadata,
-                owner_privileges: owner_privileges(facts.acl_is_null, facts.owner, &acl_entries),
+                owner_privileges: owner_privileges(
+                    version,
+                    facts.acl_is_null,
+                    facts.owner,
+                    &acl_entries,
+                ),
             },
         ))
     }

@@ -23,6 +23,7 @@ use crate::{
     PgDieselDatabase,
     database::{
         AclSchemaGrant, AclTableGrant, CatalogCache, FIRST_NORMAL_OBJECT_ID, PgCatalogMetadata,
+        ServerVersion,
     },
     dialect::PostgresDialect,
     impls::{RoleColumnGrantsMetadata, RoleTableGrantsMetadata, string_to_action},
@@ -52,33 +53,6 @@ fn session_search_path(
     Ok(schemas.into_iter().map(|schema| (schema, true)).collect())
 }
 
-/// The privileges `GRANT ALL` on a plain or partitioned table hands over,
-/// the full set the server materializes for it.
-#[cfg(not(any(feature = "postgres-17", feature = "postgres-18")))]
-const TABLE_ALL_PRIVILEGES: [&str; 7] = [
-    "SELECT",
-    "INSERT",
-    "UPDATE",
-    "DELETE",
-    "TRUNCATE",
-    "REFERENCES",
-    "TRIGGER",
-];
-
-/// The privileges `GRANT ALL` on a plain or partitioned table hands over,
-/// the full set the server materializes for it.
-#[cfg(any(feature = "postgres-17", feature = "postgres-18"))]
-const TABLE_ALL_PRIVILEGES: [&str; 8] = [
-    "SELECT",
-    "INSERT",
-    "UPDATE",
-    "DELETE",
-    "TRUNCATE",
-    "REFERENCES",
-    "TRIGGER",
-    "MAINTAIN",
-];
-
 /// The privileges `GRANT ALL` on a view, materialized view or foreign table
 /// hands over, the full set the server materializes for it.
 const VIEW_ALL_PRIVILEGES: [&str; 4] = ["SELECT", "INSERT", "UPDATE", "DELETE"];
@@ -88,10 +62,11 @@ const VIEW_ALL_PRIVILEGES: [&str; 4] = ["SELECT", "INSERT", "UPDATE", "DELETE"];
 const SEQUENCE_ALL_PRIVILEGES: [&str; 3] = ["USAGE", "SELECT", "UPDATE"];
 
 /// The full privilege set a `GRANT ALL` on a relation of kind `relkind`
-/// materializes, empty when the kind is no relation the grant reaches.
-fn all_privileges_for(relkind: &str) -> &'static [&'static str] {
+/// materializes on a server of `version`, empty when the kind is no relation
+/// the grant reaches.
+fn all_privileges_for(relkind: &str, version: ServerVersion) -> &'static [&'static str] {
     match relkind {
-        "r" | "p" => &TABLE_ALL_PRIVILEGES,
+        "r" | "p" => version.table_privileges(),
         "v" | "m" | "f" => &VIEW_ALL_PRIVILEGES,
         "S" => &SEQUENCE_ALL_PRIVILEGES,
         _ => &[],
@@ -384,6 +359,7 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
             value.schemas
         };
 
+        let version = ServerVersion::load(connection)?;
         let mut generic_builder = GenericDBBuilder::new(table_catalog.clone(), PostgresDialect);
 
         for schema in PgSchema::load_all(&table_catalog, &table_schemas, connection)? {
@@ -513,7 +489,8 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
                 Arc::clone(&table),
             );
 
-            let table_metadata = table.metadata(connection, &value.denylist_types, &cache)?;
+            let table_metadata =
+                table.metadata(connection, version, &value.denylist_types, &cache)?;
 
             for column in table_metadata.column_arcs() {
                 columns_by_table_column.insert(
@@ -728,7 +705,7 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
                 .iter()
                 .map(|row| row.privilege_type.to_uppercase())
                 .collect();
-            let full: &'static [&'static str] = all_privileges_for(&rows[0].relkind);
+            let full: &'static [&'static str] = all_privileges_for(&rows[0].relkind, version);
             let full_set: std::collections::BTreeSet<String> =
                 full.iter().copied().map(ToString::to_string).collect();
             if !full_set.is_empty() && held == full_set {
