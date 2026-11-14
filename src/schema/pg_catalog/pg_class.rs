@@ -123,3 +123,21 @@ diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_foreign_table);
 
 use super::pg_foreign_server::pg_foreign_server;
 diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_foreign_server);
+
+use super::pg_attrdef::pg_attrdef;
+diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_attrdef);
+
+use super::pg_rewrite::pg_rewrite;
+diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_rewrite);
+
+use super::pg_sequence::pg_sequence;
+diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_sequence);
+
+use crate::schema::information_schema::columns::columns;
+diesel::allow_tables_to_appear_in_same_query!(pg_class, columns);
+
+use crate::schema::information_schema::tables::tables;
+diesel::allow_tables_to_appear_in_same_query!(pg_class, tables);
+
+use crate::schema::information_schema::triggers::triggers;
+diesel::allow_tables_to_appear_in_same_query!(pg_class, triggers);

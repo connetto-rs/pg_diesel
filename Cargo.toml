@@ -1,9 +1,7 @@
-[package]
-name = "pg_diesel"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+members = ["crates/pg_diesel_core"]
 
-[dependencies]
+[workspace.dependencies]
 diesel = { version = "2.4", features = [
   "postgres",
   "extras",
@@ -11,11 +9,22 @@ diesel = { version = "2.4", features = [
   "numeric",
 ] }
 ipnetwork = { version = "0.21.1", features = ["serde"] }
-serde = { version = "1.0", features = ["derive"], optional = true }
+serde = { version = "1.0", features = ["derive"] }
 bigdecimal = { version = "0.4", features = ["serde"] }
 sql-traits = { git = "https://github.com/connetto-rs/sql-traits", branch = "main" }
 sqlparser = { version = "0.64", features = ["serde", "visitor"] }
 thiserror = "2.0.17"
+
+[package]
+name = "pg_diesel"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+pg_diesel_core = { path = "crates/pg_diesel_core", version = "0.1.0" }
+diesel = { workspace = true }
+serde = { workspace = true, optional = true }
+bigdecimal = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1.49.0", features = ["full"] }
@@ -25,6 +34,9 @@ quote = "1.0"
 proc-macro2 = "1.0"
 tempfile = "3.20"
 postgres = "0.19.14"
+sql-traits = { workspace = true }
+sqlparser = { workspace = true }
+thiserror = { workspace = true }
 
 # Root patches track upstream main for this crate's own builds while consumers see only the crates.io requirements.
 # Each requirement must name the version upstream main declares, otherwise Cargo ignores its patch.
@@ -32,7 +44,7 @@ postgres = "0.19.14"
 diesel = { git = "https://github.com/diesel-rs/diesel", branch = "main" }
 sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", branch = "main" }
 
-[lints.rust]
+[workspace.lints.rust]
 missing_docs = "forbid"
 unused_macro_rules = "forbid"
 unconditional_recursion = "forbid"
@@ -41,7 +53,7 @@ unused_import_braces = "forbid"
 unused_must_use = "forbid"
 dead_code = "deny"
 
-[lints.clippy]
+[workspace.lints.clippy]
 unreadable_literal = "allow"
 missing_panics_doc = "allow"
 new_ret_no_self = "allow"
@@ -74,9 +86,12 @@ complexity = { level = "deny", priority = -1 }
 style = { level = "deny", priority = -1 }
 perf = { level = "deny", priority = -1 }
 
+[lints]
+workspace = true
+
 [features]
 default = ["serde", "postgres-18"]
-serde = ["dep:serde"]
+serde = ["dep:serde", "pg_diesel_core/serde"]
 postgres-14 = []
 postgres-15 = []
 postgres-16 = []
@@ -84,4 +99,4 @@ postgres-17 = []
 postgres-18 = []
 # Whether to include routines metadata, which is a rather large
 # table with 88 columns.
-routines = ["diesel/128-column-tables"]
+routines = ["pg_diesel_core/routines"]

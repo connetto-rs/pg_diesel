@@ -1,0 +1,25 @@
+[package]
+name = "pg_diesel_core"
+version = "0.1.0"
+edition = "2024"
+description = "Version-independent catalog reader behind pg_diesel"
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
+diesel = { workspace = true }
+ipnetwork = { workspace = true }
+serde = { workspace = true, optional = true }
+bigdecimal = { workspace = true }
+sql-traits = { workspace = true }
+sqlparser = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+serde = ["dep:serde"]
+# Whether to include routines metadata, which is a rather large
+# table with 88 columns.
+routines = ["diesel/128-column-tables"]
+
+[lints]
+workspace = true
