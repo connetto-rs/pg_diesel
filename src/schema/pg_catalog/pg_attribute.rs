@@ -108,3 +108,15 @@ diesel::allow_tables_to_appear_in_same_query!(pg_attribute, pg_namespace);
 
 use crate::schema::pg_catalog::pg_description::pg_description;
 diesel::allow_tables_to_appear_in_same_query!(pg_attribute, pg_description);
+
+use super::pg_attrdef::pg_attrdef;
+diesel::allow_tables_to_appear_in_same_query!(pg_attribute, pg_attrdef);
+
+use super::pg_depend::pg_depend;
+diesel::allow_tables_to_appear_in_same_query!(pg_attribute, pg_depend);
+
+use crate::schema::information_schema::columns::columns;
+diesel::allow_tables_to_appear_in_same_query!(pg_attribute, columns);
+
+use crate::schema::information_schema::tables::tables;
+diesel::allow_tables_to_appear_in_same_query!(pg_attribute, tables);

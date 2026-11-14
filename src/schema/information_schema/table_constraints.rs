@@ -33,3 +33,18 @@ diesel::table! {
 
 use super::constraint_column_usage::constraint_column_usage;
 diesel::allow_tables_to_appear_in_same_query!(table_constraints, constraint_column_usage);
+
+use super::check_constraints::check_constraints;
+diesel::allow_tables_to_appear_in_same_query!(table_constraints, check_constraints);
+
+use super::columns::columns;
+diesel::allow_tables_to_appear_in_same_query!(table_constraints, columns);
+
+use super::key_column_usage::key_column_usage;
+diesel::allow_tables_to_appear_in_same_query!(table_constraints, key_column_usage);
+
+use super::referential_constraints::referential_constraints;
+diesel::allow_tables_to_appear_in_same_query!(table_constraints, referential_constraints);
+
+use super::tables::tables;
+diesel::allow_tables_to_appear_in_same_query!(table_constraints, tables);

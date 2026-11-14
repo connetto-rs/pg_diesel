@@ -2,4 +2,4 @@
 
 pub mod information_schema;
 pub mod pg_catalog;
-pub mod public;
+pub use pg_diesel_core::schema::public;
