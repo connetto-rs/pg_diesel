@@ -75,9 +75,7 @@ async fn one_build_reads_postgres_17_and_18() {
 struct NoVersions;
 
 impl VersionCatalog for NoVersions {
-    fn majors(&self) -> &'static [u32] {
-        &[]
-    }
+    const MAJORS: &'static [u32] = &[];
 
     fn membership_grants(
         &self,

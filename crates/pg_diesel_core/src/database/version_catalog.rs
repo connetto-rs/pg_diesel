@@ -9,8 +9,8 @@ use crate::{database::ServerVersion, model_metadata::MembershipGrant};
 /// version, which a [`PgDieselDatabaseBuilder`](super::PgDieselDatabaseBuilder)
 /// takes from the catalogs of the versions it was compiled with.
 pub trait VersionCatalog {
-    /// Returns the `PostgreSQL` major versions this catalog reads.
-    fn majors(&self) -> &'static [u32];
+    /// The `PostgreSQL` major versions this catalog reads.
+    const MAJORS: &'static [u32];
 
     /// Loads every grant `pg_auth_members` records on a server of
     /// `version`, one per grantor.

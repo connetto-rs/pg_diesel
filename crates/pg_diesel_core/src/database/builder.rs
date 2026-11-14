@@ -377,7 +377,7 @@ impl<'a, C: VersionCatalog> TryFrom<PgDieselDatabaseBuilder<'a, C>> for PgDiesel
         };
 
         let version = ServerVersion::load(connection)?;
-        let compiled = value.version_catalog.majors();
+        let compiled = C::MAJORS;
         if !compiled.contains(&version.major()) {
             return Err(PgDatabaseBuildError::UnsupportedServerVersion {
                 server: version.major(),

@@ -16,9 +16,7 @@ pub const MAJOR: u32 = 18;
 pub struct Catalog;
 
 impl VersionCatalog for Catalog {
-    fn majors(&self) -> &'static [u32] {
-        &[MAJOR]
-    }
+    const MAJORS: &'static [u32] = &[MAJOR];
 
     fn membership_grants(
         &self,

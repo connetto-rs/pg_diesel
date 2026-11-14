@@ -33,9 +33,7 @@ const COMPILED: &[u32] = &[
 pub struct CompiledVersions;
 
 impl VersionCatalog for CompiledVersions {
-    fn majors(&self) -> &'static [u32] {
-        COMPILED
-    }
+    const MAJORS: &'static [u32] = COMPILED;
 
     fn membership_grants(
         &self,

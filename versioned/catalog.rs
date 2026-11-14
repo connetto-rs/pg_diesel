@@ -28,9 +28,7 @@ pub const MAJOR: u32 = 18;
 pub struct Catalog;
 
 impl VersionCatalog for Catalog {
-    fn majors(&self) -> &'static [u32] {
-        &[MAJOR]
-    }
+    const MAJORS: &'static [u32] = &[MAJOR];
 
     #[cfg(not(any(feature = "postgres-15", feature = "postgres-14")))]
     fn membership_grants(
