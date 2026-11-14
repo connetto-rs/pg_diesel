@@ -1,0 +1,12 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+syn = { version = "2.0", features = ["full"] }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

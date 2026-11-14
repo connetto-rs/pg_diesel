@@ -46,6 +46,21 @@ jobs:
     - name: Check formatting
       run: cargo fmt --all -- --check
 
+  generated:
+    name: Generated version packages
+    runs-on: ubuntu-26.04
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      with:
+        persist-credentials: false
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      with:
+        toolchain: stable
+        components: rustfmt
+    - name: Check the version packages match versioned/
+      run: cargo xtask generate --check
+
   clippy:
     name: Clippy (postgres-${{ matrix.postgres }})
     runs-on: ubuntu-26.04

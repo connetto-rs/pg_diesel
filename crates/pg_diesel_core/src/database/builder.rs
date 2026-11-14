@@ -253,6 +253,14 @@ pub enum PgDatabaseBuildError {
         /// The privilege as `PostgreSQL` names it.
         privilege: String,
     },
+    #[error("PostgreSQL {server} is not among the versions this build reads, {compiled:?}")]
+    /// The server's major version has no catalog compiled in.
+    UnsupportedServerVersion {
+        /// The major version of the server.
+        server: u32,
+        /// The major versions whose catalogs this build holds.
+        compiled: &'static [u32],
+    },
 }
 
 impl<'conn, C> PgDieselDatabaseBuilder<'conn, C> {
@@ -369,6 +377,13 @@ impl<'a, C: VersionCatalog> TryFrom<PgDieselDatabaseBuilder<'a, C>> for PgDiesel
         };
 
         let version = ServerVersion::load(connection)?;
+        let compiled = C::MAJORS;
+        if !compiled.contains(&version.major()) {
+            return Err(PgDatabaseBuildError::UnsupportedServerVersion {
+                server: version.major(),
+                compiled,
+            });
+        }
         let mut generic_builder = GenericDBBuilder::new(table_catalog.clone(), PostgresDialect);
 
         for schema in PgSchema::load_all(&table_catalog, &table_schemas, connection)? {
@@ -698,9 +713,12 @@ impl<'a, C: VersionCatalog> TryFrom<PgDieselDatabaseBuilder<'a, C>> for PgDiesel
             generic_builder = generic_builder.add_role(Arc::clone(role_rc), metadata);
         }
 
-        for membership in
-            PgRoleMembership::fold(value.version_catalog.membership_grants(connection)?, &cache)
-        {
+        for membership in PgRoleMembership::fold(
+            value
+                .version_catalog
+                .membership_grants(version, connection)?,
+            &cache,
+        ) {
             generic_builder = generic_builder.add_role_membership(Arc::new(membership), ());
         }
         generic_builder = generic_builder.add_role_settings(PgDbRoleSetting::load_settings(

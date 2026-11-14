@@ -87,25 +87,11 @@ impl FeatureGate {
     }
 }
 
-/// Get the active postgres features based on compile-time cfg.
+/// The features a version-shaped gate is read against, the version of the
+/// server the tests start beside `routines` and `serde` when enabled.
 #[allow(unused_mut, clippy::vec_init_then_push, dead_code)]
 pub fn get_active_postgres_features() -> Vec<&'static str> {
-    let mut features = vec![];
-
-    #[cfg(feature = "postgres-14")]
-    features.push("postgres-14");
-
-    #[cfg(feature = "postgres-15")]
-    features.push("postgres-15");
-
-    #[cfg(feature = "postgres-16")]
-    features.push("postgres-16");
-
-    #[cfg(feature = "postgres-17")]
-    features.push("postgres-17");
-
-    #[cfg(feature = "postgres-18")]
-    features.push("postgres-18");
+    let mut features = vec![docker_helpers::TESTED_FEATURE];
 
     #[cfg(feature = "routines")]
     features.push("routines");
