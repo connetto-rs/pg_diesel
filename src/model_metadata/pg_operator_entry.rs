@@ -15,6 +15,8 @@ use super::catalog_identity::{CatalogIdentity, CatalogObjects};
 /// An operator signature resolved by catalog OIDs.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PgOperatorEntry {
+    /// The operator's catalog OID.
+    oid: u32,
     /// The operator's stored identity.
     target: CatalogIdentity,
     /// The operand positions recorded independently of type availability.
@@ -42,6 +44,12 @@ pub struct PgOperatorEntry {
 }
 
 impl PgOperatorEntry {
+    /// Returns the operator's catalog OID.
+    #[must_use]
+    pub const fn oid(&self) -> u32 {
+        self.oid
+    }
+
     /// Loads operator signatures and relations in catalog slice order.
     ///
     /// # Errors
@@ -80,6 +88,7 @@ impl PgOperatorEntry {
                     }
                 };
                 Ok(Self {
+                    oid: model.oid,
                     target: CatalogIdentity {
                         schema: objects
                             .namespace(model.oprnamespace)
