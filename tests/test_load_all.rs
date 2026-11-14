@@ -3,7 +3,7 @@
 mod test_utils;
 
 use diesel::{PgConnection, QueryDsl, SelectableHelper, query_dsl::LoadQuery};
-use test_utils::{docker_helpers::catalog, establish_connection, reference_docker};
+use test_utils::{COMPILED_MAJORS, establish_connection, reference_docker};
 
 thread_local! {
     /// The loads that failed, each naming the model and the error.
@@ -30,15 +30,46 @@ trait LoadRecorded: diesel::RunQueryDsl<PgConnection> + Sized {
 
 impl<T: diesel::RunQueryDsl<PgConnection>> LoadRecorded for T {}
 
+/// Expands `$body` once per compiled `PostgreSQL` version, with `$catalog`
+/// naming that version's `pg_diesel::vN`. Inside `$body`,
+/// `since!(N => { ... })` keeps its block only in the expansions for
+/// version N and later, for the relations older servers lack. N ranges over
+/// 15 to 18, and the body must use every one of them because each
+/// expansion's `since` rules are all expected to fire.
+macro_rules! for_each_catalog {
+    ($catalog:ident => $body:block) => {
+        for_each_catalog!(@version "postgres-14", v14, [], [15 16 17 18], $catalog, $body, $);
+        for_each_catalog!(@version "postgres-15", v15, [15], [16 17 18], $catalog, $body, $);
+        for_each_catalog!(@version "postgres-16", v16, [15 16], [17 18], $catalog, $body, $);
+        for_each_catalog!(@version "postgres-17", v17, [15 16 17], [18], $catalog, $body, $);
+        for_each_catalog!(@version "postgres-18", v18, [15 16 17 18], [], $catalog, $body, $);
+    };
+    (@version $feature:literal, $module:ident, [$($reached:tt)*], [$($later:tt)*], $catalog:ident, $body:block, $d:tt) => {
+        #[cfg(feature = $feature)]
+        {
+            use pg_diesel::$module as $catalog;
+            macro_rules! since {
+                $(($reached => $d block:block) => { $d block };)*
+                $(($later => $d block:block) => {};)*
+            }
+            $body
+        }
+    };
+}
+
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn test_load_all_models() {
+    let mut loaded = Vec::new();
+    let mut failures = Vec::new();
+    for_each_catalog!(catalog => {
     let database_name = "test_load_all";
-    let docker = reference_docker(database_name)
+    let docker = reference_docker(catalog::MAJOR, database_name)
         .await
         .expect("Failed to start docker");
     let mut conn: PgConnection = establish_connection(docker.port, database_name)
         .expect("Failed to establish connection to database");
+    loaded.push(catalog::MAJOR);
 
     // information_schema
     {
@@ -494,14 +525,6 @@ async fn test_load_all_models() {
             .select(PgAggregate::as_select())
             .load::<PgAggregate>(&mut conn);
     }
-    #[cfg(feature = "postgres-18")]
-    {
-        use catalog::models::PgAios;
-        use catalog::schema::pg_catalog::pg_aios::pg_aios::dsl::*;
-        let _ = pg_aios
-            .select(PgAios::as_select())
-            .load::<PgAios>(&mut conn);
-    }
     {
         use catalog::models::PgAm;
         use catalog::schema::pg_catalog::pg_am::pg_am::dsl::*;
@@ -717,14 +740,13 @@ async fn test_load_all_models() {
             .select(PgHbaFileRule::as_select())
             .load::<PgHbaFileRule>(&mut conn);
     }
-    #[cfg(not(feature = "postgres-14"))]
-    {
+    since!(15 => {
         use catalog::models::PgIdentFileMapping;
         use catalog::schema::pg_catalog::pg_ident_file_mappings::pg_ident_file_mappings::dsl::*;
         let _ = pg_ident_file_mappings
             .select(PgIdentFileMapping::as_select())
             .load::<PgIdentFileMapping>(&mut conn);
-    }
+    });
     {
         use catalog::models::PgIndex;
         use catalog::schema::pg_catalog::pg_index::pg_index::dsl::*;
@@ -802,14 +824,13 @@ async fn test_load_all_models() {
             .select(PgOpfamily::as_select())
             .load::<PgOpfamily>(&mut conn);
     }
-    #[cfg(not(feature = "postgres-14"))]
-    {
+    since!(15 => {
         use catalog::models::PgParameterAcl;
         use catalog::schema::pg_catalog::pg_parameter_acl::pg_parameter_acl::dsl::*;
         let _ = pg_parameter_acl
             .select(PgParameterAcl::as_select())
             .load::<PgParameterAcl>(&mut conn);
-    }
+    });
     {
         use catalog::models::PgPartitionedTable;
         use catalog::schema::pg_catalog::pg_partitioned_table::pg_partitioned_table::dsl::*;
@@ -859,14 +880,13 @@ async fn test_load_all_models() {
             .select(PgPublication::as_select())
             .load::<PgPublication>(&mut conn);
     }
-    #[cfg(not(feature = "postgres-14"))]
-    {
+    since!(15 => {
         use catalog::models::PgPublicationNamespace;
         use catalog::schema::pg_catalog::pg_publication_namespace::pg_publication_namespace::dsl::*;
         let _ = pg_publication_namespace
             .select(PgPublicationNamespace::as_select())
             .load::<PgPublicationNamespace>(&mut conn);
-    }
+    });
     {
         use catalog::models::PgPublicationRel;
         use catalog::schema::pg_catalog::pg_publication_rel::pg_publication_rel::dsl::*;
@@ -1042,14 +1062,13 @@ async fn test_load_all_models() {
             .select(PgStatBgwriter::as_select())
             .load::<PgStatBgwriter>(&mut conn);
     }
-    #[cfg(any(feature = "postgres-17", feature = "postgres-18"))]
-    {
+    since!(17 => {
         use catalog::models::PgStatCheckpointer;
         use catalog::schema::pg_catalog::pg_stat_checkpointer::pg_stat_checkpointer::dsl::*;
         let _ = pg_stat_checkpointer
             .select(PgStatCheckpointer::as_select())
             .load::<PgStatCheckpointer>(&mut conn);
-    }
+    });
     {
         use catalog::models::PgStatDatabase;
         use catalog::schema::pg_catalog::pg_stat_database::pg_stat_database::dsl::*;
@@ -1071,14 +1090,13 @@ async fn test_load_all_models() {
             .select(PgStatGssapi::as_select())
             .load::<PgStatGssapi>(&mut conn);
     }
-    #[cfg(not(any(feature = "postgres-15", feature = "postgres-14")))]
-    {
+    since!(16 => {
         use catalog::models::PgStatIo;
         use catalog::schema::pg_catalog::pg_stat_io::pg_stat_io::dsl::*;
         let _ = pg_stat_io
             .select(PgStatIo::as_select())
             .load::<PgStatIo>(&mut conn);
-    }
+    });
     {
         use catalog::models::PgStatProgressAnalyze;
         use catalog::schema::pg_catalog::pg_stat_progress_analyze::pg_stat_progress_analyze::dsl::*;
@@ -1121,14 +1139,13 @@ async fn test_load_all_models() {
             .select(PgStatProgressVacuum::as_select())
             .load::<PgStatProgressVacuum>(&mut conn);
     }
-    #[cfg(not(feature = "postgres-14"))]
-    {
+    since!(15 => {
         use catalog::schema::pg_catalog::pg_stat_recovery_prefetch::pg_stat_recovery_prefetch::dsl::*;
         use catalog::models::PgStatRecoveryPrefetch;
         let _ = pg_stat_recovery_prefetch
             .select(PgStatRecoveryPrefetch::as_select())
             .load::<PgStatRecoveryPrefetch>(&mut conn);
-    }
+    });
     {
         use catalog::models::PgStatReplication;
         use catalog::schema::pg_catalog::pg_stat_replication::pg_stat_replication::dsl::*;
@@ -1164,14 +1181,13 @@ async fn test_load_all_models() {
             .select(PgStatSubscription::as_select())
             .load::<PgStatSubscription>(&mut conn);
     }
-    #[cfg(not(feature = "postgres-14"))]
-    {
+    since!(15 => {
         use catalog::schema::pg_catalog::pg_stat_subscription_stats::pg_stat_subscription_stats::dsl::*;
         use catalog::models::PgStatSubscriptionStat;
         let _ = pg_stat_subscription_stats
             .select(PgStatSubscriptionStat::as_select())
             .load::<PgStatSubscriptionStat>(&mut conn);
-    }
+    });
     {
         use catalog::models::PgStatSysIndex;
         use catalog::schema::pg_catalog::pg_stat_sys_indexes::pg_stat_sys_indexes::dsl::*;
@@ -1473,14 +1489,20 @@ async fn test_load_all_models() {
             .select(PgView::as_select())
             .load::<PgView>(&mut conn);
     }
-    #[cfg(any(feature = "postgres-17", feature = "postgres-18"))]
-    {
+    since!(17 => {
         use catalog::models::PgWaitEvent;
         use catalog::schema::pg_catalog::pg_wait_events::pg_wait_events::dsl::*;
         let _ = pg_wait_events
             .select(PgWaitEvent::as_select())
             .load::<PgWaitEvent>(&mut conn);
-    }
+    });
+    since!(18 => {
+        use catalog::models::PgAios;
+        use catalog::schema::pg_catalog::pg_aios::pg_aios::dsl::*;
+        let _ = pg_aios
+            .select(PgAios::as_select())
+            .load::<PgAios>(&mut conn);
+    });
     // public
     {
         use catalog::models::GeographyColumn;
@@ -1496,10 +1518,17 @@ async fn test_load_all_models() {
             .select(GeometryColumn::as_select())
             .load::<GeometryColumn>(&mut conn);
     }
-    let failed = FAILED_LOADS.take();
+    failures.extend(
+        FAILED_LOADS
+            .take()
+            .into_iter()
+            .map(|failure| format!("PostgreSQL {}: {failure}", catalog::MAJOR)),
+    );
+    });
+    assert_eq!(loaded, COMPILED_MAJORS);
     assert!(
-        failed.is_empty(),
+        failures.is_empty(),
         "models fail to load:\n{}",
-        failed.join("\n")
+        failures.join("\n")
     );
 }

@@ -14,6 +14,8 @@ mod test_utils;
 
 #[path = "differential/casts.rs"]
 mod casts;
+#[path = "differential/catalog.rs"]
+mod catalog;
 #[path = "differential/compare.rs"]
 mod compare;
 #[path = "differential/data_types.rs"]
@@ -49,16 +51,16 @@ use diesel::{
 use pg_diesel::{
     PgDieselDatabase,
     database::PgDieselDatabaseBuilder,
+    schema::pg_catalog::{
+        pg_authid::pg_authid, pg_depend::pg_depend, pg_namespace::pg_namespace, pg_proc::pg_proc,
+        pg_range::pg_range, pg_roles::pg_roles, pg_type::pg_type,
+    },
     sql_traits::{structs::ParseOptions, traits::DatabaseLike},
     sqlparser::dialect::PostgreSqlDialect,
 };
-use test_utils::{
-    docker_helpers::catalog::schema::pg_catalog::{
-        pg_authid::pg_authid, pg_class::pg_class, pg_depend::pg_depend, pg_namespace::pg_namespace,
-        pg_proc::pg_proc, pg_range::pg_range, pg_roles::pg_roles, pg_type::pg_type,
-    },
-    establish_connection, reference_docker,
-};
+use test_utils::{COMPILED_MAJORS, establish_connection, reference_docker};
+
+use crate::catalog::pg_class;
 
 use crate::{
     compare::{AlreadyStored, Facts, Scope, contradictions, describe, differences, function_key},
@@ -239,6 +241,7 @@ fn expected_context(
     connection: &mut PgConnection,
     live: &PgDieselDatabase,
     scope: &Scope,
+    server_major: u32,
 ) -> expected::Context {
     let bootstrap_superuser: String = pg_authid::table
         .filter(pg_authid::oid.eq(10))
@@ -263,6 +266,7 @@ fn expected_context(
         .into_iter()
         .collect();
     expected::Context {
+        server_major,
         bootstrap_superuser,
         range_constructors: live
             .functions()
@@ -346,7 +350,7 @@ fn compare_document(port: u16, database: &str, ddl: &str, server_major: u32) -> 
             Ok(facts) => facts,
             Err(error) => return Outcome::Failed(error.to_string()),
         };
-    let context = expected_context(&mut connection, &live, &scope);
+    let context = expected_context(&mut connection, &live, &scope, server_major);
     let mut found: Vec<String> = differences(&source_facts, &live_facts)
         .into_iter()
         .filter(
@@ -402,59 +406,61 @@ fn leading_comment<'a>(ddl: &'a str, prefix: &str) -> Option<&'a str> {
 
 #[tokio::test]
 async fn parser_and_catalog_agree_on_every_corpus_document() {
-    let docker = reference_docker(MAINTENANCE)
-        .await
-        .expect("the container starts");
-    let mut maintenance: PgConnection = establish_connection(docker.port, MAINTENANCE)
-        .expect("the maintenance database accepts connections");
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/differential/corpus");
-    let server_major = diesel::select(sql::<Text>("current_setting('server_version_num')"))
-        .get_result::<String>(&mut maintenance)
-        .expect("the server reports its version")
-        .parse::<u32>()
-        .expect("server_version_num is a number")
-        / 10_000;
-    let mut report = String::new();
-    let documents = corpus();
-    assert!(!documents.is_empty(), "the corpus holds documents");
-    for (number, document) in documents.iter().enumerate() {
-        let ddl = fs::read_to_string(document).expect("the document is readable");
-        let name = document.strip_prefix(&root).unwrap_or(document).display();
-        if let Some(minimum) = minimum_server(&ddl)
-            && server_major < minimum
-        {
-            eprintln!(
-                "{name}: skipped, it needs PostgreSQL {minimum} and the server is {server_major}"
-            );
-            continue;
-        }
-        let database = format!("document_{number}");
-        maintenance
-            .batch_execute(&format!("CREATE DATABASE {};", quoted(&database)))
-            .expect("the document database is created");
-        let outcome = compare_document(docker.port, &database, &ddl, server_major);
-        maintenance
-            .batch_execute(&format!(
-                "DROP DATABASE {} WITH (FORCE);",
-                quoted(&database)
-            ))
-            .expect("the document database drops");
-        drop_document_roles(&mut maintenance);
-        match outcome {
-            Outcome::Compared(found) if found.is_empty() => {}
-            Outcome::Compared(found) => {
-                writeln!(report, "{name}:").expect("writing to a string succeeds");
-                for difference in found {
-                    writeln!(report, "  {difference}").expect("writing to a string succeeds");
+    for &major in COMPILED_MAJORS {
+        let docker = reference_docker(major, MAINTENANCE)
+            .await
+            .expect("the container starts");
+        let mut maintenance: PgConnection = establish_connection(docker.port, MAINTENANCE)
+            .expect("the maintenance database accepts connections");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/differential/corpus");
+        let server_major = diesel::select(sql::<Text>("current_setting('server_version_num')"))
+            .get_result::<String>(&mut maintenance)
+            .expect("the server reports its version")
+            .parse::<u32>()
+            .expect("server_version_num is a number")
+            / 10_000;
+        let mut report = String::new();
+        let documents = corpus();
+        assert!(!documents.is_empty(), "the corpus holds documents");
+        for (number, document) in documents.iter().enumerate() {
+            let ddl = fs::read_to_string(document).expect("the document is readable");
+            let name = document.strip_prefix(&root).unwrap_or(document).display();
+            if let Some(minimum) = minimum_server(&ddl)
+                && server_major < minimum
+            {
+                eprintln!(
+                    "{name}: skipped, it needs PostgreSQL {minimum} and the server is {server_major}"
+                );
+                continue;
+            }
+            let database = format!("document_{number}");
+            maintenance
+                .batch_execute(&format!("CREATE DATABASE {};", quoted(&database)))
+                .expect("the document database is created");
+            let outcome = compare_document(docker.port, &database, &ddl, server_major);
+            maintenance
+                .batch_execute(&format!(
+                    "DROP DATABASE {} WITH (FORCE);",
+                    quoted(&database)
+                ))
+                .expect("the document database drops");
+            drop_document_roles(&mut maintenance);
+            match outcome {
+                Outcome::Compared(found) if found.is_empty() => {}
+                Outcome::Compared(found) => {
+                    writeln!(report, "{name}:").expect("writing to a string succeeds");
+                    for difference in found {
+                        writeln!(report, "  {difference}").expect("writing to a string succeeds");
+                    }
+                }
+                Outcome::ParserGap { gap, error } => {
+                    eprintln!("{name}: skipped, sqlparser cannot parse it yet ({gap}): {error}");
+                }
+                Outcome::Failed(reason) => {
+                    writeln!(report, "{name}: {reason}").expect("writing to a string succeeds");
                 }
             }
-            Outcome::ParserGap { gap, error } => {
-                eprintln!("{name}: skipped, sqlparser cannot parse it yet ({gap}): {error}");
-            }
-            Outcome::Failed(reason) => {
-                writeln!(report, "{name}: {reason}").expect("writing to a string succeeds");
-            }
         }
+        assert!(report.is_empty(), "the models disagree:\n{report}");
     }
-    assert!(report.is_empty(), "the models disagree:\n{report}");
 }
