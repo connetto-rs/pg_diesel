@@ -47,7 +47,7 @@ async fn test_schema_completeness() {
     let mut conn: PgConnection = establish_connection(docker.port, database_name)
         .expect("Failed to establish connection to database");
 
-    let crate_root_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let source_roots = source_roots();
 
     // Get all tables from information_schema
     let tables: Vec<TableInfo> = diesel::sql_query(
@@ -62,11 +62,13 @@ async fn test_schema_completeness() {
     let module_gates: std::collections::HashMap<&str, _> = ["information_schema", "pg_catalog"]
         .into_iter()
         .map(|schema| {
-            let path = crate_root_path
-                .join("src")
-                .join("schema")
-                .join(format!("{schema}.rs"));
-            (schema, relation_module_gates(&path))
+            let gates: std::collections::HashMap<_, _> = source_roots
+                .iter()
+                .map(|root| root.join("schema").join(format!("{schema}.rs")))
+                .filter(|path| path.exists())
+                .flat_map(|path| relation_module_gates(&path))
+                .collect();
+            (schema, gates)
         })
         .collect();
 
@@ -78,15 +80,18 @@ async fn test_schema_completeness() {
             continue;
         }
 
-        let expected_schema_path = crate_root_path
-            .join("src")
+        let Some(source_root) = source_roots.iter().find(|root| {
+            root.join("schema")
+                .join(table_schema)
+                .join(format!("{table_name}.rs"))
+                .exists()
+        }) else {
+            continue;
+        };
+        let expected_schema_path = source_root
             .join("schema")
             .join(table_schema)
             .join(format!("{table_name}.rs"));
-
-        if !expected_schema_path.exists() {
-            continue;
-        }
 
         assert!(
             module_gates
@@ -104,8 +109,7 @@ async fn test_schema_completeness() {
             _ => table_name,
         };
 
-        let expected_model_path = crate_root_path
-            .join("src")
+        let expected_model_path = source_root
             .join("models")
             .join(table_schema)
             .join(format!("{model_filename}.rs"));
@@ -262,10 +266,14 @@ fn test_load_all_coverage() {
 
     let schemas = ["information_schema", "pg_catalog", "public"];
     let mut missing_tests: Vec<String> = Vec::new();
+    let source_roots = source_roots();
 
-    for schema in schemas {
-        let schema_dir = crate_root_path.join("src").join("schema").join(schema);
-        let model_dir = crate_root_path.join("src").join("models").join(schema);
+    for (source_root, schema) in source_roots
+        .iter()
+        .flat_map(|root| schemas.iter().map(move |schema| (root, *schema)))
+    {
+        let schema_dir = source_root.join("schema").join(schema);
+        let model_dir = source_root.join("models").join(schema);
 
         if !schema_dir.exists() {
             continue;
@@ -397,6 +405,16 @@ fn relation_module_gates(
             _ => None,
         })
         .collect()
+}
+
+/// The source directories of the facade and of `pg_diesel_core`, between
+/// them holding every schema and model file.
+fn source_roots() -> [std::path::PathBuf; 2] {
+    let crate_root_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    [
+        crate_root_path.join("src"),
+        crate_root_path.join("crates/pg_diesel_core/src"),
+    ]
 }
 
 /// Convert `snake_case` to `PascalCase`.
