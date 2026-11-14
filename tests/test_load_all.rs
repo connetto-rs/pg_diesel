@@ -2,8 +2,33 @@
 
 mod test_utils;
 
-use diesel::{PgConnection, QueryDsl, RunQueryDsl, SelectableHelper};
+use diesel::{PgConnection, QueryDsl, SelectableHelper, query_dsl::LoadQuery};
 use test_utils::{establish_connection, reference_docker};
+
+thread_local! {
+    /// The loads that failed, each naming the model and the error.
+    static FAILED_LOADS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Loads the rows of a query and records a failure unless they load. It
+/// stands in for `RunQueryDsl::load` so that every load below is checked
+/// and every failing model is reported together.
+trait LoadRecorded: diesel::RunQueryDsl<PgConnection> + Sized {
+    /// Returns the rows, empty when the load failed.
+    fn load<'query, U>(self, conn: &mut PgConnection) -> Vec<U>
+    where
+        Self: LoadQuery<'query, PgConnection, U>,
+    {
+        diesel::RunQueryDsl::load(self, conn).unwrap_or_else(|error| {
+            FAILED_LOADS.with_borrow_mut(|failed| {
+                failed.push(format!("{}: {error}", std::any::type_name::<U>()));
+            });
+            Vec::new()
+        })
+    }
+}
+
+impl<T: diesel::RunQueryDsl<PgConnection>> LoadRecorded for T {}
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
@@ -692,6 +717,7 @@ async fn test_load_all_models() {
             .select(PgHbaFileRule::as_select())
             .load::<PgHbaFileRule>(&mut conn);
     }
+    #[cfg(not(feature = "postgres-14"))]
     {
         use pg_diesel::models::PgIdentFileMapping;
         use pg_diesel::schema::pg_catalog::pg_ident_file_mappings::pg_ident_file_mappings::dsl::*;
@@ -776,6 +802,7 @@ async fn test_load_all_models() {
             .select(PgOpfamily::as_select())
             .load::<PgOpfamily>(&mut conn);
     }
+    #[cfg(not(feature = "postgres-14"))]
     {
         use pg_diesel::models::PgParameterAcl;
         use pg_diesel::schema::pg_catalog::pg_parameter_acl::pg_parameter_acl::dsl::*;
@@ -832,6 +859,7 @@ async fn test_load_all_models() {
             .select(PgPublication::as_select())
             .load::<PgPublication>(&mut conn);
     }
+    #[cfg(not(feature = "postgres-14"))]
     {
         use pg_diesel::schema::pg_catalog::pg_publication_namespace::pg_publication_namespace::dsl::*;
         use pg_diesel::models::PgPublicationNamespace;
@@ -1014,6 +1042,7 @@ async fn test_load_all_models() {
             .select(PgStatBgwriter::as_select())
             .load::<PgStatBgwriter>(&mut conn);
     }
+    #[cfg(any(feature = "postgres-17", feature = "postgres-18"))]
     {
         use pg_diesel::models::PgStatCheckpointer;
         use pg_diesel::schema::pg_catalog::pg_stat_checkpointer::pg_stat_checkpointer::dsl::*;
@@ -1042,6 +1071,7 @@ async fn test_load_all_models() {
             .select(PgStatGssapi::as_select())
             .load::<PgStatGssapi>(&mut conn);
     }
+    #[cfg(not(any(feature = "postgres-15", feature = "postgres-14")))]
     {
         use pg_diesel::models::PgStatIo;
         use pg_diesel::schema::pg_catalog::pg_stat_io::pg_stat_io::dsl::*;
@@ -1091,6 +1121,7 @@ async fn test_load_all_models() {
             .select(PgStatProgressVacuum::as_select())
             .load::<PgStatProgressVacuum>(&mut conn);
     }
+    #[cfg(not(feature = "postgres-14"))]
     {
         use pg_diesel::schema::pg_catalog::pg_stat_recovery_prefetch::pg_stat_recovery_prefetch::dsl::*;
         use pg_diesel::models::PgStatRecoveryPrefetch;
@@ -1127,19 +1158,13 @@ async fn test_load_all_models() {
             .load::<PgStatSsl>(&mut conn);
     }
     {
-        use pg_diesel::models::PgStatStatement;
-        use pg_diesel::schema::pg_catalog::pg_stat_statements::pg_stat_statements::dsl::*;
-        let _ = pg_stat_statements
-            .select(PgStatStatement::as_select())
-            .load::<PgStatStatement>(&mut conn);
-    }
-    {
         use pg_diesel::models::PgStatSubscription;
         use pg_diesel::schema::pg_catalog::pg_stat_subscription::pg_stat_subscription::dsl::*;
         let _ = pg_stat_subscription
             .select(PgStatSubscription::as_select())
             .load::<PgStatSubscription>(&mut conn);
     }
+    #[cfg(not(feature = "postgres-14"))]
     {
         use pg_diesel::schema::pg_catalog::pg_stat_subscription_stats::pg_stat_subscription_stats::dsl::*;
         use pg_diesel::models::PgStatSubscriptionStat;
@@ -1448,6 +1473,7 @@ async fn test_load_all_models() {
             .select(PgView::as_select())
             .load::<PgView>(&mut conn);
     }
+    #[cfg(any(feature = "postgres-17", feature = "postgres-18"))]
     {
         use pg_diesel::models::PgWaitEvent;
         use pg_diesel::schema::pg_catalog::pg_wait_events::pg_wait_events::dsl::*;
@@ -1470,4 +1496,10 @@ async fn test_load_all_models() {
             .select(GeometryColumn::as_select())
             .load::<GeometryColumn>(&mut conn);
     }
+    let failed = FAILED_LOADS.take();
+    assert!(
+        failed.is_empty(),
+        "models fail to load:\n{}",
+        failed.join("\n")
+    );
 }

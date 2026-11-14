@@ -57,15 +57,5 @@ diesel::table! {
         stanumbers4 -> Nullable<Array<Float>>,
         /// Numerical statistics of the appropriate kind for the fifth slot, or null if the slot kind does not involve numerical values.
         stanumbers5 -> Nullable<Array<Float>>,
-        /// Column data values of the appropriate kind for the first slot, or null if the slot kind does not involve column values.
-        stavalues1 -> Nullable<Array<Binary>>,
-        /// Column data values of the appropriate kind for the second slot, or null if the slot kind does not involve column values.
-        stavalues2 -> Nullable<Array<Binary>>,
-        /// Column data values of the appropriate kind for the third slot, or null if the slot kind does not involve column values.
-        stavalues3 -> Nullable<Array<Binary>>,
-        /// Column data values of the appropriate kind for the fourth slot, or null if the slot kind does not involve column values.
-        stavalues4 -> Nullable<Array<Binary>>,
-        /// Column data values of the appropriate kind for the fifth slot, or null if the slot kind does not involve column values.
-        stavalues5 -> Nullable<Array<Binary>>,
     }
 }

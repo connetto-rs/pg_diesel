@@ -29,16 +29,10 @@ pub struct PgStatsExtExpr {
     pub avg_width: Option<i32>,
     /// Number of distinct values.
     pub n_distinct: Option<f32>,
-    /// Most common values.
-    pub most_common_vals: Option<Vec<Vec<u8>>>,
     /// Most common value frequencies.
     pub most_common_freqs: Option<Vec<f32>>,
-    /// Histogram bounds.
-    pub histogram_bounds: Option<Vec<Vec<u8>>>,
     /// Correlation coefficient.
     pub correlation: Option<f32>,
-    /// Most common elements.
-    pub most_common_elems: Option<Vec<Vec<u8>>>,
     /// Most common element frequencies.
     pub most_common_elem_freqs: Option<Vec<f32>>,
     /// Element count histogram.

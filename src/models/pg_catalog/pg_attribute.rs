@@ -96,6 +96,4 @@ pub struct PgAttribute {
     pub attfdwoptions: Option<Vec<String>>,
     /// Compression method for the column
     pub attcompression: String,
-    /// Missing value for added columns
-    pub attmissingval: Option<Vec<String>>,
 }

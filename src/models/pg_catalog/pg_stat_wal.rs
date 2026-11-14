@@ -15,7 +15,7 @@ pub struct PgStatWal {
     /// Full page images generated.
     pub wal_fpi: Option<i64>,
     /// WAL bytes generated.
-    pub wal_bytes: Option<f64>,
+    pub wal_bytes: Option<bigdecimal::BigDecimal>,
     /// Times WAL buffers were full.
     pub wal_buffers_full: Option<i64>,
     #[cfg(not(feature = "postgres-18"))]

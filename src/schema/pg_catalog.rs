@@ -34,6 +34,7 @@ pub mod pg_foreign_server;
 pub mod pg_foreign_table;
 pub mod pg_group;
 pub mod pg_hba_file_rules;
+#[cfg(not(feature = "postgres-14"))]
 pub mod pg_ident_file_mappings;
 pub mod pg_index;
 pub mod pg_indexes;
@@ -48,6 +49,7 @@ pub mod pg_namespace;
 pub mod pg_opclass;
 pub mod pg_operator;
 pub mod pg_opfamily;
+#[cfg(not(feature = "postgres-14"))]
 pub mod pg_parameter_acl;
 pub mod pg_partitioned_table;
 pub mod pg_policies;
@@ -56,6 +58,7 @@ pub mod pg_prepared_statements;
 pub mod pg_prepared_xacts;
 pub mod pg_proc;
 pub mod pg_publication;
+#[cfg(not(feature = "postgres-14"))]
 pub mod pg_publication_namespace;
 pub mod pg_publication_rel;
 pub mod pg_publication_tables;
@@ -82,10 +85,12 @@ pub mod pg_stat_all_indexes;
 pub mod pg_stat_all_tables;
 pub mod pg_stat_archiver;
 pub mod pg_stat_bgwriter;
+#[cfg(any(feature = "postgres-17", feature = "postgres-18"))]
 pub mod pg_stat_checkpointer;
 pub mod pg_stat_database;
 pub mod pg_stat_database_conflicts;
 pub mod pg_stat_gssapi;
+#[cfg(not(any(feature = "postgres-15", feature = "postgres-14")))]
 pub mod pg_stat_io;
 pub mod pg_stat_progress_analyze;
 pub mod pg_stat_progress_basebackup;
@@ -93,13 +98,14 @@ pub mod pg_stat_progress_cluster;
 pub mod pg_stat_progress_copy;
 pub mod pg_stat_progress_create_index;
 pub mod pg_stat_progress_vacuum;
+#[cfg(not(feature = "postgres-14"))]
 pub mod pg_stat_recovery_prefetch;
 pub mod pg_stat_replication;
 pub mod pg_stat_replication_slots;
 pub mod pg_stat_slru;
 pub mod pg_stat_ssl;
-pub mod pg_stat_statements;
 pub mod pg_stat_subscription;
+#[cfg(not(feature = "postgres-14"))]
 pub mod pg_stat_subscription_stats;
 pub mod pg_stat_sys_indexes;
 pub mod pg_stat_sys_tables;
@@ -145,4 +151,5 @@ pub mod pg_user;
 pub mod pg_user_mapping;
 pub mod pg_user_mappings;
 pub mod pg_views;
+#[cfg(any(feature = "postgres-17", feature = "postgres-18"))]
 pub mod pg_wait_events;

@@ -34,6 +34,7 @@ mod pg_foreign_server;
 mod pg_foreign_table;
 mod pg_group;
 mod pg_hba_file_rule;
+#[cfg(not(feature = "postgres-14"))]
 mod pg_ident_file_mapping;
 pub(crate) mod pg_index;
 mod pg_inherit;
@@ -46,6 +47,7 @@ mod pg_matview;
 mod pg_opclass;
 mod pg_operator;
 mod pg_opfamily;
+#[cfg(not(feature = "postgres-14"))]
 mod pg_parameter_acl;
 mod pg_partitioned_table;
 mod pg_policy;
@@ -54,6 +56,7 @@ mod pg_prepared_statement;
 mod pg_prepared_xact;
 mod pg_proc;
 mod pg_publication;
+#[cfg(not(feature = "postgres-14"))]
 mod pg_publication_namespace;
 mod pg_publication_rel;
 mod pg_publication_table;
@@ -80,10 +83,12 @@ mod pg_stat_all_index;
 mod pg_stat_all_table;
 mod pg_stat_archiver;
 mod pg_stat_bgwriter;
+#[cfg(any(feature = "postgres-17", feature = "postgres-18"))]
 mod pg_stat_checkpointer;
 mod pg_stat_database;
 mod pg_stat_database_conflict;
 mod pg_stat_gssapi;
+#[cfg(not(any(feature = "postgres-15", feature = "postgres-14")))]
 mod pg_stat_io;
 mod pg_stat_progress_analyze;
 mod pg_stat_progress_basebackup;
@@ -91,13 +96,14 @@ mod pg_stat_progress_cluster;
 mod pg_stat_progress_copy;
 mod pg_stat_progress_create_index;
 mod pg_stat_progress_vacuum;
+#[cfg(not(feature = "postgres-14"))]
 mod pg_stat_recovery_prefetch;
 mod pg_stat_replication;
 mod pg_stat_replication_slot;
 mod pg_stat_slru;
 mod pg_stat_ssl;
-mod pg_stat_statements;
 mod pg_stat_subscription;
+#[cfg(not(feature = "postgres-14"))]
 mod pg_stat_subscription_stat;
 mod pg_stat_sys_index;
 mod pg_stat_sys_table;
@@ -142,6 +148,7 @@ mod pg_user;
 mod pg_user_mapping;
 mod pg_user_mappings;
 mod pg_view;
+#[cfg(any(feature = "postgres-17", feature = "postgres-18"))]
 mod pg_wait_event;
 
 pub use pg_aggregate::PgAggregate;
@@ -178,6 +185,7 @@ pub use pg_foreign_server::PgForeignServer;
 pub use pg_foreign_table::PgForeignTable;
 pub use pg_group::PgGroup;
 pub use pg_hba_file_rule::PgHbaFileRule;
+#[cfg(not(feature = "postgres-14"))]
 pub use pg_ident_file_mapping::PgIdentFileMapping;
 pub use pg_index::PgIndex;
 pub use pg_inherit::PgInherit;
@@ -190,6 +198,7 @@ pub use pg_matview::PgMatview;
 pub use pg_opclass::PgOpclass;
 pub use pg_operator::PgOperator;
 pub use pg_opfamily::PgOpfamily;
+#[cfg(not(feature = "postgres-14"))]
 pub use pg_parameter_acl::PgParameterAcl;
 pub use pg_partitioned_table::PgPartitionedTable;
 pub use pg_policy::PgPolicy;
@@ -198,6 +207,7 @@ pub use pg_prepared_statement::PgPreparedStatement;
 pub use pg_prepared_xact::PgPreparedXact;
 pub use pg_proc::{PgProc, ProcAclEntry};
 pub use pg_publication::PgPublication;
+#[cfg(not(feature = "postgres-14"))]
 pub use pg_publication_namespace::PgPublicationNamespace;
 pub use pg_publication_rel::PgPublicationRel;
 pub use pg_publication_table::PgPublicationTable;
@@ -224,10 +234,12 @@ pub use pg_stat_all_index::PgStatAllIndex;
 pub use pg_stat_all_table::PgStatAllTable;
 pub use pg_stat_archiver::PgStatArchiver;
 pub use pg_stat_bgwriter::PgStatBgwriter;
+#[cfg(any(feature = "postgres-17", feature = "postgres-18"))]
 pub use pg_stat_checkpointer::PgStatCheckpointer;
 pub use pg_stat_database::PgStatDatabase;
 pub use pg_stat_database_conflict::PgStatDatabaseConflict;
 pub use pg_stat_gssapi::PgStatGssapi;
+#[cfg(not(any(feature = "postgres-15", feature = "postgres-14")))]
 pub use pg_stat_io::PgStatIo;
 pub use pg_stat_progress_analyze::PgStatProgressAnalyze;
 pub use pg_stat_progress_basebackup::PgStatProgressBasebackup;
@@ -235,13 +247,14 @@ pub use pg_stat_progress_cluster::PgStatProgressCluster;
 pub use pg_stat_progress_copy::PgStatProgressCopy;
 pub use pg_stat_progress_create_index::PgStatProgressCreateIndex;
 pub use pg_stat_progress_vacuum::PgStatProgressVacuum;
+#[cfg(not(feature = "postgres-14"))]
 pub use pg_stat_recovery_prefetch::PgStatRecoveryPrefetch;
 pub use pg_stat_replication::PgStatReplication;
 pub use pg_stat_replication_slot::PgStatReplicationSlot;
 pub use pg_stat_slru::PgStatSlru;
 pub use pg_stat_ssl::PgStatSsl;
-pub use pg_stat_statements::PgStatStatement;
 pub use pg_stat_subscription::PgStatSubscription;
+#[cfg(not(feature = "postgres-14"))]
 pub use pg_stat_subscription_stat::PgStatSubscriptionStat;
 pub use pg_stat_sys_index::PgStatSysIndex;
 pub use pg_stat_sys_table::PgStatSysTable;
@@ -286,4 +299,5 @@ pub use pg_user::PgUser;
 pub use pg_user_mapping::PgUserMapping;
 pub use pg_user_mappings::PgUserMappings;
 pub use pg_view::PgView;
+#[cfg(any(feature = "postgres-17", feature = "postgres-18"))]
 pub use pg_wait_event::PgWaitEvent;

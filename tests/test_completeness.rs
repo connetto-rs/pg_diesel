@@ -35,8 +35,10 @@ async fn test_schema_completeness() {
         udt_name: String,
     }
 
-    /// Types PostgreSQL has no binary output function for.
-    const UNREADABLE_UDT_NAMES: [&str; 2] = ["aclitem", "_aclitem"];
+    /// Types the binary protocol cannot read for every value, `aclitem`
+    /// lacking a binary output function and `anyarray` holding any element
+    /// type, `aclitem` among them.
+    const UNREADABLE_UDT_NAMES: [&str; 3] = ["aclitem", "_aclitem", "anyarray"];
 
     let database_name = "test_schema_completeness";
     let docker = reference_docker(database_name)
@@ -57,6 +59,17 @@ async fn test_schema_completeness() {
     .load(&mut conn)
     .expect("Failed to load tables");
 
+    let module_gates: std::collections::HashMap<&str, _> = ["information_schema", "pg_catalog"]
+        .into_iter()
+        .map(|schema| {
+            let path = crate_root_path
+                .join("src")
+                .join("schema")
+                .join(format!("{schema}.rs"));
+            (schema, relation_module_gates(&path))
+        })
+        .collect();
+
     for table in tables {
         let table_schema = &table.table_schema;
         let table_name = &table.table_name;
@@ -74,6 +87,17 @@ async fn test_schema_completeness() {
         if !expected_schema_path.exists() {
             continue;
         }
+
+        assert!(
+            module_gates
+                .get(table_schema.as_str())
+                .and_then(|gates| gates.get(table_name.as_str()))
+                .is_none_or(is_enabled_for_current_features),
+            "Relation `{table_schema}.{table_name}` exists in postgres {} but its schema module is not enabled.\n\
+             Active features: {:?}",
+            get_postgres_version_tag(),
+            get_active_postgres_features(),
+        );
 
         let model_filename = match table_name.as_str() {
             "pg_policy" => "pg_policy_table",
@@ -348,6 +372,31 @@ fn test_load_all_coverage() {
         "The following tables are missing tests in test_load_all.rs:\n{}",
         missing_tests.join("\n")
     );
+}
+
+/// Returns the `cfg` gate of every relation module the schema module at
+/// `path` declares, `FeatureGate::Always` for an ungated one.
+fn relation_module_gates(
+    path: &std::path::Path,
+) -> std::collections::HashMap<String, test_utils::FeatureGate> {
+    let source = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
+    let file = syn::parse_file(&source)
+        .unwrap_or_else(|e| panic!("Failed to parse {}: {e}", path.display()));
+    file.items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Mod(module) => Some((
+                module.ident.to_string(),
+                module
+                    .attrs
+                    .iter()
+                    .find_map(|attribute| test_utils::FeatureGate::from_cfg_meta(&attribute.meta))
+                    .unwrap_or(test_utils::FeatureGate::Always),
+            )),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Convert `snake_case` to `PascalCase`.
