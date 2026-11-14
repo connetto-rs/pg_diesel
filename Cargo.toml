@@ -1,5 +1,13 @@
 [workspace]
-members = ["crates/pg_diesel_core"]
+members = [
+  "crates/pg_diesel_core",
+  "crates/pg_diesel_pg14",
+  "crates/pg_diesel_pg15",
+  "crates/pg_diesel_pg16",
+  "crates/pg_diesel_pg17",
+  "crates/pg_diesel_pg18",
+  "crates/xtask",
+]
 
 [workspace.dependencies]
 diesel = { version = "2.4", features = [
@@ -22,9 +30,12 @@ edition = "2024"
 
 [dependencies]
 pg_diesel_core = { path = "crates/pg_diesel_core", version = "0.1.0" }
+pg_diesel_pg14 = { path = "crates/pg_diesel_pg14", version = "0.1.0", optional = true }
+pg_diesel_pg15 = { path = "crates/pg_diesel_pg15", version = "0.1.0", optional = true }
+pg_diesel_pg16 = { path = "crates/pg_diesel_pg16", version = "0.1.0", optional = true }
+pg_diesel_pg17 = { path = "crates/pg_diesel_pg17", version = "0.1.0", optional = true }
+pg_diesel_pg18 = { path = "crates/pg_diesel_pg18", version = "0.1.0", optional = true }
 diesel = { workspace = true }
-serde = { workspace = true, optional = true }
-bigdecimal = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1.49.0", features = ["full"] }
@@ -90,13 +101,27 @@ perf = { level = "deny", priority = -1 }
 workspace = true
 
 [features]
-default = ["serde", "postgres-18"]
-serde = ["dep:serde", "pg_diesel_core/serde"]
-postgres-14 = []
-postgres-15 = []
-postgres-16 = []
-postgres-17 = []
-postgres-18 = []
+default = [
+  "serde",
+  "postgres-14",
+  "postgres-15",
+  "postgres-16",
+  "postgres-17",
+  "postgres-18",
+]
+serde = [
+  "pg_diesel_core/serde",
+  "pg_diesel_pg14?/serde",
+  "pg_diesel_pg15?/serde",
+  "pg_diesel_pg16?/serde",
+  "pg_diesel_pg17?/serde",
+  "pg_diesel_pg18?/serde",
+]
+postgres-14 = ["dep:pg_diesel_pg14"]
+postgres-15 = ["dep:pg_diesel_pg15"]
+postgres-16 = ["dep:pg_diesel_pg16"]
+postgres-17 = ["dep:pg_diesel_pg17"]
+postgres-18 = ["dep:pg_diesel_pg18"]
 # Whether to include routines metadata, which is a rather large
 # table with 88 columns.
 routines = ["pg_diesel_core/routines"]

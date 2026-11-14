@@ -49,14 +49,16 @@ use diesel::{
 use pg_diesel::{
     PgDieselDatabase,
     database::PgDieselDatabaseBuilder,
-    schema::pg_catalog::{
-        pg_authid::pg_authid, pg_class::pg_class, pg_depend::pg_depend, pg_namespace::pg_namespace,
-        pg_proc::pg_proc, pg_range::pg_range, pg_roles::pg_roles, pg_type::pg_type,
-    },
     sql_traits::{structs::ParseOptions, traits::DatabaseLike},
     sqlparser::dialect::PostgreSqlDialect,
 };
-use test_utils::{establish_connection, reference_docker};
+use test_utils::{
+    docker_helpers::catalog::schema::pg_catalog::{
+        pg_authid::pg_authid, pg_class::pg_class, pg_depend::pg_depend, pg_namespace::pg_namespace,
+        pg_proc::pg_proc, pg_range::pg_range, pg_roles::pg_roles, pg_type::pg_type,
+    },
+    establish_connection, reference_docker,
+};
 
 use crate::{
     compare::{AlreadyStored, Facts, Scope, contradictions, describe, differences, function_key},

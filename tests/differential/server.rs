@@ -12,15 +12,14 @@ use diesel::{
     ExpressionMethods, JoinOnDsl, PgConnection, QueryDsl, RunQueryDsl,
     sql_types::{Bool, Oid, SmallInt, Text},
 };
-use pg_diesel::{
-    schema::pg_catalog::{
-        pg_attribute::pg_attribute, pg_class::pg_class, pg_index::pg_index,
-        pg_namespace::pg_namespace, pg_policy::pg_policy,
-    },
-    sql_traits::{
-        structs::{PolicyClause, RowStatement},
-        traits::RolePrivilege,
-    },
+use pg_diesel::sql_traits::{
+    structs::{PolicyClause, RowStatement},
+    traits::RolePrivilege,
+};
+
+use crate::test_utils::docker_helpers::catalog::schema::pg_catalog::{
+    pg_attribute::pg_attribute, pg_class::pg_class, pg_index::pg_index, pg_namespace::pg_namespace,
+    pg_policy::pg_policy,
 };
 
 use crate::{

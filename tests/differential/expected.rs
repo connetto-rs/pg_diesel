@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 
 use crate::compare::{Difference, Value};
+use crate::test_utils::docker_helpers::TESTED_MAJOR;
 
 /// What an entry may need to know about the database a document produced.
 pub struct Context {
@@ -78,12 +79,8 @@ pub const EXPECTED: &[Expected] = &[
         name: "PUBLIC creates in public before PostgreSQL 15",
         reason: "ParserDB models PostgreSQL 18, where public grants PUBLIC only USAGE, while an older server also grants PUBLIC CREATE on it from creation",
         matches: |difference, _| {
-            !cfg!(any(
-                feature = "postgres-15",
-                feature = "postgres-16",
-                feature = "postgres-17",
-                feature = "postgres-18"
-            )) && difference.fact == "grant CREATE on schema public to PUBLIC"
+            TESTED_MAJOR < 15
+                && difference.fact == "grant CREATE on schema public to PUBLIC"
                 && difference.source.is_none()
         },
     },
@@ -91,12 +88,8 @@ pub const EXPECTED: &[Expected] = &[
         name: "public owned by the bootstrap superuser before PostgreSQL 15",
         reason: "ParserDB models PostgreSQL 18, where pg_database_owner owns public, while an older server makes the bootstrap superuser its owner",
         matches: |difference, context| {
-            !cfg!(any(
-                feature = "postgres-15",
-                feature = "postgres-16",
-                feature = "postgres-17",
-                feature = "postgres-18"
-            )) && difference.fact == "schema public / owner"
+            TESTED_MAJOR < 15
+                && difference.fact == "schema public / owner"
                 && difference.source
                     == Some(Value::Text(format!("{:?}", Some("pg_database_owner"))))
                 && difference.live
@@ -127,7 +120,7 @@ pub const EXPECTED: &[Expected] = &[
         name: "not-null constraints unnamed before PostgreSQL 18",
         reason: "ParserDB models PostgreSQL 18, which records a named pg_constraint row per NOT NULL column, while an older server records only attnotnull and has no name to answer",
         matches: |difference, _| {
-            !cfg!(feature = "postgres-18")
+            TESTED_MAJOR < 18
                 && difference.fact.ends_with(" / not null constraint name")
                 && difference.live == Some(Value::Text("None".to_owned()))
         },
@@ -141,7 +134,7 @@ pub const EXPECTED: &[Expected] = &[
             else {
                 return false;
             };
-            if cfg!(any(feature = "postgres-17", feature = "postgres-18")) {
+            if TESTED_MAJOR >= 17 {
                 return false;
             }
             if difference.fact.contains(" / privilege MAINTAIN / role ") {
