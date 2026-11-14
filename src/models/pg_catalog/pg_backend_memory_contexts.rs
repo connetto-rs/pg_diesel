@@ -27,9 +27,10 @@ pub struct PgBackendMemoryContexts {
     pub free_chunks: Option<i64>,
     /// Number of used bytes in this context.
     pub used_bytes: Option<i64>,
-    /// Path of the memory context (replaces `parent` in `PostgreSQL` 18+).
+    /// Transient identifiers of the memory context and its ancestors, from
+    /// the top-level context down (replaces `parent` in `PostgreSQL` 18+).
     #[cfg(feature = "postgres-18")]
-    pub path: Option<String>,
+    pub path: Option<Vec<i32>>,
     /// Type of the memory context.
     /// Added in `PostgreSQL` 18.
     #[cfg(feature = "postgres-18")]

@@ -61,14 +61,4 @@ pub struct PgStatistic {
     pub stanumbers4: Option<Vec<f32>>,
     /// Numerical statistics 5.
     pub stanumbers5: Option<Vec<f32>>,
-    /// Column data values 1.
-    pub stavalues1: Option<Vec<Vec<u8>>>,
-    /// Column data values 2.
-    pub stavalues2: Option<Vec<Vec<u8>>>,
-    /// Column data values 3.
-    pub stavalues3: Option<Vec<Vec<u8>>>,
-    /// Column data values 4.
-    pub stavalues4: Option<Vec<Vec<u8>>>,
-    /// Column data values 5.
-    pub stavalues5: Option<Vec<Vec<u8>>>,
 }

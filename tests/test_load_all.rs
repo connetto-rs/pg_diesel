@@ -2,8 +2,44 @@
 
 mod test_utils;
 
-use diesel::{PgConnection, QueryDsl, RunQueryDsl, SelectableHelper};
+use diesel::{PgConnection, QueryDsl, SelectableHelper, query_dsl::LoadQuery};
 use test_utils::{establish_connection, reference_docker};
+
+thread_local! {
+    /// The loads that failed, each naming the model and the error.
+    static FAILED_LOADS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Loads the rows of a query and records a failure unless they load or the
+/// relation the query reads does not exist on the server, as with a view a
+/// later version or an uninstalled extension adds. It stands in for
+/// `RunQueryDsl::load` so that every load below is checked.
+trait LoadOrMissing: diesel::RunQueryDsl<PgConnection> + Sized {
+    /// Returns the rows, empty when the relation does not exist or the load
+    /// failed.
+    fn load<'query, U>(self, conn: &mut PgConnection) -> Vec<U>
+    where
+        Self: LoadQuery<'query, PgConnection, U>,
+    {
+        match diesel::RunQueryDsl::load(self, conn) {
+            Ok(rows) => rows,
+            Err(diesel::result::Error::DatabaseError(_, info))
+                if info.message().starts_with("relation ")
+                    && info.message().ends_with(" does not exist") =>
+            {
+                Vec::new()
+            }
+            Err(error) => {
+                FAILED_LOADS.with_borrow_mut(|failed| {
+                    failed.push(format!("{}: {error}", std::any::type_name::<U>()));
+                });
+                Vec::new()
+            }
+        }
+    }
+}
+
+impl<T: diesel::RunQueryDsl<PgConnection>> LoadOrMissing for T {}
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
@@ -1470,4 +1506,10 @@ async fn test_load_all_models() {
             .select(GeometryColumn::as_select())
             .load::<GeometryColumn>(&mut conn);
     }
+    let failed = FAILED_LOADS.take();
+    assert!(
+        failed.is_empty(),
+        "models fail to load:\n{}",
+        failed.join("\n")
+    );
 }

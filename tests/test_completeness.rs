@@ -35,8 +35,10 @@ async fn test_schema_completeness() {
         udt_name: String,
     }
 
-    /// Types PostgreSQL has no binary output function for.
-    const UNREADABLE_UDT_NAMES: [&str; 2] = ["aclitem", "_aclitem"];
+    /// Types the binary protocol cannot read for every value, `aclitem`
+    /// lacking a binary output function and `anyarray` holding any element
+    /// type, `aclitem` among them.
+    const UNREADABLE_UDT_NAMES: [&str; 3] = ["aclitem", "_aclitem", "anyarray"];
 
     let database_name = "test_schema_completeness";
     let docker = reference_docker(database_name)

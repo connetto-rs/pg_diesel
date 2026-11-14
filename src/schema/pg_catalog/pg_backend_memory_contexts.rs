@@ -24,9 +24,11 @@ diesel::table! {
         free_chunks -> Nullable<BigInt>,
         /// Number of used bytes in this context.
         used_bytes -> Nullable<BigInt>,
-        /// Path of the memory context (replaces `parent` in `PostgreSQL` 18+).
+        /// Transient identifiers of the memory context and its ancestors,
+        /// from the top-level context down (replaces `parent` in
+        /// `PostgreSQL` 18+).
         #[cfg(feature = "postgres-18")]
-        path -> Nullable<Text>,
+        path -> Nullable<Array<Integer>>,
         /// Type of the memory context.
         /// Added in `PostgreSQL` 18.
         #[cfg(feature = "postgres-18")]

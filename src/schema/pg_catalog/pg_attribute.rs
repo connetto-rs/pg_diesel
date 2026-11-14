@@ -92,8 +92,6 @@ diesel::table! {
         attfdwoptions -> Nullable<Array<Text>>,
         /// Compression method for the column: 'p' = pglz, 'l' = lz4, or '' if no compression.
         attcompression -> Text,
-        /// Missing value for added columns.
-        attmissingval -> Nullable<Array<Text>>,
     }
 }
 

@@ -10,7 +10,7 @@ diesel::table! {
         /// Total number of WAL full page images generated.
         wal_fpi -> Nullable<BigInt>,
         /// Total amount of WAL bytes generated.
-        wal_bytes -> Nullable<Double>,
+        wal_bytes -> Nullable<Numeric>,
         /// Number of times WAL data was written to disk because WAL buffers became full.
         wal_buffers_full -> Nullable<BigInt>,
         #[cfg(not(feature = "postgres-18"))]
