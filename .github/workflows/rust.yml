@@ -30,9 +30,9 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y libfontconfig1-dev libpq-dev
     - name: Build and Test (postgres-${{ matrix.postgres }})
-      run: cargo test --release --no-default-features --features postgres-${{ matrix.postgres }}
+      run: cargo test --workspace --release --no-default-features --features postgres-${{ matrix.postgres }}
     - name: Build and Test with serde (postgres-${{ matrix.postgres }})
-      run: cargo test --release --no-default-features --features "postgres-${{ matrix.postgres }},serde"
+      run: cargo test --workspace --release --no-default-features --features "postgres-${{ matrix.postgres }},serde"
 
   fmt:
     name: Rustfmt
@@ -64,7 +64,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y libfontconfig1-dev libpq-dev
     - name: Run clippy (postgres-${{ matrix.postgres }})
-      run: cargo clippy --all-targets --no-default-features --features postgres-${{ matrix.postgres }} -- -D warnings
+      run: cargo clippy --workspace --all-targets --no-default-features --features postgres-${{ matrix.postgres }} -- -D warnings
 
   doc:
     name: Documentation
@@ -78,7 +78,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y libfontconfig1-dev libpq-dev
     - name: Check documentation
-      run: cargo doc --no-deps --document-private-items
+      run: cargo doc --workspace --no-deps --document-private-items
       env:
         RUSTDOCFLAGS: -D warnings
 

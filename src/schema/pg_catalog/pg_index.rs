@@ -54,3 +54,9 @@ diesel::table! {
 
 use super::pg_attribute::pg_attribute;
 diesel::allow_tables_to_appear_in_same_query!(pg_index, pg_attribute);
+
+use crate::schema::information_schema::columns::columns;
+diesel::allow_tables_to_appear_in_same_query!(pg_index, columns);
+
+use crate::schema::information_schema::tables::tables;
+diesel::allow_tables_to_appear_in_same_query!(pg_index, tables);

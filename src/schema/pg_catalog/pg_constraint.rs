@@ -109,3 +109,15 @@ diesel::allow_tables_to_appear_in_same_query!(pg_constraint, pg_index);
 
 use super::pg_type::pg_type;
 diesel::allow_tables_to_appear_in_same_query!(pg_constraint, pg_type);
+
+use super::pg_trigger::pg_trigger;
+diesel::allow_tables_to_appear_in_same_query!(pg_constraint, pg_trigger);
+
+use crate::schema::information_schema::check_constraints::check_constraints;
+diesel::allow_tables_to_appear_in_same_query!(pg_constraint, check_constraints);
+
+use crate::schema::information_schema::columns::columns;
+diesel::allow_tables_to_appear_in_same_query!(pg_constraint, columns);
+
+use crate::schema::information_schema::tables::tables;
+diesel::allow_tables_to_appear_in_same_query!(pg_constraint, tables);
