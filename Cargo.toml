@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-diesel = { git = "https://github.com/diesel-rs/diesel", branch = "main", features = [
+diesel = { version = "2.4", features = [
   "postgres",
   "extras",
   "64-column-tables",
@@ -26,12 +26,10 @@ proc-macro2 = "1.0"
 tempfile = "3.20"
 postgres = "0.19.14"
 
-# `sql-traits` main tracks `sqlparser` upstream main, which carries AST changes
-# not yet in a release. The `sqlparser` requirement names the version upstream
-# main declares, otherwise the patch does not apply to this crate.
-# Patching at the workspace root keeps every dependent on one `sqlparser`, so
-# AST types stay compatible across crate boundaries.
+# Root patches track upstream main for this crate's own builds while consumers see only the crates.io requirements.
+# Each requirement must name the version upstream main declares, otherwise Cargo ignores its patch.
 [patch.crates-io]
+diesel = { git = "https://github.com/diesel-rs/diesel", branch = "main" }
 sqlparser = { git = "https://github.com/apache/datafusion-sqlparser-rs", branch = "main" }
 
 [lints.rust]
