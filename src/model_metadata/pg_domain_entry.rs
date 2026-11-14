@@ -18,9 +18,8 @@ use sqlparser::{ast::Expr, parser::ParserError};
 use crate::{
     database::CatalogCache,
     model_metadata::{PgDataType, parse_printed_expression},
-    schema::pg_catalog::{
-        pg_constraint::pg_constraint, pg_namespace::pg_namespace, pg_type::pg_type,
-    },
+    schema::pg_catalog::{pg_namespace::pg_namespace, pg_type::pg_type},
+    shared::schema::pg_catalog::pg_constraint,
 };
 
 /// What stopped a domain row from becoming an entry.

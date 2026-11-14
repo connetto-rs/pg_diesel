@@ -23,7 +23,7 @@ impl IndexLike for PgIndexEntry {
     }
 
     fn is_unique(&self) -> bool {
-        PgIndexEntry::model(self).indisunique
+        PgIndexEntry::is_unique(self)
     }
 
     fn name_is_quoted(&self) -> bool {
@@ -86,7 +86,7 @@ fn metadata<'db>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{PgDieselDatabase, dialect::PostgresDialect, models::PgIndex};
+    use crate::{PgDieselDatabase, dialect::PostgresDialect, shared::models::PgIndex};
 
     #[test]
     fn an_index_the_database_does_not_hold_is_reported_not_in_the_database() {
@@ -94,31 +94,8 @@ mod tests {
             PgIndex {
                 indexrelid: 1,
                 indrelid: 2,
-                indnatts: 1,
-                indnkeyatts: 1,
                 indisunique: false,
                 indkey: vec![1],
-                #[cfg(any(
-                    feature = "postgres-15",
-                    feature = "postgres-16",
-                    feature = "postgres-17",
-                    feature = "postgres-18"
-                ))]
-                indnullsnotdistinct: false,
-                indisprimary: false,
-                indisexclusion: false,
-                indimmediate: true,
-                indisclustered: false,
-                indisvalid: true,
-                indcheckxmin: false,
-                indisready: true,
-                indislive: true,
-                indisreplident: false,
-                indcollation: Vec::new(),
-                indclass: Vec::new(),
-                indoption: Vec::new(),
-                indexprs: None,
-                indpred: None,
             },
             "app".to_string(),
             "absent".to_string(),

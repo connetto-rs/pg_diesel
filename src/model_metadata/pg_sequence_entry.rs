@@ -20,9 +20,12 @@ use sql_traits::{
     traits::SequenceOrigin,
 };
 
-use crate::schema::pg_catalog::{
-    pg_attrdef::pg_attrdef, pg_attribute::pg_attribute, pg_class::pg_class, pg_depend::pg_depend,
-    pg_namespace::pg_namespace, pg_sequence::pg_sequence,
+use crate::{
+    schema::pg_catalog::{
+        pg_attrdef::pg_attrdef, pg_depend::pg_depend, pg_namespace::pg_namespace,
+        pg_sequence::pg_sequence,
+    },
+    shared::schema::pg_catalog::{pg_attribute, pg_class},
 };
 
 /// The sequence rows a read of `pg_sequence` answers.

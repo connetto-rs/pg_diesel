@@ -1,6 +1,6 @@
 //! Submodule providing [`PgIndexEntry`], the index a `PgDieselDatabase` holds.
 
-use crate::models::PgIndex;
+use crate::shared::models::PgIndex;
 
 /// A `pg_index` row paired with the name and schema its `indexrelid` names.
 ///
@@ -21,7 +21,7 @@ pub struct PgIndexEntry {
 impl PgIndexEntry {
     /// Pairs a `pg_index` row with the relation name its `indexrelid` names.
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         model: PgIndex,
         schema: String,
         name: String,
@@ -35,10 +35,10 @@ impl PgIndexEntry {
         }
     }
 
-    /// Returns the `pg_catalog.pg_index` row describing the index.
+    /// Returns whether the index enforces uniqueness.
     #[must_use]
-    pub fn model(&self) -> &PgIndex {
-        &self.model
+    pub fn is_unique(&self) -> bool {
+        self.model.indisunique
     }
 
     /// Returns the schema the index lives in.
