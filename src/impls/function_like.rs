@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 use sql_traits::{
     errors::{LookupError, ObjectKind},
-    structs::{FunctionBody, FunctionKind, PrivilegeHolder, TargetName},
+    structs::{AggregateKind, FunctionBody, FunctionKind, PrivilegeHolder, TargetName},
     traits::{DatabaseLike, FunctionLike, Metadata, RoleLike},
     utils::{identifier_resolution::SearchPath, postgres_null_returning_arguments},
 };
@@ -145,6 +145,10 @@ impl FunctionLike for PgFunction {
             "w" => FunctionKind::Window,
             _ => FunctionKind::Normal,
         })
+    }
+
+    fn aggregate_kind(&self, database: &Self::DB) -> Result<Option<AggregateKind>, LookupError> {
+        Ok(metadata(self, database)?.aggregate_kind())
     }
 
     fn language(&self) -> Option<&str> {

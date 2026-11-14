@@ -1,5 +1,7 @@
 //! Metadata for `PostgreSQL` functions and procedures.
 
+use sql_traits::structs::AggregateKind;
+
 use crate::{
     database::CatalogCache,
     models::{PgProc, PgType, ProcAclEntry},
@@ -102,6 +104,9 @@ pub struct PgProcMetadata {
     /// The OIDs of the functions a body bound at creation reached, or the
     /// parser's complaint when its printed definition does not parse.
     bound_functions: Result<Vec<u32>, String>,
+    /// How the aggregate reads its arguments, as `pg_aggregate` records it,
+    /// or `None` for a function that is no aggregate.
+    aggregate_kind: Option<AggregateKind>,
 }
 
 impl PgProcMetadata {
@@ -146,6 +151,7 @@ impl PgProcMetadata {
             owner_oid,
             execute: ExecutePrivileges::decode(execute_grants, owner_oid),
             bound_functions: Ok(Vec::new()),
+            aggregate_kind: None,
         }
     }
 
@@ -155,6 +161,21 @@ impl PgProcMetadata {
     pub fn with_bound_functions(mut self, bound_functions: Result<Vec<u32>, String>) -> Self {
         self.bound_functions = bound_functions;
         self
+    }
+
+    /// Records the kind `pg_aggregate` gives the function, `None` when it is
+    /// no aggregate.
+    #[must_use]
+    pub fn with_aggregate_kind(mut self, aggregate_kind: Option<AggregateKind>) -> Self {
+        self.aggregate_kind = aggregate_kind;
+        self
+    }
+
+    /// Returns the kind `pg_aggregate` gives the function, `None` when it is
+    /// no aggregate.
+    #[must_use]
+    pub fn aggregate_kind(&self) -> Option<AggregateKind> {
+        self.aggregate_kind
     }
 
     /// Returns the OIDs of the functions a body bound at creation reached.
@@ -429,6 +450,7 @@ mod tests {
             owner_oid: 1,
             execute: ExecutePrivileges::decode(None, 1),
             bound_functions: Ok(Vec::new()),
+            aggregate_kind: None,
         };
 
         assert_eq!(metadata.argument_types().len(), 1);
@@ -452,6 +474,7 @@ mod tests {
             owner_oid: 7,
             execute: ExecutePrivileges::decode(None, 7),
             bound_functions: Ok(Vec::new()),
+            aggregate_kind: None,
         };
 
         assert!(metadata.is_executable_by_public());
@@ -482,6 +505,7 @@ mod tests {
             owner_oid: 7,
             execute: ExecutePrivileges::decode(Some(&execute_grants(&[(7, true)])), 7),
             bound_functions: Ok(Vec::new()),
+            aggregate_kind: None,
         };
 
         assert!(!metadata.is_executable_by_public());
@@ -513,6 +537,7 @@ mod tests {
                 7,
             ),
             bound_functions: Ok(Vec::new()),
+            aggregate_kind: None,
         };
 
         assert!(metadata.is_executable_by_public());
@@ -535,6 +560,7 @@ mod tests {
             owner_oid: 7,
             execute: ExecutePrivileges::decode(Some(&execute_grants(&[(3, false)])), 7),
             bound_functions: Ok(Vec::new()),
+            aggregate_kind: None,
         };
 
         assert!(metadata.can_execute(Some(3)));

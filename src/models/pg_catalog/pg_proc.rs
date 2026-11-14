@@ -127,6 +127,18 @@ impl PgProc {
     ) -> Result<Vec<(u32, u32)>, diesel::result::Error> {
         cached_queries::load_bound_dependencies(conn)
     }
+
+    /// Loads `(function, kind)` pairs, one per aggregate `pg_aggregate`
+    /// records.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `diesel::result::Error` if the query fails.
+    pub fn load_aggregate_kinds(
+        conn: &mut PgConnection,
+    ) -> Result<Vec<(u32, sql_traits::structs::AggregateKind)>, diesel::result::Error> {
+        cached_queries::load_aggregate_kinds(conn)
+    }
 }
 
 // Manual implementations of Eq, Ord, PartialOrd, and Hash
