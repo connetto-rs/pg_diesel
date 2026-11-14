@@ -2,6 +2,8 @@
 //! `information_schema.columns` with the facts its `pg_attribute` row
 //! carries beside the `information_schema` row.
 
+use sqlparser::ast::Expr;
+
 use crate::{model_metadata::PgDataType, models::Column};
 
 /// A table column with the declared type and foreign data wrapper options
@@ -19,6 +21,11 @@ pub struct PgColumn {
     not_null_constraint_name: Option<String>,
     /// Whether the engine numbers the column with a sequence the column owns.
     serial: bool,
+    /// The expression the column defaults to, as `PostgreSQL` prints it.
+    default_expression: Option<Expr>,
+    /// The expression a generated column derives its value from, as
+    /// `PostgreSQL` prints it.
+    generation_expression: Option<Expr>,
 }
 
 impl PgColumn {
@@ -30,6 +37,8 @@ impl PgColumn {
         foreign_options: Vec<(String, String)>,
         not_null_constraint_name: Option<String>,
         serial: bool,
+        default_expression: Option<Expr>,
+        generation_expression: Option<Expr>,
     ) -> Self {
         Self {
             model,
@@ -37,6 +46,8 @@ impl PgColumn {
             foreign_options,
             not_null_constraint_name,
             serial,
+            default_expression,
+            generation_expression,
         }
     }
 
@@ -69,6 +80,19 @@ impl PgColumn {
     #[must_use]
     pub fn is_serial(&self) -> bool {
         self.serial
+    }
+
+    /// The expression the column defaults to, as `PostgreSQL` prints it.
+    #[must_use]
+    pub fn default_expression(&self) -> Option<&Expr> {
+        self.default_expression.as_ref()
+    }
+
+    /// The expression a generated column derives its value from, as
+    /// `PostgreSQL` prints it.
+    #[must_use]
+    pub fn generation_expression(&self) -> Option<&Expr> {
+        self.generation_expression.as_ref()
     }
 
     /// The foreign data wrapper options the column declares, each key first.

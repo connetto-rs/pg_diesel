@@ -24,8 +24,8 @@ use pg_diesel::{
         structs::{AggregateKind, FunctionKind, PrivilegeHolder, SequenceType},
         traits::{
             CheckConstraintLike, ColumnCollation, ColumnGrantLike, ColumnLike, DatabaseLike,
-            DialectLike, ExtensionLike, ForeignKeyLike, FunctionLike, GrantLike, IndexLike,
-            PartitionStrategy, PolicyLike, Relation, RoleLike, SchemaLike, SequenceLike,
+            DialectLike, DomainLike, ExtensionLike, ForeignKeyLike, FunctionLike, GrantLike,
+            IndexLike, PartitionStrategy, PolicyLike, Relation, RoleLike, SchemaLike, SequenceLike,
             TableGrantLike, TableLike, TriggerLike, TypeMatch, UserDefinedTypeKind, ViewLike,
             grant::GrantTarget,
         },
@@ -200,6 +200,16 @@ fn select_expr(sql: &str) -> Expr {
     expr.clone()
 }
 
+/// The schema and name of each function a call reaches.
+fn reached<'db>(
+    reached: Result<impl Iterator<Item = &'db pg_diesel::model_metadata::PgFunction>, LookupError>,
+) -> Vec<String> {
+    reached
+        .expect("the call is a node of the expressions")
+        .map(|function| format!("{}.{}", function.schema(), FunctionLike::name(function)))
+        .collect()
+}
+
 /// Recorded table relations outside the loaded schemas report lookup errors.
 #[tokio::test]
 async fn unloaded_table_relations() {
@@ -279,6 +289,138 @@ async fn unloaded_table_relations() {
             .map(|root| (root.schema(), root.name())),
         Some(("audit", "events"))
     );
+}
+
+/// Column defaults and generation expressions, and domain defaults and
+/// checks, parse from the catalog and resolve their calls under the reading
+/// session's search path, which qualifies a call into another schema.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn column_and_domain_expressions() {
+    let database_name = "column_and_domain_expressions";
+    let docker = reference_docker(database_name)
+        .await
+        .expect("the database starts");
+    let mut conn: PgConnection =
+        establish_connection(docker.port, database_name).expect("the connection opens");
+    conn.batch_execute(
+        "
+        CREATE SCHEMA app;
+        CREATE FUNCTION app.twice(x INTEGER) RETURNS INTEGER
+            LANGUAGE sql IMMUTABLE AS 'SELECT 2 * x';
+        CREATE FUNCTION app.ok(x INTEGER) RETURNS BOOLEAN
+            LANGUAGE sql IMMUTABLE AS 'SELECT x > 0';
+        SET search_path TO app, public;
+        CREATE TABLE public.measures (
+            x INTEGER DEFAULT twice(1),
+            y INTEGER GENERATED ALWAYS AS (twice(x)) STORED,
+            id INTEGER GENERATED ALWAYS AS IDENTITY
+        );
+        CREATE DOMAIN public.checked AS INTEGER DEFAULT twice(2)
+            CONSTRAINT checked_is_small CHECK (VALUE < 100)
+            CONSTRAINT checked_is_ok CHECK (ok(VALUE));
+        RESET search_path;
+        ",
+    )
+    .expect("the expression fixture applies");
+
+    let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+        .connection(&mut conn)
+        .catalog(database_name)
+        .schema("public")
+        .try_into()
+        .expect("the public schema loads");
+
+    let column = |name: &str| {
+        table(&database, "measures")
+            .columns(&database)
+            .expect("in database")
+            .find(|column| column.column_name() == name)
+            .unwrap_or_else(|| panic!("the column {name} is recorded"))
+    };
+    let printed = |expression: Option<&Expr>| expression.map(ToString::to_string);
+
+    let x = column("x");
+    assert_eq!(
+        printed(ColumnLike::default_expression(x)).as_deref(),
+        Some("app.twice(1)")
+    );
+    assert_eq!(ColumnLike::generation_expression(x), None);
+    let Some(Expr::Function(call)) = ColumnLike::default_expression(x) else {
+        panic!("the default is the call itself")
+    };
+    assert_eq!(
+        reached(ColumnLike::functions_reached_by(x, call, &database)),
+        ["app.twice"]
+    );
+
+    let y = column("y");
+    assert_eq!(ColumnLike::default_expression(y), None);
+    assert_eq!(
+        printed(ColumnLike::generation_expression(y)).as_deref(),
+        Some("app.twice(x)")
+    );
+    let Some(Expr::Function(call)) = ColumnLike::generation_expression(y) else {
+        panic!("the generation expression is the call itself")
+    };
+    assert_eq!(
+        reached(ColumnLike::functions_reached_by(y, call, &database)),
+        ["app.twice"]
+    );
+    // A copy of the call is not a node of the expression, which is matched
+    // by address.
+    assert!(matches!(
+        ColumnLike::functions_reached_by(y, &call.clone(), &database),
+        Err(LookupError::CallNotInExpression { .. })
+    ));
+
+    let id = column("id");
+    assert!(id.identity_generation(&database).is_some());
+    assert_eq!(ColumnLike::default_expression(id), None);
+    assert_eq!(ColumnLike::generation_expression(id), None);
+    assert!(matches!(
+        ColumnLike::functions_reached_by(id, call, &database),
+        Err(LookupError::CallNotInExpression { .. })
+    ));
+
+    let checked = database
+        .domains()
+        .find(|domain| domain.name() == "checked")
+        .expect("the domain is recorded");
+    assert_eq!(
+        printed(DomainLike::default_expression(checked)).as_deref(),
+        Some("app.twice(2)")
+    );
+    let checks: Vec<String> = DomainLike::check_expressions(checked)
+        .map(ToString::to_string)
+        .collect();
+    // `pg_get_expr` parenthesizes an operator expression, and the checks
+    // come in name order.
+    assert_eq!(checks, ["app.ok(VALUE)", "(VALUE < 100)"]);
+    let Some(Expr::Function(default_call)) = DomainLike::default_expression(checked) else {
+        panic!("the domain default is the call itself")
+    };
+    assert_eq!(
+        reached(DomainLike::functions_reached_by(
+            checked,
+            default_call,
+            &database
+        )),
+        ["app.twice"]
+    );
+    let Some(Expr::Function(check_call)) = DomainLike::check_expressions(checked).next() else {
+        panic!("the first check is the call itself")
+    };
+    assert_eq!(
+        reached(DomainLike::functions_reached_by(
+            checked, check_call, &database
+        )),
+        ["app.ok"]
+    );
+    assert!(matches!(
+        DomainLike::functions_reached_by(checked, call, &database),
+        Err(LookupError::CallNotInExpression { .. })
+    ));
 }
 
 #[tokio::test]

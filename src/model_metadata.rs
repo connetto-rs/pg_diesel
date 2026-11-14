@@ -43,7 +43,26 @@ mod pg_extension_entry;
 pub use pg_extension_entry::PgExtensionEntry;
 mod pg_domain_entry;
 pub use pg_domain_entry::{DomainDefinitionError, PgDomainEntry};
+mod domain_metadata;
+pub use domain_metadata::DomainMetadata;
 mod pg_role_membership;
 pub use pg_role_membership::PgRoleMembership;
 mod pg_user_defined_type;
 pub use pg_user_defined_type::PgUserDefinedType;
+
+/// Parses the whole of an expression `PostgreSQL` printed, such as
+/// `pg_get_expr` output.
+///
+/// # Errors
+///
+/// Returns the parser's error when `printed` is no single expression it
+/// reads.
+pub(crate) fn parse_printed_expression(
+    printed: &str,
+) -> Result<sqlparser::ast::Expr, sqlparser::parser::ParserError> {
+    let mut parser = sqlparser::parser::Parser::new(&sqlparser::dialect::PostgreSqlDialect {})
+        .try_with_sql(printed)?;
+    let expression = parser.parse_expr()?;
+    parser.expect_token(&sqlparser::tokenizer::Token::EOF)?;
+    Ok(expression)
+}

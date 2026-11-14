@@ -1026,14 +1026,14 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             format!("{subject} / not null constraint name"),
             format!("{:?}", column.not_null_constraint_name(database)?),
         );
-        if let Some(default) = column.default_value() {
+        if let Some(default) = column.default_expression() {
             let stored = self.stored.expression(
                 schema,
                 table,
                 Slot::ColumnDefault {
                     column: &column_name,
                 },
-                &default,
+                &default.to_string(),
             )?;
             self.facts.insert(
                 format!("{subject} / default"),
