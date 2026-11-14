@@ -286,7 +286,8 @@ impl PgTable {
         self.partition_strategy
     }
 
-    /// Initializes and returns the metadata for the table.
+    /// Initializes and returns the metadata for the table, read from a server
+    /// of `version`.
     ///
     /// # Errors
     ///
@@ -295,10 +296,12 @@ impl PgTable {
     pub fn metadata(
         self: &std::sync::Arc<Self>,
         conn: &mut diesel::PgConnection,
+        version: crate::database::ServerVersion,
         denylist_types: &[String],
         cache: &crate::database::CatalogCache,
     ) -> Result<crate::model_metadata::TableMetadata, crate::models::TableMetadataError> {
-        self.model.metadata(self, conn, denylist_types, cache)
+        self.model
+            .metadata(self, conn, version, denylist_types, cache)
     }
 }
 
