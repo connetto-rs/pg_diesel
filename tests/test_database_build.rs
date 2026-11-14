@@ -21,7 +21,7 @@ use pg_diesel::{
     model_metadata::PgTable,
     sql_traits::{
         errors::LookupError,
-        structs::{FunctionKind, PrivilegeHolder, SequenceType},
+        structs::{AggregateKind, FunctionKind, PrivilegeHolder, SequenceType},
         traits::{
             CheckConstraintLike, ColumnCollation, ColumnGrantLike, ColumnLike, DatabaseLike,
             DialectLike, ExtensionLike, ForeignKeyLike, FunctionLike, GrantLike, IndexLike,
@@ -615,6 +615,45 @@ async fn test_database_build() {
     assert_eq!(
         function.kind(&database).expect("in database"),
         FunctionKind::Normal
+    );
+    assert_eq!(
+        function.aggregate_kind(&database).expect("in database"),
+        None
+    );
+    // `pg_aggregate` tells the aggregates apart by how they read arguments.
+    let mut aggregate_kinds: Vec<(&str, Option<AggregateKind>)> = database
+        .functions()
+        .filter(|function| {
+            function.target_name().schema() == Some("pg_catalog")
+                && ["count", "percentile_cont", "rank"].contains(&function.name())
+        })
+        .map(|function| {
+            (
+                function.name(),
+                function.aggregate_kind(&database).expect("in database"),
+            )
+        })
+        .collect();
+    aggregate_kinds.sort();
+    aggregate_kinds.dedup();
+    assert_eq!(
+        aggregate_kinds,
+        vec![
+            ("count", Some(AggregateKind::Normal)),
+            (
+                "percentile_cont",
+                Some(AggregateKind::OrderedSet {
+                    direct_arguments: 1
+                })
+            ),
+            ("rank", None),
+            (
+                "rank",
+                Some(AggregateKind::HypotheticalSet {
+                    direct_arguments: 1
+                })
+            ),
+        ]
     );
     let modes: Vec<ArgMode> = function.argument_modes().collect();
     assert_eq!(modes, vec![ArgMode::In]);

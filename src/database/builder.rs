@@ -9,7 +9,9 @@ use diesel::{
 };
 use sql_traits::{
     errors::LookupError,
-    structs::{IdentifierCase, generic_db::GenericDBBuilder, metadata::ExpressionCalls},
+    structs::{
+        AggregateKind, IdentifierCase, generic_db::GenericDBBuilder, metadata::ExpressionCalls,
+    },
 };
 use sqlparser::{
     ast::{
@@ -425,10 +427,15 @@ impl<'a> TryFrom<PgDieselDatabaseBuilder<'a>> for PgDieselDatabase {
                     reached
                 },
             );
+        let mut aggregate_kinds: HashMap<u32, AggregateKind> =
+            PgProc::load_aggregate_kinds(connection)?
+                .into_iter()
+                .collect();
         let mut loaded = Vec::new();
         for function in PgProc::load_all(connection)? {
             let acls = function_acls.remove(&function.oid);
-            let metadata = crate::database::PgProcMetadata::new(&function, &cache, acls.as_deref());
+            let metadata = crate::database::PgProcMetadata::new(&function, &cache, acls.as_deref())
+                .with_aggregate_kind(aggregate_kinds.remove(&function.oid));
             let schema = cache
                 .namespace(function.pronamespace)
                 .unwrap_or_default()

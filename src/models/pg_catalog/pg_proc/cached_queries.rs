@@ -6,6 +6,8 @@ use diesel::{
     sql_types::{Oid, Text},
 };
 
+use sql_traits::structs::AggregateKind;
+
 use crate::models::PgProc;
 
 /// One row of a function's `pg_proc.proacl` as `aclexplode` reads it, or a
@@ -101,4 +103,31 @@ pub(super) fn load_bound_dependencies(
         .filter(pg_depend::deptype.eq("n"))
         .select((pg_depend::objid, pg_depend::refobjid))
         .load(conn)
+}
+
+/// Loads the kind of every aggregate `pg_aggregate` records, beside the OID
+/// of its `pg_proc` row.
+pub(super) fn load_aggregate_kinds(
+    conn: &mut PgConnection,
+) -> Result<Vec<(u32, AggregateKind)>, diesel::result::Error> {
+    use crate::schema::pg_catalog::pg_aggregate::pg_aggregate;
+    let rows: Vec<(u32, String, i16)> = pg_aggregate::table
+        .select((
+            pg_aggregate::aggfnoid,
+            pg_aggregate::aggkind,
+            pg_aggregate::aggnumdirectargs,
+        ))
+        .load(conn)?;
+    Ok(rows
+        .into_iter()
+        .map(|(function, kind, direct_arguments)| {
+            let direct_arguments = usize::try_from(direct_arguments).unwrap_or_default();
+            let kind = match kind.as_str() {
+                "o" => AggregateKind::OrderedSet { direct_arguments },
+                "h" => AggregateKind::HypotheticalSet { direct_arguments },
+                _ => AggregateKind::Normal,
+            };
+            (function, kind)
+        })
+        .collect())
 }
