@@ -5,7 +5,10 @@ use diesel::{
     OptionalExtension, PgConnection, QueryDsl, RunQueryDsl, SelectableHelper,
 };
 
-use crate::models::{Column, KeyColumnUsage, PgDescription, PgIndex, PgTrigger, Table};
+use crate::{
+    models::{Column, KeyColumnUsage, PgDescription, PgTrigger, Table},
+    shared::models::PgIndex,
+};
 
 /// Loads base and foreign tables, optionally restricted to exact table names.
 pub(crate) fn load_all_tables(
@@ -51,8 +54,9 @@ pub fn primary_key_columns(
     table: &Table,
     conn: &mut PgConnection,
 ) -> Result<Vec<Column>, diesel::result::Error> {
-    use crate::schema::information_schema::{
-        columns::columns, key_column_usage::key_column_usage, table_constraints::table_constraints,
+    use crate::{
+        schema::information_schema::{columns::columns, key_column_usage::key_column_usage},
+        shared::schema::information_schema::table_constraints,
     };
     key_column_usage::table
         .inner_join(
@@ -156,9 +160,7 @@ pub(crate) fn unique_indices(
     table_oid: u32,
     conn: &mut PgConnection,
 ) -> Result<Vec<(PgIndex, String)>, diesel::result::Error> {
-    use crate::schema::pg_catalog::{
-        pg_class::pg_class, pg_constraint::pg_constraint, pg_index::pg_index,
-    };
+    use crate::shared::schema::pg_catalog::{pg_class, pg_constraint, pg_index};
 
     pg_index::table
         .inner_join(pg_class::table.on(pg_class::oid.eq(pg_index::indexrelid)))
@@ -183,7 +185,7 @@ pub(crate) fn index_constraint_names(
     table_oid: u32,
     conn: &mut PgConnection,
 ) -> Result<Vec<(u32, String)>, diesel::result::Error> {
-    use crate::schema::pg_catalog::{pg_constraint::pg_constraint, pg_index::pg_index};
+    use crate::shared::schema::pg_catalog::{pg_constraint, pg_index};
 
     let backed = pg_constraint::contype
         .eq("p")
@@ -204,7 +206,7 @@ pub(crate) fn indices(
     table_oid: u32,
     conn: &mut PgConnection,
 ) -> Result<Vec<(PgIndex, String)>, diesel::result::Error> {
-    use crate::schema::pg_catalog::{pg_class::pg_class, pg_index::pg_index};
+    use crate::shared::schema::pg_catalog::{pg_class, pg_index};
 
     pg_index::table
         .inner_join(pg_class::table.on(pg_class::oid.eq(pg_index::indexrelid)))
@@ -252,14 +254,13 @@ pub(crate) fn triggers(
 /// Returns the name each not-null constraint of the table holds, by the
 /// number the engine gives the column it applies to.
 ///
-/// The engine records such constraints as `pg_constraint` rows only in
-/// `PostgreSQL` 18, so the query exists nowhere else.
-#[cfg(feature = "postgres-18")]
+/// The engine records such constraints as `pg_constraint` rows only from
+/// `PostgreSQL` 18 on, so an older server returns none.
 pub(crate) fn not_null_constraint_names(
     table_oid: u32,
     conn: &mut PgConnection,
 ) -> Result<Vec<(i32, String)>, diesel::result::Error> {
-    use crate::schema::pg_catalog::pg_constraint::pg_constraint;
+    use crate::shared::schema::pg_catalog::pg_constraint;
 
     let rows = pg_constraint::table
         .filter(pg_constraint::conrelid.eq(table_oid))
@@ -520,30 +521,15 @@ pub(crate) fn table_acl_entries(
     .load::<TableAclEntry>(conn)
 }
 
-/// The width `pg_attribute.attndims` has, `integer` before `PostgreSQL` 16
-/// and `smallint` from it on.
-#[cfg(not(any(
-    feature = "postgres-16",
-    feature = "postgres-17",
-    feature = "postgres-18"
-)))]
-type Dimensions = i32;
-/// The width `pg_attribute.attndims` has, `integer` before `PostgreSQL` 16
-/// and `smallint` from it on.
-#[cfg(any(
-    feature = "postgres-16",
-    feature = "postgres-17",
-    feature = "postgres-18"
-))]
-type Dimensions = i16;
-
 /// Returns what `pg_attribute` records for every live column of the table.
 pub(crate) fn attributes(
     table_oid: u32,
     conn: &mut PgConnection,
 ) -> Result<Vec<AttributeFacts>, diesel::result::Error> {
-    use crate::schema::pg_catalog::pg_attribute::pg_attribute;
+    use crate::shared::schema::pg_catalog::pg_attribute;
 
+    // `attndims` is an `integer` before `PostgreSQL` 16 and a `smallint`
+    // from it on, so the cast reads both widths alike.
     Ok(pg_attribute::table
         .filter(pg_attribute::attrelid.eq(table_oid))
         .filter(pg_attribute::attnum.gt(0))
@@ -554,11 +540,11 @@ pub(crate) fn attributes(
             pg_attribute::attnum,
             pg_attribute::atttypid,
             pg_attribute::atttypmod,
-            pg_attribute::attndims,
+            diesel::dsl::sql::<diesel::sql_types::Integer>("attndims::integer"),
             pg_attribute::attfdwoptions,
             pg_attribute::attislocal,
         ))
-        .load::<(String, i16, u32, i32, Dimensions, Option<Vec<String>>, bool)>(conn)?
+        .load::<(String, i16, u32, i32, i32, Option<Vec<String>>, bool)>(conn)?
         .into_iter()
         .map(
             |(name, number, type_oid, typmod, ndims, fdw_options, local)| AttributeFacts {
@@ -566,17 +552,6 @@ pub(crate) fn attributes(
                 number,
                 type_oid,
                 typmod,
-                #[cfg(any(
-                    feature = "postgres-16",
-                    feature = "postgres-17",
-                    feature = "postgres-18"
-                ))]
-                ndims: i32::from(ndims),
-                #[cfg(not(any(
-                    feature = "postgres-16",
-                    feature = "postgres-17",
-                    feature = "postgres-18"
-                )))]
                 ndims,
                 fdw_options,
                 inherited: !local,
@@ -596,8 +571,9 @@ pub(crate) fn serial_attributes(
     table_oid: u32,
     conn: &mut PgConnection,
 ) -> Result<Vec<i32>, diesel::result::Error> {
-    use crate::schema::pg_catalog::{
-        pg_attrdef::pg_attrdef, pg_class::pg_class, pg_depend::pg_depend,
+    use crate::{
+        schema::pg_catalog::{pg_attrdef::pg_attrdef, pg_depend::pg_depend},
+        shared::schema::pg_catalog::pg_class,
     };
 
     let owned = pg_depend::table
@@ -654,7 +630,9 @@ pub(crate) fn descriptions(
     table_oid: u32,
     conn: &mut PgConnection,
 ) -> Result<Vec<PgDescription>, diesel::result::Error> {
-    use crate::schema::pg_catalog::{pg_class::pg_class, pg_description::pg_description};
+    use crate::{
+        schema::pg_catalog::pg_description::pg_description, shared::schema::pg_catalog::pg_class,
+    };
 
     pg_description::table
         .inner_join(pg_class::table.on(pg_description::classoid.eq(pg_class::oid)))
@@ -683,8 +661,9 @@ pub(crate) fn parents(
     table_oid: u32,
     conn: &mut PgConnection,
 ) -> Result<Vec<(String, String)>, diesel::result::Error> {
-    use crate::schema::pg_catalog::{
-        pg_class::pg_class, pg_inherits::pg_inherits, pg_namespace::pg_namespace,
+    use crate::{
+        schema::pg_catalog::{pg_inherits::pg_inherits, pg_namespace::pg_namespace},
+        shared::schema::pg_catalog::pg_class,
     };
 
     let parent_oids = pg_inherits::table

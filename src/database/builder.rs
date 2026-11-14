@@ -157,7 +157,9 @@ fn relation_options(
     connection: &mut PgConnection,
     schemas: &[String],
 ) -> Result<HashMap<(String, String), Vec<String>>, diesel::result::Error> {
-    use crate::schema::pg_catalog::{pg_class::pg_class, pg_namespace::pg_namespace};
+    use crate::{
+        schema::pg_catalog::pg_namespace::pg_namespace, shared::schema::pg_catalog::pg_class,
+    };
 
     let rows = pg_class::table
         .inner_join(pg_namespace::table.on(pg_namespace::oid.eq(pg_class::relnamespace)))

@@ -17,8 +17,9 @@ use sqlparser::{
     parser::Parser,
 };
 
-use crate::schema::pg_catalog::{
-    pg_class::pg_class, pg_namespace::pg_namespace, pg_rewrite::pg_rewrite,
+use crate::{
+    schema::pg_catalog::{pg_namespace::pg_namespace, pg_rewrite::pg_rewrite},
+    shared::schema::pg_catalog::pg_class,
 };
 
 /// The relation a rule's `pg_rewrite` row points at, by its kind.

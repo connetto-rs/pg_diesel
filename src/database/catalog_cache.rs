@@ -72,9 +72,12 @@ impl CatalogCache {
     ///
     /// * If one of the catalogs cannot be read.
     pub fn load(conn: &mut PgConnection) -> Result<Self, diesel::result::Error> {
-        use crate::schema::pg_catalog::{
-            pg_collation::pg_collation, pg_language::pg_language, pg_namespace::pg_namespace,
-            pg_range::pg_range, pg_roles::pg_roles, pg_type::pg_type,
+        use crate::{
+            schema::pg_catalog::{
+                pg_language::pg_language, pg_namespace::pg_namespace, pg_range::pg_range,
+                pg_roles::pg_roles, pg_type::pg_type,
+            },
+            shared::schema::pg_catalog::pg_collation,
         };
 
         let types: HashMap<u32, PgType> = pg_type::table
@@ -184,9 +187,9 @@ impl CatalogCache {
         conn: &mut PgConnection,
         types: &HashMap<u32, PgType>,
     ) -> Result<HashMap<u32, Vec<Arc<CompositeAttribute>>>, diesel::result::Error> {
-        use crate::schema::pg_catalog::{
-            pg_attribute::pg_attribute, pg_collation::pg_collation, pg_namespace::pg_namespace,
-            pg_type::pg_type,
+        use crate::{
+            schema::pg_catalog::{pg_namespace::pg_namespace, pg_type::pg_type},
+            shared::schema::pg_catalog::{pg_attribute, pg_collation},
         };
 
         let mut composite_attributes: HashMap<u32, Vec<Arc<CompositeAttribute>>> = types
