@@ -281,6 +281,46 @@ async fn unloaded_table_relations() {
     );
 }
 
+/// A unique index over an expression reports that expression, the one
+/// `pg_get_expr` prints for it.
+#[tokio::test]
+async fn unique_index_over_an_expression() {
+    let database_name = "unique_index_over_an_expression";
+    let docker = reference_docker(database_name)
+        .await
+        .expect("the database starts");
+    let mut conn: PgConnection =
+        establish_connection(docker.port, database_name).expect("the connection opens");
+    conn.batch_execute(
+        "
+        CREATE SCHEMA app;
+        CREATE TABLE app.tags (
+            name TEXT NOT NULL,
+            CONSTRAINT tags_name_folded EXCLUDE USING btree (lower(name) WITH =)
+        );
+        ",
+    )
+    .expect("the expression index fixture applies");
+
+    let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+        .connection(&mut conn)
+        .catalog(database_name)
+        .schema("app")
+        .try_into()
+        .expect("the app schema loads");
+    let index = table(&database, "tags")
+        .unique_indices(&database)
+        .expect("in database")
+        .next()
+        .expect("the exclusion constraint's index is recorded");
+    assert_eq!(
+        IndexLike::expression(index, &database)
+            .expect("in database")
+            .to_string(),
+        "lower(name)"
+    );
+}
+
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn test_database_build() {
