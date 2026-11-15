@@ -2,7 +2,9 @@
 //! `PostgreSQL` versions that the differential helpers read, each one present
 //! in every supported version, so one definition serves every server.
 
-use pg_diesel::schema::pg_catalog::{pg_depend::pg_depend, pg_namespace::pg_namespace};
+use pg_diesel::schema::pg_catalog::{
+    pg_depend::pg_depend, pg_namespace::pg_namespace, pg_rewrite::pg_rewrite,
+};
 
 diesel::table! {
     /// The `pg_catalog.pg_attribute` columns the helpers read.
@@ -60,3 +62,4 @@ diesel::table! {
 
 diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_depend);
 diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_namespace);
+diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_rewrite);
