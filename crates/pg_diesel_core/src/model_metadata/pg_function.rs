@@ -151,16 +151,35 @@ impl PgFunction {
     /// Returns the mode of each argument, in declaration order, `OUT`
     /// included.
     ///
-    /// `proargmodes` stores one code per argument and is `NULL` for a
-    /// function every argument of which is `IN`, whose arguments
-    /// `proargtypes` alone lists.
+    /// `proargmodes` stores one code per argument and per `RETURNS TABLE`
+    /// column, and is `NULL` for a function every argument of which is `IN`,
+    /// whose arguments `proargtypes` alone lists.
     pub fn argument_modes(&self) -> impl Iterator<Item = ArgMode> {
         let modes = self.model.proargmodes.as_deref().unwrap_or_default();
         let declared = self.model.proargtypes.len();
         modes
             .iter()
+            .filter(|mode| *mode != RETURNED_COLUMN_MODE)
             .map(|mode| argument_mode(mode))
             .chain((modes.len()..declared).map(|_| ArgMode::In))
+    }
+
+    /// Returns the `proargnames` entry of each argument, in declaration
+    /// order, `OUT` included, or `None` when no argument has a name.
+    ///
+    /// An unnamed argument holds an empty string.
+    pub(crate) fn argument_name_entries(&self) -> Option<impl Iterator<Item = &str>> {
+        let modes = self.model.proargmodes.as_deref().unwrap_or_default();
+        let names = self.model.proargnames.as_deref()?;
+        Some(
+            names
+                .iter()
+                .enumerate()
+                .filter(move |(position, _)| {
+                    modes.get(*position).map(String::as_str) != Some(RETURNED_COLUMN_MODE)
+                })
+                .map(|(_, name)| name.as_str()),
+        )
     }
 
     /// Returns the schemas the function's `search_path` setting names, in
@@ -195,6 +214,10 @@ impl PgFunction {
         )
     }
 }
+
+/// The `proargmodes` code of a column a `RETURNS TABLE` clause declares,
+/// which `pg_proc` stores after the arguments.
+pub(crate) const RETURNED_COLUMN_MODE: &str = "t";
 
 /// The mode one `proargmodes` code names.
 fn argument_mode(code: &str) -> ArgMode {

@@ -21,6 +21,7 @@ mod role_metadata;
 pub use role_metadata::RoleMetadata;
 mod pg_function;
 pub use pg_function::PgFunction;
+pub(crate) use pg_function::RETURNED_COLUMN_MODE;
 mod pg_operator_entry;
 pub use pg_operator_entry::PgOperatorEntry;
 mod pg_foreign_key;

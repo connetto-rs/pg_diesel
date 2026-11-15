@@ -1675,6 +1675,20 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 format!("{:?}", function.argument_modes().collect::<Vec<_>>()),
             );
             self.text(
+                format!("{subject} / returned columns"),
+                format!(
+                    "{:?}",
+                    function
+                        .returned_columns(database)
+                        .map(|(column, type_name)| format!(
+                            "{} {}",
+                            normalize_identifier(column.name(), column.name_is_quoted()),
+                            normalize_postgres_type(&type_name)
+                        ))
+                        .collect::<Vec<_>>()
+                ),
+            );
+            self.text(
                 format!("{subject} / argument defaults"),
                 function.argument_default_count().to_string(),
             );

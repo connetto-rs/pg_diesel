@@ -4,6 +4,7 @@ use sql_traits::structs::AggregateKind;
 
 use crate::{
     database::CatalogCache,
+    model_metadata::RETURNED_COLUMN_MODE,
     models::{PgProc, PgType, ProcAclEntry},
 };
 
@@ -89,6 +90,9 @@ pub struct PgProcMetadata {
     /// The name each argument type declares under, `OUT` included, in the
     /// spelling the reading session resolves it to.
     argument_type_names: Vec<String>,
+    /// The name and type name of each column a `RETURNS TABLE` clause
+    /// declares, in declaration order.
+    returned_columns: Vec<(String, String)>,
     /// The return type.
     return_type: Option<PgType>,
     /// The return type the function declares, the `SETOF` marker included.
@@ -126,11 +130,22 @@ impl PgProcMetadata {
             .proallargtypes
             .as_deref()
             .unwrap_or(pg_proc.proargtypes.as_slice());
+        let modes = pg_proc.proargmodes.as_deref().unwrap_or_default();
+        let names = pg_proc.proargnames.as_deref().unwrap_or_default();
         let mut argument_types: Vec<PgType> = Vec::new();
         let mut argument_type_names: Vec<String> = Vec::new();
-        for oid in argument_oids {
-            if let Some(pg_type) = cache.pg_type(*oid) {
-                argument_type_names.push(type_name(*oid, cache, pg_type));
+        let mut returned_columns: Vec<(String, String)> = Vec::new();
+        for (position, oid) in argument_oids.iter().enumerate() {
+            let Some(pg_type) = cache.pg_type(*oid) else {
+                continue;
+            };
+            let declared = type_name(*oid, cache, pg_type);
+            if modes.get(position).map(String::as_str) == Some(RETURNED_COLUMN_MODE) {
+                if let Some(column) = names.get(position) {
+                    returned_columns.push((column.clone(), declared));
+                }
+            } else {
+                argument_type_names.push(declared);
                 argument_types.push(pg_type.clone());
             }
         }
@@ -144,6 +159,7 @@ impl PgProcMetadata {
         Self {
             argument_types,
             argument_type_names,
+            returned_columns,
             return_type,
             return_type_name,
             result_type_name,
@@ -215,12 +231,22 @@ impl PgProcMetadata {
     /// The return type the function declares, the `SETOF` marker included.
     ///
     /// A result described by output arguments declares no return type, which
-    /// `pg_proc` records as `record` alongside the output arguments.
+    /// `pg_proc` records as `record` alongside the output arguments. A
+    /// `RETURNS TABLE` clause declares `TABLE`, which `pg_proc` records as a
+    /// set of `record`, or of the type of its single column.
     fn declared_return_type(
         pg_proc: &PgProc,
         return_type: Option<&PgType>,
         cache: &CatalogCache,
     ) -> Option<String> {
+        if pg_proc
+            .proargmodes
+            .iter()
+            .flatten()
+            .any(|mode| mode == RETURNED_COLUMN_MODE)
+        {
+            return Some("TABLE".to_owned());
+        }
         let pg_type = return_type?;
         if pg_type.oid == RECORD_TYPE_OID && Self::has_output_arguments(pg_proc) {
             return None;
@@ -302,6 +328,14 @@ impl PgProcMetadata {
     #[must_use]
     pub fn argument_type_names(&self) -> &[String] {
         &self.argument_type_names
+    }
+
+    /// Returns the name and type name of each column a `RETURNS TABLE`
+    /// clause declares, in declaration order, with each type in the spelling
+    /// the reading session resolves it to.
+    #[must_use]
+    pub fn returned_columns(&self) -> &[(String, String)] {
+        &self.returned_columns
     }
 
     /// Returns the return type.
@@ -436,6 +470,7 @@ mod tests {
         let metadata = PgProcMetadata {
             argument_types: vec![arg_type],
             argument_type_names: vec!["int4".to_string()],
+            returned_columns: vec![],
             return_type: Some(ret_type),
             return_type_name: Some("int4".to_string()),
             result_type_name: Some("int4".to_string()),
@@ -460,6 +495,7 @@ mod tests {
         let metadata = PgProcMetadata {
             argument_types: vec![],
             argument_type_names: vec![],
+            returned_columns: vec![],
             return_type: None,
             return_type_name: None,
             result_type_name: None,
@@ -491,6 +527,7 @@ mod tests {
         let metadata = PgProcMetadata {
             argument_types: vec![],
             argument_type_names: vec![],
+            returned_columns: vec![],
             return_type: None,
             return_type_name: None,
             result_type_name: None,
@@ -515,6 +552,7 @@ mod tests {
         let metadata = PgProcMetadata {
             argument_types: vec![],
             argument_type_names: vec![],
+            returned_columns: vec![],
             return_type: None,
             return_type_name: None,
             result_type_name: None,
@@ -546,6 +584,7 @@ mod tests {
         let metadata = PgProcMetadata {
             argument_types: vec![],
             argument_type_names: vec![],
+            returned_columns: vec![],
             return_type: None,
             return_type_name: None,
             result_type_name: None,
