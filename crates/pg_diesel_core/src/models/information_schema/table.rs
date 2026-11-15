@@ -138,6 +138,19 @@ pub enum TableMetadataError {
         /// Why the parser rejected it, boxed to keep the error small.
         source: Box<ParserError>,
     },
+    /// The predicate `pg_get_expr` prints for a partial index does not
+    /// parse.
+    #[error("the predicate `{expression}` of index {schema}.{index} does not parse: {source}")]
+    UnparsableIndexPredicate {
+        /// The schema of the index.
+        schema: String,
+        /// The name of the index.
+        index: String,
+        /// The predicate as `PostgreSQL` printed it.
+        expression: String,
+        /// Why the parser rejected it, boxed to keep the error small.
+        source: Box<ParserError>,
+    },
 }
 
 impl Table {
@@ -168,6 +181,39 @@ impl Table {
             .transpose()
     }
 
+    /// Pairs the `pg_index` row of one of this table's indexes with its name,
+    /// its parsed predicate and the constraint it enforces.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TableMetadataError::UnparsableIndexPredicate`] when the
+    /// printed predicate does not parse.
+    fn index_entry(
+        &self,
+        (index, name, predicate): IndexRow,
+        constraint_name: Option<String>,
+    ) -> Result<PgIndexEntry, TableMetadataError> {
+        let predicate = predicate
+            .map(|printed| {
+                parse_printed_expression(&printed).map_err(|source| {
+                    TableMetadataError::UnparsableIndexPredicate {
+                        schema: self.table_schema.clone(),
+                        index: name.clone(),
+                        expression: printed,
+                        source: Box::new(source),
+                    }
+                })
+            })
+            .transpose()?;
+        Ok(PgIndexEntry::new(
+            index,
+            self.table_schema.clone(),
+            name,
+            constraint_name,
+            predicate,
+        ))
+    }
+
     /// Initializes and returns the metadata for the table, read from a server
     /// of `version`.
     ///
@@ -175,7 +221,8 @@ impl Table {
     ///
     /// Returns a [`TableMetadataError`] when a catalog query fails, a
     /// column's type reaches a type the catalog cache does not hold, or a
-    /// column's default or generation expression does not parse.
+    /// column's default or generation expression or an index's predicate
+    /// does not parse.
     #[allow(clippy::too_many_lines)]
     pub fn metadata(
         &self,
@@ -262,22 +309,12 @@ impl Table {
         let mut constraint_names = index_constraint_names(facts.oid, conn)?
             .into_iter()
             .collect::<HashMap<_, _>>();
-        for (index, index_name) in cached_queries::unique_indices(facts.oid, conn)? {
-            let constraint_name = constraint_names.remove(&index.indexrelid);
-            sql_metadata.add_unique_index(Arc::new(PgIndexEntry::new(
-                index,
-                self.table_schema.clone(),
-                index_name,
-                constraint_name,
-            )));
+        for row in cached_queries::unique_indices(facts.oid, conn)? {
+            let constraint_name = constraint_names.remove(&row.0.indexrelid);
+            sql_metadata.add_unique_index(Arc::new(self.index_entry(row, constraint_name)?));
         }
-        for (index, index_name) in cached_queries::standalone_indices(facts.oid, conn)? {
-            sql_metadata.add_index(Arc::new(PgIndexEntry::new(
-                index,
-                self.table_schema.clone(),
-                index_name,
-                None,
-            )));
+        for row in cached_queries::standalone_indices(facts.oid, conn)? {
+            sql_metadata.add_index(Arc::new(self.index_entry(row, None)?));
         }
         let mut primary_key_columns = Vec::new();
         for pk_column in cached_queries::primary_key_columns(self, conn)? {

@@ -470,6 +470,113 @@ async fn unique_index_over_an_expression() {
     }
 }
 
+/// The calls of an index's key and predicate reach the function `PostgreSQL`
+/// bound at `CREATE INDEX`, which `pg_get_expr` qualifies once the search
+/// path the index was written under no longer finds it first.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn index_key_and_predicate_calls() {
+    for &major in COMPILED_MAJORS {
+        let database_name = "index_key_and_predicate_calls";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("the database starts");
+        let mut conn: PgConnection =
+            establish_connection(docker.port, database_name).expect("the connection opens");
+        conn.batch_execute(
+            "
+            CREATE SCHEMA earlier;
+            CREATE SCHEMA later;
+            CREATE FUNCTION earlier.norm(x INTEGER) RETURNS INTEGER
+                LANGUAGE sql IMMUTABLE AS 'SELECT x';
+            CREATE FUNCTION later.norm(x INTEGER) RETURNS INTEGER
+                LANGUAGE sql IMMUTABLE AS 'SELECT -x';
+            CREATE TABLE public.index_probe (x INTEGER);
+            SET search_path = earlier, public;
+            CREATE INDEX expression_probe ON public.index_probe (norm(x));
+            CREATE INDEX predicate_probe ON public.index_probe (x) WHERE norm(x) > 0;
+            ALTER TABLE public.index_probe ADD CONSTRAINT excluded_probe
+                EXCLUDE USING btree (norm(x) WITH =);
+            SET search_path = later, public;
+            ",
+        )
+        .expect("the index fixture applies");
+
+        let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+            .connection(&mut conn)
+            .catalog(database_name)
+            .schema("public")
+            .try_into()
+            .expect("the public schema loads");
+        let probe = table(&database, "index_probe");
+        let index = |name: &str| {
+            probe
+                .indices(&database)
+                .expect("in database")
+                .find(|index| IndexLike::name(*index) == Some(name))
+                .unwrap_or_else(|| panic!("the index {name} is recorded"))
+        };
+
+        let expression_probe = index("expression_probe");
+        let key = IndexLike::expression(expression_probe, &database).expect("in database");
+        assert_eq!(key.to_string(), "earlier.norm(x)", "PostgreSQL {major}");
+        assert_eq!(IndexLike::predicate(expression_probe), None);
+        let key_call = first_call(key, "norm");
+        assert_eq!(
+            reached(IndexLike::functions_reached_by(
+                expression_probe,
+                key_call,
+                &database
+            )),
+            ["earlier.norm"],
+            "PostgreSQL {major}"
+        );
+        // A copy of the call is not a node of the key, which is matched by
+        // address.
+        assert!(matches!(
+            IndexLike::functions_reached_by(expression_probe, &key_call.clone(), &database),
+            Err(LookupError::CallNotInExpression { .. })
+        ));
+
+        let predicate_probe = index("predicate_probe");
+        let predicate = IndexLike::predicate(predicate_probe).expect("the index is partial");
+        assert_eq!(
+            predicate.to_string(),
+            "(earlier.norm(x) > 0)",
+            "PostgreSQL {major}"
+        );
+        assert_eq!(
+            reached(IndexLike::functions_reached_by(
+                predicate_probe,
+                first_call(predicate, "norm"),
+                &database
+            )),
+            ["earlier.norm"],
+            "PostgreSQL {major}"
+        );
+        assert!(matches!(
+            IndexLike::functions_reached_by(predicate_probe, key_call, &database),
+            Err(LookupError::CallNotInExpression { .. })
+        ));
+
+        let excluded_probe = probe
+            .unique_indices(&database)
+            .expect("in database")
+            .next()
+            .expect("the exclusion constraint's index is recorded");
+        let excluded_key = IndexLike::expression(excluded_probe, &database).expect("in database");
+        assert_eq!(
+            reached(IndexLike::functions_reached_by(
+                excluded_probe,
+                first_call(excluded_key, "norm"),
+                &database
+            )),
+            ["earlier.norm"],
+            "PostgreSQL {major}"
+        );
+    }
+}
+
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn test_database_build() {

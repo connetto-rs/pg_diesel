@@ -29,6 +29,8 @@ mod pg_policy;
 pub use pg_policy::PgPolicy;
 mod pg_index_entry;
 pub use pg_index_entry::PgIndexEntry;
+mod index_metadata;
+pub use index_metadata::IndexMetadata;
 mod pg_table;
 pub use pg_table::{PgTable, PgTableError, storage_option_entries};
 mod pg_schema;
