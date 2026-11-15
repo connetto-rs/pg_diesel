@@ -2,7 +2,12 @@
 
 mod test_utils;
 
-use diesel::{PgConnection, QueryDsl, SelectableHelper, query_dsl::LoadQuery};
+use diesel::{
+    PgConnection, QueryDsl, QueryableByName, SelectableHelper,
+    pg::{Pg, PgQueryBuilder},
+    query_builder::{QueryBuilder, QueryFragment},
+    query_dsl::LoadQuery,
+};
 use test_utils::{COMPILED_MAJORS, establish_connection, reference_docker};
 
 thread_local! {
@@ -10,25 +15,47 @@ thread_local! {
     static FAILED_LOADS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Loads the rows of a query and records a failure unless they load. It
-/// stands in for `RunQueryDsl::load` so that every load below is checked
-/// and every failing model is reported together.
-trait LoadRecorded: diesel::RunQueryDsl<PgConnection> + Sized {
-    /// Returns the rows, empty when the load failed.
+/// Records that loading `U` through `path` failed with `error`.
+fn record_failure<U>(path: &str, error: &dyn std::fmt::Display) {
+    FAILED_LOADS.with_borrow_mut(|failed| {
+        failed.push(format!(
+            "{} through {path}: {error}",
+            std::any::type_name::<U>()
+        ));
+    });
+}
+
+/// Loads the rows of a query through the query DSL, and through
+/// `sql_query` on the SQL the query renders so that the model's
+/// `QueryableByName` reads every field by column name, and records each
+/// load that fails. It stands in for `RunQueryDsl::load` so that every
+/// load below is checked and every failing model is reported together.
+trait LoadRecorded: diesel::RunQueryDsl<PgConnection> + QueryFragment<Pg> + Sized {
+    /// Returns the rows the query DSL loads, empty when that load failed.
     fn load<'query, U>(self, conn: &mut PgConnection) -> Vec<U>
     where
         Self: LoadQuery<'query, PgConnection, U>,
+        U: QueryableByName<Pg> + 'static,
     {
+        let mut sql = PgQueryBuilder::new();
+        match self.to_sql(&mut sql, &Pg) {
+            Ok(()) => {
+                if let Err(error) =
+                    diesel::RunQueryDsl::load::<U>(diesel::sql_query(sql.finish()), conn)
+                {
+                    record_failure::<U>("sql_query", &error);
+                }
+            }
+            Err(error) => record_failure::<U>("its rendered SQL", &error),
+        }
         diesel::RunQueryDsl::load(self, conn).unwrap_or_else(|error| {
-            FAILED_LOADS.with_borrow_mut(|failed| {
-                failed.push(format!("{}: {error}", std::any::type_name::<U>()));
-            });
+            record_failure::<U>("the query DSL", &error);
             Vec::new()
         })
     }
 }
 
-impl<T: diesel::RunQueryDsl<PgConnection>> LoadRecorded for T {}
+impl<T: diesel::RunQueryDsl<PgConnection> + QueryFragment<Pg>> LoadRecorded for T {}
 
 /// Expands `$body` once per compiled `PostgreSQL` version, with `$catalog`
 /// naming that version's `pg_diesel::vN`. Inside `$body`,
