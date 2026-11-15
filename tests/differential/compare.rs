@@ -1691,6 +1691,10 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 format!("{:?}", function.security_mode()),
             );
             self.text(
+                format!("{subject} / leakproof"),
+                function.is_leakproof().to_string(),
+            );
+            self.text(
                 format!("{subject} / null input"),
                 format!("{:?}", function.null_input_behavior()),
             );

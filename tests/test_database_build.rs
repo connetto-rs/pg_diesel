@@ -578,6 +578,70 @@ async fn index_key_and_predicate_calls() {
 }
 
 #[tokio::test]
+async fn function_leakproof_marking() {
+    for &major in COMPILED_MAJORS {
+        let database_name = "function_leakproof_marking";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("the database starts");
+        let mut conn: PgConnection =
+            establish_connection(docker.port, database_name).expect("the connection opens");
+        conn.batch_execute(
+            "
+            CREATE FUNCTION public.declared(v TEXT) RETURNS BOOLEAN
+                LANGUAGE sql LEAKPROOF AS 'SELECT true';
+            CREATE FUNCTION public.unmarked(v TEXT) RETURNS BOOLEAN
+                LANGUAGE sql AS 'SELECT true';
+            CREATE FUNCTION public.marked_later(v TEXT) RETURNS BOOLEAN
+                LANGUAGE sql AS 'SELECT true';
+            ALTER FUNCTION public.marked_later(TEXT) LEAKPROOF;
+            CREATE FUNCTION public.unmarked_later(v TEXT) RETURNS BOOLEAN
+                LANGUAGE sql LEAKPROOF AS 'SELECT true';
+            ALTER FUNCTION public.unmarked_later(TEXT) NOT LEAKPROOF;
+            CREATE FUNCTION public.replaced(v TEXT) RETURNS BOOLEAN
+                LANGUAGE sql LEAKPROOF AS 'SELECT true';
+            CREATE OR REPLACE FUNCTION public.replaced(v TEXT) RETURNS BOOLEAN
+                LANGUAGE sql AS 'SELECT true';
+            ",
+        )
+        .expect("the function fixture applies");
+
+        let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+            .connection(&mut conn)
+            .catalog(database_name)
+            .schema("public")
+            .try_into()
+            .expect("the public schema loads");
+        let cases: [(&str, &str, &[&str], bool); 7] = [
+            ("public", "declared", &["text"], true),
+            ("public", "unmarked", &["text"], false),
+            ("public", "marked_later", &["text"], true),
+            ("public", "unmarked_later", &["text"], false),
+            ("public", "replaced", &["text"], false),
+            ("pg_catalog", "int4eq", &["integer", "integer"], true),
+            ("pg_catalog", "lower", &["text"], false),
+        ];
+        for (schema, name, arguments, leakproof) in cases {
+            let function = database
+                .functions()
+                .find(|function| {
+                    function.target_name().schema() == Some(schema)
+                        && function.name() == name
+                        && function
+                            .argument_type_names(&database)
+                            .eq(arguments.iter().copied())
+                })
+                .unwrap_or_else(|| panic!("the function {schema}.{name} is recorded"));
+            assert_eq!(
+                function.is_leakproof(),
+                leakproof,
+                "{schema}.{name} on PostgreSQL {major}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn test_database_build() {
     for &major in COMPILED_MAJORS {
