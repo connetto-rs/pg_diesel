@@ -20,6 +20,7 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     fmt,
+    ops::ControlFlow,
 };
 
 use pg_diesel::{
@@ -40,8 +41,9 @@ use pg_diesel::{
     },
     sqlparser::{
         ast::{
-            Action, CreateRule, Expr, FunctionDefinitionSetParam, FunctionSetValue, Query,
-            Statement, Value as SqlValue,
+            Action, CreateRule, Expr, Function, FunctionDefinitionSetParam, FunctionSetValue,
+            Ident, ObjectName, Query, Statement, Value as SqlValue, Visit, Visitor,
+            visit_expressions, visit_expressions_mut,
         },
         dialect::PostgreSqlDialect,
         parser::{Parser, ParserError},
@@ -113,8 +115,13 @@ pub enum StoredFormError {
 
 /// Turns expression text into the tree `PostgreSQL` stores for it.
 pub trait StoredForm {
-    /// Returns `sql`, written into `slot` of the table `schema.table`, as the
-    /// expression `PostgreSQL` prints back.
+    /// Returns the expression `written` into `slot` of the table
+    /// `schema.table` as `PostgreSQL` prints it back.
+    ///
+    /// `bound` is `written` with every call that binds to one function
+    /// qualified by that function's schema, for a route that writes the
+    /// expression again under a search path other than the one it was
+    /// written under.
     ///
     /// # Errors
     ///
@@ -125,7 +132,8 @@ pub trait StoredForm {
         schema: &str,
         table: &str,
         slot: Slot<'_>,
-        sql: &str,
+        written: &str,
+        bound: &str,
     ) -> Result<Expr, StoredFormError>;
 
     /// Returns the view query `sql` as `PostgreSQL` stores it.
@@ -207,9 +215,10 @@ impl StoredForm for AlreadyStored {
         _schema: &str,
         _table: &str,
         _slot: Slot<'_>,
-        sql: &str,
+        written: &str,
+        _bound: &str,
     ) -> Result<Expr, StoredFormError> {
-        parse_expression(sql)
+        parse_expression(written)
     }
 
     fn view_query(&mut self, sql: &str) -> Result<Query, StoredFormError> {
@@ -738,6 +747,76 @@ fn set<I: IntoIterator<Item = String>>(values: I) -> String {
     values.join(", ")
 }
 
+/// Hands every call of an expression to the closure it wraps, in the order
+/// a post-order walk meets them, the order [`visit_expressions_mut`]
+/// rewrites them in.
+struct PostOrderCalls<F>(F);
+
+impl<F: FnMut(&Function) -> ControlFlow<LookupError>> Visitor for PostOrderCalls<F> {
+    type Break = LookupError;
+
+    fn post_visit_expr(&mut self, expression: &Expr) -> ControlFlow<LookupError> {
+        match expression {
+            Expr::Function(call) => (self.0)(call),
+            _ => ControlFlow::Continue(()),
+        }
+    }
+}
+
+/// Returns the name of the one function `functions` holds, qualified by the
+/// schema it lives in, or `None` when they are not exactly one function
+/// with a known schema.
+fn qualified_name<'f, F: FunctionLike + 'f>(
+    functions: impl IntoIterator<Item = &'f F>,
+) -> Option<ObjectName> {
+    let mut functions = functions.into_iter();
+    let (Some(function), None) = (functions.next(), functions.next()) else {
+        return None;
+    };
+    let target = function.target_name();
+    let schema = normalize_identifier(target.schema()?, target.schema_is_quoted());
+    Some(ObjectName::from(vec![
+        Ident::with_quote('"', schema),
+        Ident::with_quote('"', function.stored_name()),
+    ]))
+}
+
+/// Returns `expression` printed with every call renamed to the name
+/// `qualified` answers for it, so writing it again under another search
+/// path binds it to the same function.
+///
+/// # Errors
+///
+/// Returns the [`LookupError`] `qualified` answers for a call.
+fn bound_text(
+    expression: &Expr,
+    mut qualified: impl FnMut(&Function) -> Result<Option<ObjectName>, LookupError>,
+) -> Result<String, LookupError> {
+    let mut names = Vec::new();
+    if let ControlFlow::Break(error) = expression.visit(&mut PostOrderCalls(|call: &Function| {
+        match qualified(call) {
+            Ok(name) => {
+                names.push(name);
+                ControlFlow::Continue(())
+            }
+            Err(error) => ControlFlow::Break(error),
+        }
+    })) {
+        return Err(error);
+    }
+    let mut bound = expression.clone();
+    let mut names = names.into_iter();
+    let _ = visit_expressions_mut(&mut bound, |node| {
+        if let Expr::Function(call) = node
+            && let Some(Some(name)) = names.next()
+        {
+            call.name = name;
+        }
+        ControlFlow::<()>::Continue(())
+    });
+    Ok(bound.to_string())
+}
+
 /// Returns a function's `SET` clause as the `name=value` entry `proconfig`
 /// holds, each value by the text it stands for, so a string literal and a
 /// quoted identifier spelling the same text compare equal.
@@ -1027,6 +1106,11 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             format!("{:?}", column.not_null_constraint_name(database)?),
         );
         if let Some(default) = column.default_expression() {
+            let bound = bound_text(default, |call| {
+                column
+                    .functions_reached_by(call, database)
+                    .map(qualified_name)
+            })?;
             let stored = self.stored.expression(
                 schema,
                 table,
@@ -1034,6 +1118,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                     column: &column_name,
                 },
                 &default.to_string(),
+                &bound,
             )?;
             self.facts.insert(
                 format!("{subject} / default"),
@@ -1164,11 +1249,18 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
     ) -> Result<(), DescribeError> {
         let database = self.database;
         for check in table.check_constraints(database)? {
+            let expression = check.expression(database);
+            let bound = bound_text(expression, |call| {
+                check
+                    .functions_reached_by(call, database)
+                    .map(qualified_name)
+            })?;
             let stored = self.stored.expression(
                 schema,
                 table_name,
                 Slot::Check,
-                &check.expression(database).to_string(),
+                &expression.to_string(),
+                &bound,
             )?;
             let check_subject = format!("{subject} / check {stored}");
             self.text(
@@ -1293,6 +1385,10 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                     .collect::<Vec<_>>()
                     .join(", "),
             );
+            self.text(
+                format!("{index_subject} / reached functions"),
+                self.index_reached_functions(index)?,
+            );
         }
         for index in table.indices(database)? {
             let name = index.name().unwrap_or("<unnamed>").to_owned();
@@ -1331,12 +1427,22 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                     .collect::<Vec<_>>()
                     .join(", "),
             );
+            self.text(
+                format!("{index_subject} / reached functions"),
+                self.index_reached_functions(index)?,
+            );
             if let Some(predicate) = index.predicate() {
+                let bound = bound_text(predicate, |call| {
+                    index
+                        .functions_reached_by(call, database)
+                        .map(qualified_name)
+                })?;
                 let stored = self.stored.expression(
                     schema,
                     table_name,
                     Slot::IndexPredicate,
                     &predicate.to_string(),
+                    &bound,
                 )?;
                 self.facts.insert(
                     format!("{index_subject} / predicate"),
@@ -1345,6 +1451,42 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             }
         }
         Ok(())
+    }
+
+    /// Returns the described functions the calls of an index's key and
+    /// predicate reach, each once, leaving out the functions the engine
+    /// provides.
+    fn index_reached_functions<I: IndexLike<DB = DB>>(
+        &self,
+        index: &I,
+    ) -> Result<String, DescribeError> {
+        let database = self.database;
+        let mut reached = Vec::new();
+        for expression in std::iter::once(index.expression(database)?).chain(index.predicate()) {
+            let walked = visit_expressions(expression, |node| {
+                let Expr::Function(call) = node else {
+                    return ControlFlow::Continue(());
+                };
+                let functions = match index.functions_reached_by(call, database) {
+                    Ok(functions) => functions,
+                    Err(error) => return ControlFlow::Break(error),
+                };
+                for function in functions {
+                    let schema = function
+                        .target_name()
+                        .schema()
+                        .map_or_else(|| self.scope.default_schema.clone(), str::to_owned);
+                    if self.scope.covers_object(&schema, &function.stored_name()) {
+                        reached.push(self.function_name(function));
+                    }
+                }
+                ControlFlow::Continue(())
+            });
+            if let ControlFlow::Break(error) = walked {
+                return Err(error.into());
+            }
+        }
+        Ok(set(reached))
     }
 
     /// Records a table's triggers, keyed by name.
@@ -1443,9 +1585,18 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                         continue;
                     }
                 };
-                let stored =
-                    self.stored
-                        .expression(schema, table_name, slot, &expression.to_string())?;
+                let bound = bound_text(expression, |call| {
+                    policy
+                        .functions_reached_by(call, database)
+                        .map(qualified_name)
+                })?;
+                let stored = self.stored.expression(
+                    schema,
+                    table_name,
+                    slot,
+                    &expression.to_string(),
+                    &bound,
+                )?;
                 self.facts.insert(
                     format!("{policy_subject} / {label}"),
                     Value::Expr(Box::new(stored)),

@@ -4,15 +4,17 @@ use std::borrow::Cow;
 
 use sql_traits::{
     errors::{LookupError, ObjectKind},
-    structs::metadata::UniqueIndexMetadata,
     traits::{DatabaseLike, IndexLike, Metadata},
 };
-use sqlparser::ast::Expr;
+use sqlparser::ast::{Expr, Function};
 
-use crate::{PgDieselDatabase, model_metadata::PgIndexEntry};
+use crate::{
+    PgDieselDatabase,
+    model_metadata::{IndexMetadata, PgIndexEntry},
+};
 
 impl Metadata for PgIndexEntry {
-    type Meta = UniqueIndexMetadata<Self>;
+    type Meta = IndexMetadata;
 }
 
 impl IndexLike for PgIndexEntry {
@@ -62,6 +64,29 @@ impl IndexLike for PgIndexEntry {
     {
         Ok(metadata(self, database)?.expression())
     }
+
+    fn predicate(&self) -> Option<&Expr> {
+        PgIndexEntry::predicate(self)
+    }
+
+    fn functions_reached_by<'db>(
+        &'db self,
+        call: &Function,
+        database: &'db Self::DB,
+    ) -> Result<impl Iterator<Item = &'db <Self::DB as DatabaseLike>::Function> + 'db, LookupError>
+    {
+        let metadata = metadata(self, database)?;
+        metadata
+            .expression_calls()
+            .reached_by(metadata.expression(), call)
+            .or_else(|| {
+                PgIndexEntry::predicate(self)
+                    .and_then(|predicate| metadata.predicate_calls().reached_by(predicate, call))
+            })
+            .ok_or_else(|| LookupError::CallNotInExpression {
+                call: call.to_string(),
+            })
+    }
 }
 
 /// Returns the metadata `database` holds for `index`, which one entry type
@@ -69,7 +94,7 @@ impl IndexLike for PgIndexEntry {
 fn metadata<'db>(
     index: &PgIndexEntry,
     database: &'db PgDieselDatabase,
-) -> Result<&'db UniqueIndexMetadata<PgIndexEntry>, LookupError> {
+) -> Result<&'db IndexMetadata, LookupError> {
     database
         .index_metadata(index)
         .or_else(|| database.unique_index_metadata(index))
@@ -99,6 +124,7 @@ mod tests {
             },
             "app".to_string(),
             "absent".to_string(),
+            None,
             None,
         );
         let database = PgDieselDatabase::new("catalog".to_string(), PostgresDialect).into();

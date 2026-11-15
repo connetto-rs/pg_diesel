@@ -30,10 +30,10 @@ use crate::{
     dialect::PostgresDialect,
     impls::{RoleColumnGrantsMetadata, RoleTableGrantsMetadata, string_to_action},
     model_metadata::{
-        DomainDefinitionError, DomainMetadata, PgCastEntry, PgColumn, PgDomainEntry,
-        PgExtensionEntry, PgFunction, PgOperatorEntry, PgPolicy, PgRoleMembership, PgRuleEntry,
-        PgSchema, PgSequenceEntry, PgTable, PgTableError, PgUserDefinedType, PgViewDefinition,
-        RuleDefinitionError, TriggerMetadata, ViewDefinitionError,
+        DomainDefinitionError, DomainMetadata, IndexMetadata, PgCastEntry, PgColumn, PgDomainEntry,
+        PgExtensionEntry, PgFunction, PgIndexEntry, PgOperatorEntry, PgPolicy, PgRoleMembership,
+        PgRuleEntry, PgSchema, PgSequenceEntry, PgTable, PgTableError, PgUserDefinedType,
+        PgViewDefinition, RuleDefinitionError, TriggerMetadata, ViewDefinitionError,
         catalog_identity::CatalogObjects,
     },
     models::{
@@ -118,6 +118,25 @@ fn expression_calls(
             IdentifierCase::AsWritten,
         )
     })
+}
+
+/// Returns the metadata of `index`, defined on `table`, with the calls of
+/// its key and predicate resolved against `functions` under `search_path`.
+///
+/// # Errors
+///
+/// Returns a `diesel::result::Error` if a catalog query fails.
+fn index_metadata(
+    index: &PgIndexEntry,
+    table: &Arc<PgTable>,
+    functions: &[Arc<PgFunction>],
+    search_path: &[(&str, bool)],
+    connection: &mut PgConnection,
+) -> Result<IndexMetadata, diesel::result::Error> {
+    let metadata = index.metadata(Arc::clone(table), connection)?;
+    let key_calls = expression_calls(Some(metadata.expression()), functions, search_path);
+    let predicate_calls = expression_calls(index.predicate(), functions, search_path);
+    Ok(metadata.with_calls(key_calls, predicate_calls))
 }
 
 /// Returns the pinned functions the calls of the bound body `definition`
@@ -558,17 +577,13 @@ impl<'a, C: VersionCatalog> TryFrom<PgDieselDatabaseBuilder<'a, C>> for PgDiesel
             }
 
             for index in table_metadata.unique_index_arcs() {
-                generic_builder = generic_builder.add_unique_index(
-                    Arc::clone(index),
-                    index.metadata(Arc::clone(&table), connection)?,
-                );
+                let metadata = index_metadata(index, &table, &functions, &search_path, connection)?;
+                generic_builder = generic_builder.add_unique_index(Arc::clone(index), metadata);
             }
 
             for index in table_metadata.index_arcs() {
-                generic_builder = generic_builder.add_index(
-                    Arc::clone(index),
-                    index.metadata(Arc::clone(&table), connection)?,
-                );
+                let metadata = index_metadata(index, &table, &functions, &search_path, connection)?;
+                generic_builder = generic_builder.add_index(Arc::clone(index), metadata);
             }
 
             for (trigger, function_name, update_columns) in table_metadata.triggers() {

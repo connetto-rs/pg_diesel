@@ -3,6 +3,8 @@
 use diesel::{
     BoolExpressionMethods, ExpressionMethods, JoinOnDsl, NullableExpressionMethods,
     OptionalExtension, PgConnection, QueryDsl, RunQueryDsl, SelectableHelper,
+    dsl::sql,
+    sql_types::{Nullable, Text},
 };
 
 use crate::{
@@ -153,13 +155,22 @@ pub(crate) fn foreign_keys(
         .load::<KeyColumnUsage>(conn)
 }
 
+/// An index row with the name `pg_class` records the index relation under
+/// and the predicate `pg_get_expr` prints for a partial index.
+pub(crate) type IndexRow = (PgIndex, String, Option<String>);
+
+/// The predicate of the selected `pg_index` row as `pg_get_expr` prints it,
+/// `NULL` for an index over every row.
+fn printed_predicate() -> diesel::expression::SqlLiteral<Nullable<Text>> {
+    sql::<Nullable<Text>>("pg_get_expr(indpred, indrelid)")
+}
+
 /// Returns the indices of the table with OID `table_oid` a `PRIMARY KEY` or
-/// `UNIQUE` constraint created, each with the name `pg_class` records the
-/// index relation under.
+/// `UNIQUE` constraint created.
 pub(crate) fn unique_indices(
     table_oid: u32,
     conn: &mut PgConnection,
-) -> Result<Vec<(PgIndex, String)>, diesel::result::Error> {
+) -> Result<Vec<IndexRow>, diesel::result::Error> {
     use crate::shared::schema::pg_catalog::{pg_class, pg_constraint, pg_index};
 
     pg_index::table
@@ -170,8 +181,8 @@ pub(crate) fn unique_indices(
                 .select(pg_constraint::oid)
                 .filter(pg_constraint::conindid.eq(pg_index::indexrelid)),
         ))
-        .select((PgIndex::as_select(), pg_class::relname))
-        .load::<(PgIndex, String)>(conn)
+        .select((PgIndex::as_select(), pg_class::relname, printed_predicate()))
+        .load::<IndexRow>(conn)
 }
 
 /// Returns, for each index of the table, the name of the primary key, unique,
@@ -200,37 +211,35 @@ pub(crate) fn index_constraint_names(
         .load::<(u32, String)>(conn)
 }
 
-/// Returns all indices of the table with OID `table_oid`, each with the name
-/// `pg_class` records the index relation under.
+/// Returns all indices of the table with OID `table_oid`.
 pub(crate) fn indices(
     table_oid: u32,
     conn: &mut PgConnection,
-) -> Result<Vec<(PgIndex, String)>, diesel::result::Error> {
+) -> Result<Vec<IndexRow>, diesel::result::Error> {
     use crate::shared::schema::pg_catalog::{pg_class, pg_index};
 
     pg_index::table
         .inner_join(pg_class::table.on(pg_class::oid.eq(pg_index::indexrelid)))
         .filter(pg_index::indrelid.eq(table_oid))
-        .select((PgIndex::as_select(), pg_class::relname))
-        .load::<(PgIndex, String)>(conn)
+        .select((PgIndex::as_select(), pg_class::relname, printed_predicate()))
+        .load::<IndexRow>(conn)
 }
 
 /// Returns the indices of the table with OID `table_oid` no constraint
-/// created, unique or not, each with the name `pg_class` records the index
-/// relation under.
+/// created, unique or not.
 pub(crate) fn standalone_indices(
     table_oid: u32,
     conn: &mut PgConnection,
-) -> Result<Vec<(PgIndex, String)>, diesel::result::Error> {
+) -> Result<Vec<IndexRow>, diesel::result::Error> {
     let all = indices(table_oid, conn)?;
     let backed: Vec<u32> = unique_indices(table_oid, conn)?
         .into_iter()
-        .map(|(pg_index, _)| pg_index.indexrelid)
+        .map(|(pg_index, _, _)| pg_index.indexrelid)
         .collect();
 
     Ok(all
         .into_iter()
-        .filter(|(pg_index, _)| !backed.contains(&pg_index.indexrelid))
+        .filter(|(pg_index, _, _)| !backed.contains(&pg_index.indexrelid))
         .collect())
 }
 

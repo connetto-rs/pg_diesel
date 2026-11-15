@@ -99,6 +99,7 @@ impl StoredForm for ThroughPostgres<'_> {
         schema: &str,
         table: &str,
         slot: Slot<'_>,
+        _written: &str,
         sql_text: &str,
     ) -> Result<Expr, StoredFormError> {
         self.counter += 1;
