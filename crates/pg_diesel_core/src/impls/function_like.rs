@@ -91,7 +91,7 @@ impl FunctionLike for PgFunction {
     ) -> impl Iterator<Item = Option<TargetName<'db>>> {
         // `proargnames` holds an empty string for an unnamed argument, and is
         // `NULL` when no argument has a name.
-        let names = self.model().proargnames.as_deref();
+        let names = self.argument_name_entries();
         let unnamed = if names.is_some() {
             0
         } else {
@@ -116,6 +116,21 @@ impl FunctionLike for PgFunction {
 
     fn argument_modes(&self) -> impl Iterator<Item = ArgMode> {
         PgFunction::argument_modes(self)
+    }
+
+    fn returned_columns<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> impl Iterator<Item = (TargetName<'db>, Cow<'db, str>)> {
+        metadata(self, database)
+            .into_iter()
+            .flat_map(PgProcMetadata::returned_columns)
+            .map(|(column, type_name)| {
+                (
+                    TargetName::new(column, true),
+                    Cow::Borrowed(type_name.as_str()),
+                )
+            })
     }
 
     fn argument_default_count(&self) -> usize {
