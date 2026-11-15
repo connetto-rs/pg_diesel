@@ -33,8 +33,8 @@ use crate::{
         DomainDefinitionError, DomainMetadata, IndexMetadata, PgCastEntry, PgColumn, PgDomainEntry,
         PgExtensionEntry, PgFunction, PgIndexEntry, PgOperatorEntry, PgPolicy, PgRoleMembership,
         PgRuleEntry, PgSchema, PgSequenceEntry, PgTable, PgTableError, PgUserDefinedType,
-        PgViewDefinition, RuleDefinitionError, TriggerMetadata, ViewDefinitionError,
-        catalog_identity::CatalogObjects,
+        PgViewDefinition, RuleDefinitionError, TriggerMetadata, UserDefinedTypeError,
+        ViewDefinitionError, catalog_identity::CatalogObjects,
     },
     models::{
         PgDbRoleSetting, PgMatview, PgProc, PgRole, PgView, RoleColumnGrants, RoleSettingError,
@@ -255,6 +255,9 @@ pub enum PgDatabaseBuildError {
     #[error("Domain definition: {0}")]
     /// A domain could not be read from the catalogs.
     DomainDefinition(#[from] DomainDefinitionError),
+    #[error("User-defined type: {0}")]
+    /// A user-defined type could not be read from the catalogs.
+    UserDefinedType(#[from] UserDefinedTypeError),
     #[error("Lookup error: {0}")]
     /// Adding an object left the database unable to resolve a name.
     Lookup(#[from] LookupError),
@@ -685,7 +688,7 @@ impl<'a, C: VersionCatalog> TryFrom<PgDieselDatabaseBuilder<'a, C>> for PgDiesel
             generic_builder = generic_builder.add_domain(Arc::new(domain), metadata);
         }
 
-        for user_defined_type in PgUserDefinedType::load_all(&table_schemas, connection)? {
+        for user_defined_type in PgUserDefinedType::load_all(&table_schemas, &cache, connection)? {
             generic_builder =
                 generic_builder.add_user_defined_type(Arc::new(user_defined_type), ());
         }

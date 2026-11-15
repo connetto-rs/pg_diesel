@@ -1,6 +1,9 @@
 //! Implementation of [`UserDefinedTypeLike`] for [`PgUserDefinedType`].
 
-use sql_traits::traits::{Metadata, UserDefinedTypeKind, UserDefinedTypeLike};
+use sql_traits::traits::{
+    Enumeration, EnumerationKind, EnumerationMember, Metadata, UserDefinedTypeKind,
+    UserDefinedTypeLike,
+};
 
 use crate::{PgDieselDatabase, model_metadata::PgUserDefinedType};
 
@@ -30,5 +33,17 @@ impl UserDefinedTypeLike for PgUserDefinedType {
 
     fn kind(&self) -> UserDefinedTypeKind {
         PgUserDefinedType::kind(self)
+    }
+
+    fn enumeration(&self) -> Option<Enumeration<impl Iterator<Item = EnumerationMember<'_>>>> {
+        self.enum_labels().map(|labels| {
+            Enumeration::new(
+                EnumerationKind::Enum,
+                None,
+                labels
+                    .iter()
+                    .map(|label| EnumerationMember::new(label, None)),
+            )
+        })
     }
 }

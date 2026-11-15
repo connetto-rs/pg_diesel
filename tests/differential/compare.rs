@@ -2199,7 +2199,8 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         }
     }
 
-    /// Records the user-defined types in scope and the form each takes.
+    /// Records the user-defined types in scope, the form each takes and the
+    /// labels of an enum type in sort order.
     fn user_defined_types(&mut self) {
         let database = self.database;
         for type_ in database.user_defined_types() {
@@ -2211,6 +2212,20 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             self.text(
                 format!("user-defined type {schema}.{name} / kind"),
                 format!("{:?}", type_.kind()),
+            );
+            let enumeration = type_.enumeration().map(|enumeration| {
+                (
+                    enumeration.kind(),
+                    enumeration.width(),
+                    enumeration
+                        .into_members()
+                        .map(|member| (member.label(), member.value()))
+                        .collect::<Vec<_>>(),
+                )
+            });
+            self.text(
+                format!("user-defined type {schema}.{name} / enumeration"),
+                format!("{enumeration:?}"),
             );
         }
     }
