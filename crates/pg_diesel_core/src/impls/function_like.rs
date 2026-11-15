@@ -167,6 +167,10 @@ impl FunctionLike for PgFunction {
         }
     }
 
+    fn is_leakproof(&self) -> bool {
+        self.model().proleakproof
+    }
+
     fn security_mode(&self) -> FunctionSecurity {
         if self.model().prosecdef {
             FunctionSecurity::Definer
