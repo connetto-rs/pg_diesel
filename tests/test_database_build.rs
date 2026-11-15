@@ -1405,14 +1405,15 @@ async fn test_database_build() {
             .expect("in database")
             .find(|column| column.column_name() == "flag")
             .expect("the column is recorded");
-        assert_eq!(PostgresDialect.is_bool(&database, flag), TypeMatch::No);
+        assert_eq!(PostgresDialect.is_bool(&database, flag), TypeMatch::Yes);
         assert_eq!(PostgresDialect.is_uuid(&database, flag), TypeMatch::No);
         let stamp = table(&database, "notes")
             .columns(&database)
             .expect("in database")
             .find(|column| column.column_name() == "stamp")
             .expect("the column is recorded");
-        assert_eq!(PostgresDialect.is_uuid(&database, stamp), TypeMatch::No);
+        assert_eq!(PostgresDialect.is_uuid(&database, stamp), TypeMatch::Yes);
+        assert_eq!(PostgresDialect.is_bool(&database, stamp), TypeMatch::No);
         assert!(
             flag.created_from_query(&database).is_none(),
             "`PostgreSQL` records a type for every column"

@@ -14,9 +14,10 @@ use crate::{PgDieselDatabase, model_metadata::PgColumn};
 pub struct PostgresDialect;
 
 impl PostgresDialect {
-    /// Whether the column's resolved catalog type is named `type_name`.
+    /// Whether the normalized name of the column's resolved catalog type is
+    /// `type_name`.
     fn declares(database: &PgDieselDatabase, column: &PgColumn, type_name: &str) -> TypeMatch {
-        if column.data_type(database).name(database) == type_name {
+        if column.data_type(database).normalized_name(database) == type_name {
             TypeMatch::Yes
         } else {
             TypeMatch::No
