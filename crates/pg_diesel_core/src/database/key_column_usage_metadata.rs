@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use sql_traits::structs::ConstraintDeferral;
+
 use crate::{model_metadata::PgTable, models::ReferentialConstraint};
 
 #[derive(Debug, Clone)]
@@ -18,6 +20,8 @@ pub struct KeyColumnUsageMetadata {
     host_columns: Vec<String>,
     /// The referential constraint associated with the foreign key.
     referential_constraint: ReferentialConstraint,
+    /// When the foreign key is checked within a transaction.
+    deferral: ConstraintDeferral,
 }
 
 impl KeyColumnUsageMetadata {
@@ -27,12 +31,14 @@ impl KeyColumnUsageMetadata {
         host_table: Arc<PgTable>,
         host_columns: Vec<String>,
         referential_constraint: ReferentialConstraint,
+        deferral: ConstraintDeferral,
     ) -> Self {
         Self {
             referenced_columns,
             host_table,
             host_columns,
             referential_constraint,
+            deferral,
         }
     }
 
@@ -81,5 +87,11 @@ impl KeyColumnUsageMetadata {
     #[must_use]
     pub fn match_kind(&self) -> sqlparser::ast::ConstraintReferenceMatchKind {
         self.referential_constraint.match_kind()
+    }
+
+    /// Returns when the foreign key is checked within a transaction.
+    #[must_use]
+    pub fn deferral(&self) -> ConstraintDeferral {
+        self.deferral
     }
 }
