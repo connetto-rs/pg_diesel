@@ -55,6 +55,7 @@ impl KeyColumnUsage {
             host_table,
             host_columns(self, conn)?,
             referential_constraint(self, conn)?,
+            deferral(self, conn)?,
         ))
     }
 

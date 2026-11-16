@@ -21,7 +21,7 @@ use pg_diesel::{
     model_metadata::PgTable,
     sql_traits::{
         errors::LookupError,
-        structs::{AggregateKind, FunctionKind, PrivilegeHolder, SequenceType},
+        structs::{AggregateKind, ConstraintDeferral, FunctionKind, PrivilegeHolder, SequenceType},
         traits::{
             CheckConstraintLike, ColumnCollation, ColumnGrantLike, ColumnLike, DatabaseLike,
             DialectLike, DomainLike, ExtensionLike, ForeignKeyLike, FunctionLike, GrantLike,
@@ -638,6 +638,55 @@ async fn function_leakproof_marking() {
                 "{schema}.{name} on PostgreSQL {major}"
             );
         }
+    }
+}
+
+#[tokio::test]
+async fn foreign_key_deferral() {
+    for &major in COMPILED_MAJORS {
+        let database_name = "foreign_key_deferral";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("the database starts");
+        let mut conn: PgConnection =
+            establish_connection(docker.port, database_name).expect("the connection opens");
+        conn.batch_execute(
+            "
+            CREATE TABLE public.p (id INTEGER PRIMARY KEY);
+            CREATE TABLE public.c (
+                plain INTEGER REFERENCES public.p (id),
+                def INTEGER REFERENCES public.p (id) DEFERRABLE,
+                initdef INTEGER REFERENCES public.p (id) INITIALLY DEFERRED
+            );
+            ",
+        )
+        .expect("the foreign key fixture applies");
+
+        let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+            .connection(&mut conn)
+            .catalog(database_name)
+            .schema("public")
+            .try_into()
+            .expect("the public schema loads");
+        let deferrals: BTreeSet<(&str, ConstraintDeferral)> = table(&database, "c")
+            .foreign_keys(&database)
+            .expect("in database")
+            .map(|key| {
+                (
+                    key.foreign_key_name().expect("the key is named"),
+                    key.deferral(&database),
+                )
+            })
+            .collect();
+        assert_eq!(
+            deferrals,
+            BTreeSet::from([
+                ("c_plain_fkey", ConstraintDeferral::NotDeferrable),
+                ("c_def_fkey", ConstraintDeferral::InitiallyImmediate),
+                ("c_initdef_fkey", ConstraintDeferral::InitiallyDeferred),
+            ]),
+            "PostgreSQL {major}"
+        );
     }
 }
 

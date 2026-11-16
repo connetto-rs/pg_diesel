@@ -5,6 +5,7 @@ use diesel::{
     BoolExpressionMethods, ExpressionMethods, JoinOnDsl, PgConnection, QueryDsl, RunQueryDsl,
     SelectableHelper,
 };
+use sql_traits::structs::ConstraintDeferral;
 
 use crate::models::{KeyColumnUsage, ReferentialConstraint, Table};
 
@@ -22,6 +23,32 @@ pub(super) fn referential_constraint(
         )
         .select(ReferentialConstraint::as_select())
         .first::<ReferentialConstraint>(conn)
+}
+
+/// Returns when the foreign key of this key column usage is checked within a
+/// transaction.
+pub(super) fn deferral(
+    key_column_usage: &KeyColumnUsage,
+    conn: &mut PgConnection,
+) -> Result<ConstraintDeferral, diesel::result::Error> {
+    use crate::shared::schema::information_schema::table_constraints;
+    let (deferrable, initially_deferred): (bool, bool) = table_constraints::table
+        .filter(table_constraints::constraint_name.eq(&key_column_usage.constraint_name))
+        .filter(table_constraints::constraint_schema.eq(&key_column_usage.constraint_schema))
+        .filter(table_constraints::constraint_catalog.eq(&key_column_usage.constraint_catalog))
+        .filter(table_constraints::table_name.eq(&key_column_usage.table_name))
+        .filter(table_constraints::table_schema.eq(&key_column_usage.table_schema))
+        .filter(table_constraints::table_catalog.eq(&key_column_usage.table_catalog))
+        .select((
+            table_constraints::is_deferrable.eq("YES"),
+            table_constraints::initially_deferred.eq("YES"),
+        ))
+        .first(conn)?;
+    Ok(match (deferrable, initially_deferred) {
+        (false, _) => ConstraintDeferral::NotDeferrable,
+        (true, false) => ConstraintDeferral::InitiallyImmediate,
+        (true, true) => ConstraintDeferral::InitiallyDeferred,
+    })
 }
 
 /// Returns the names of the columns this foreign key references, in the

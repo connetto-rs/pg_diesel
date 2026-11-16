@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 use sql_traits::{
     errors::{LookupError, ObjectKind},
-    structs::{IdentifierCase, TargetName},
+    structs::{ConstraintDeferral, IdentifierCase, TargetName},
     traits::{DatabaseLike, ForeignKeyLike, Metadata, TableLike},
 };
 
@@ -89,6 +89,13 @@ impl ForeignKeyLike for PgForeignKey {
             .foreign_key_metadata(self)
             .expect("Foreign key must exist in database")
             .match_kind()
+    }
+
+    fn deferral(&self, database: &Self::DB) -> ConstraintDeferral {
+        database
+            .foreign_key_metadata(self)
+            .expect("Foreign key must exist in database")
+            .deferral()
     }
 
     fn host_columns<'db>(
