@@ -41,9 +41,9 @@ use pg_diesel::{
     },
     sqlparser::{
         ast::{
-            Action, CreateRule, Expr, Function, FunctionDefinitionSetParam, FunctionSetValue,
-            Ident, ObjectName, Query, Statement, Value as SqlValue, Visit, Visitor,
-            visit_expressions, visit_expressions_mut,
+            Action, CreateRule, CreateTrigger, Expr, Function, FunctionDefinitionSetParam,
+            FunctionSetValue, Ident, ObjectName, Query, Statement, Value as SqlValue, Visit,
+            Visitor, visit_expressions, visit_expressions_mut,
         },
         dialect::PostgreSqlDialect,
         parser::{Parser, ParserError},
@@ -111,6 +111,12 @@ pub enum StoredFormError {
         /// The text `PostgreSQL` printed.
         print: String,
     },
+    /// The print is not one `CREATE TRIGGER` statement.
+    #[error("the print `{print}` is not a CREATE TRIGGER statement")]
+    NotTrigger {
+        /// The text `PostgreSQL` printed.
+        print: String,
+    },
 }
 
 /// Turns expression text into the tree `PostgreSQL` stores for it.
@@ -151,6 +157,15 @@ pub trait StoredForm {
     /// Returns a [`StoredFormError`] when `PostgreSQL` refuses the rule or
     /// its print does not parse.
     fn rule(&mut self, sql: &str) -> Result<CreateRule, StoredFormError>;
+
+    /// Returns the `CREATE TRIGGER` statement `sql` as `PostgreSQL` stores
+    /// it, `sql` executing the function `pg_temp.pgdiff_trigger()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoredFormError`] when `PostgreSQL` refuses the trigger or
+    /// its print does not parse.
+    fn trigger(&mut self, sql: &str) -> Result<CreateTrigger, StoredFormError>;
 }
 
 /// Reads text that already is `PostgreSQL`'s print, as the live model holds.
@@ -209,6 +224,28 @@ pub fn parse_rule(print: &str) -> Result<CreateRule, StoredFormError> {
     }
 }
 
+/// Parses `print` as one `CREATE TRIGGER` statement in the `PostgreSQL`
+/// dialect.
+///
+/// # Errors
+///
+/// Returns [`StoredFormError::Unparsable`] when `print` does not parse and
+/// [`StoredFormError::NotTrigger`] when it is another statement.
+pub fn parse_trigger(print: &str) -> Result<CreateTrigger, StoredFormError> {
+    let statements = Parser::parse_sql(&PostgreSqlDialect {}, print).map_err(|source| {
+        StoredFormError::Unparsable {
+            print: print.to_owned(),
+            source,
+        }
+    })?;
+    match statements.into_iter().next() {
+        Some(Statement::CreateTrigger(trigger)) => Ok(trigger),
+        _ => Err(StoredFormError::NotTrigger {
+            print: print.to_owned(),
+        }),
+    }
+}
+
 impl StoredForm for AlreadyStored {
     fn expression(
         &mut self,
@@ -227,6 +264,10 @@ impl StoredForm for AlreadyStored {
 
     fn rule(&mut self, sql: &str) -> Result<CreateRule, StoredFormError> {
         parse_rule(sql)
+    }
+
+    fn trigger(&mut self, sql: &str) -> Result<CreateTrigger, StoredFormError> {
+        parse_trigger(sql)
     }
 }
 
@@ -1053,7 +1094,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         self.checks(&schema, &name, &subject, table)?;
         self.foreign_keys(&subject, table)?;
         self.indexes(&schema, &name, &subject, table)?;
-        self.triggers(&subject, table)?;
+        self.triggers(&schema, &name, &subject, table)?;
         self.policies(&schema, &name, &subject, table)?;
         if !foreign {
             self.table_privileges(&schema, &name, table)?;
@@ -1489,8 +1530,15 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         Ok(set(reached))
     }
 
-    /// Records a table's triggers, keyed by name.
-    fn triggers(&mut self, subject: &str, table: &DB::Table) -> Result<(), DescribeError> {
+    /// Records a table's triggers, keyed by name, each `WHEN` condition
+    /// brought into the form `PostgreSQL` stores.
+    fn triggers(
+        &mut self,
+        schema: &str,
+        table_name: &str,
+        subject: &str,
+        table: &DB::Table,
+    ) -> Result<(), DescribeError> {
         let database = self.database;
         for trigger in table.triggers(database)? {
             let trigger_subject = format!("{subject} / trigger {}", trigger.name());
@@ -1519,6 +1567,32 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                         .map(|function| self.function_name(function))
                 ),
             );
+            if let Some(condition) = trigger.condition() {
+                let events = trigger
+                    .events()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" OR ");
+                let written = format!(
+                    "CREATE TRIGGER pgdiff_trigger {} {events} ON {}.{} {} WHEN ({condition}) \
+                     EXECUTE FUNCTION pg_temp.pgdiff_trigger()",
+                    trigger
+                        .timing()
+                        .map_or_else(String::new, |timing| timing.to_string()),
+                    quoted(schema),
+                    quoted(table_name),
+                    trigger
+                        .orientation()
+                        .map_or_else(String::new, |orientation| orientation.to_string()),
+                );
+                if let Some(stored) = self.stored.trigger(&written)?.condition {
+                    self.facts.insert(
+                        format!("{trigger_subject} / condition"),
+                        Value::Expr(Box::new(stored)),
+                    );
+                }
+            }
         }
         Ok(())
     }

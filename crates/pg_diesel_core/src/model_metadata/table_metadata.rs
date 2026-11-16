@@ -8,8 +8,9 @@ use sqlparser::ast::Action;
 use crate::{
     model_metadata::{
         ColumnMetadata, PgCheckConstraint, PgColumn, PgForeignKey, PgIndexEntry, PgPolicy, PgTable,
+        TriggerMetadata,
     },
-    models::{PgDescription, PgTrigger},
+    models::PgDescription,
 };
 
 /// The schema and name a table is recorded under, as the catalogs spell them.
@@ -21,10 +22,8 @@ pub type TableIdentity = (String, String);
 pub struct TableMetadataDetails {
     /// The description of the table, if any.
     pub description: Option<PgDescription>,
-    /// The triggers `pg_trigger` records for the table, each with the name
-    /// the engine records the function it executes under and the columns an
-    /// `UPDATE` event fires it on.
-    pub triggers: Vec<(Arc<PgTrigger>, String, Vec<String>)>,
+    /// The triggers `pg_trigger` records for the table.
+    pub triggers: Vec<Arc<TriggerMetadata>>,
     /// The policies defined on the table.
     pub policies: Vec<Arc<PgPolicy>>,
     /// The tables this one inherits from through `INHERITS`.
@@ -44,10 +43,8 @@ pub struct TableMetadata {
     metadata: sql_traits::structs::TableMetadata<PgTable>,
     /// The description of the table, if any.
     description: Option<PgDescription>,
-    /// The triggers `pg_trigger` records for the table, each with the name
-    /// the engine records the function it executes under and the columns an
-    /// `UPDATE` event fires it on.
-    triggers: Vec<(Arc<PgTrigger>, String, Vec<String>)>,
+    /// The triggers `pg_trigger` records for the table.
+    triggers: Vec<Arc<TriggerMetadata>>,
     /// The policies defined on the table.
     policies: Vec<Arc<PgPolicy>>,
     /// The tables this one inherits from through `INHERITS`.
@@ -159,7 +156,7 @@ impl TableMetadata {
     }
 
     /// Returns an iterator over the triggers of the table.
-    pub fn triggers(&self) -> impl Iterator<Item = &(Arc<PgTrigger>, String, Vec<String>)> {
+    pub fn triggers(&self) -> impl Iterator<Item = &Arc<TriggerMetadata>> {
         self.triggers.iter()
     }
 

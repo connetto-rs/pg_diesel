@@ -33,8 +33,8 @@ use crate::{
         DomainDefinitionError, DomainMetadata, IndexMetadata, PgCastEntry, PgColumn, PgDomainEntry,
         PgExtensionEntry, PgFunction, PgIndexEntry, PgOperatorEntry, PgPolicy, PgRoleMembership,
         PgRuleEntry, PgSchema, PgSequenceEntry, PgTable, PgTableError, PgUserDefinedType,
-        PgViewDefinition, RuleDefinitionError, TriggerMetadata, UserDefinedTypeError,
-        ViewDefinitionError, catalog_identity::CatalogObjects,
+        PgViewDefinition, RuleDefinitionError, UserDefinedTypeError, ViewDefinitionError,
+        catalog_identity::CatalogObjects,
     },
     models::{
         PgDbRoleSetting, PgMatview, PgProc, PgRole, PgView, RoleColumnGrants, RoleSettingError,
@@ -589,14 +589,8 @@ impl<'a, C: VersionCatalog> TryFrom<PgDieselDatabaseBuilder<'a, C>> for PgDiesel
                 generic_builder = generic_builder.add_index(Arc::clone(index), metadata);
             }
 
-            for (trigger, function_name, update_columns) in table_metadata.triggers() {
-                let metadata = TriggerMetadata::new(
-                    (**trigger).clone(),
-                    Arc::clone(&table),
-                    function_name.clone(),
-                    update_columns.clone(),
-                );
-                generic_builder = generic_builder.add_trigger(Arc::new(metadata), ());
+            for trigger in table_metadata.triggers() {
+                generic_builder = generic_builder.add_trigger(Arc::clone(trigger), ());
             }
 
             for policy in table_metadata.policies() {
