@@ -11,14 +11,17 @@ use diesel::{
     sql_types::{Nullable, Oid, Text},
 };
 use pg_diesel::{
-    schema::pg_catalog::{pg_attrdef::pg_attrdef, pg_policy::pg_policy, pg_rewrite::pg_rewrite},
-    sqlparser::ast::{CreateRule, Expr, Query},
+    schema::pg_catalog::{
+        pg_attrdef::pg_attrdef, pg_policy::pg_policy, pg_rewrite::pg_rewrite,
+        pg_trigger::pg_trigger,
+    },
+    sqlparser::ast::{CreateRule, CreateTrigger, Expr, Query},
 };
 
 use crate::catalog::{pg_attribute, pg_class, pg_constraint, pg_index};
 
 use crate::compare::{
-    Slot, StoredForm, StoredFormError, parse_expression, parse_query, parse_rule,
+    Slot, StoredForm, StoredFormError, parse_expression, parse_query, parse_rule, parse_trigger,
 };
 
 /// Writes source expressions into scratch objects on a live connection.
@@ -229,5 +232,30 @@ impl StoredForm for ThroughPostgres<'_> {
             .map_err(|error| refused(error.to_string()))?
             .ok_or_else(|| refused("PostgreSQL printed nothing".to_owned()))?;
         parse_rule(&printed)
+    }
+
+    fn trigger(&mut self, sql_text: &str) -> Result<CreateTrigger, StoredFormError> {
+        let refused = |message: String| StoredFormError::Refused {
+            table: String::new(),
+            slot: "trigger".to_owned(),
+            sql: sql_text.to_owned(),
+            message,
+        };
+        let printed = self
+            .scratch(
+                &format!(
+                    "CREATE FUNCTION pg_temp.pgdiff_trigger() RETURNS trigger \
+                     LANGUAGE plpgsql AS $$BEGIN RETURN NULL; END$$; {sql_text};"
+                ),
+                |connection| {
+                    pg_trigger::table
+                        .filter(pg_trigger::tgname.eq("pgdiff_trigger"))
+                        .select(sql::<Nullable<Text>>("pg_get_triggerdef(oid)"))
+                        .first(connection)
+                },
+            )
+            .map_err(|error| refused(error.to_string()))?
+            .ok_or_else(|| refused("PostgreSQL printed nothing".to_owned()))?;
+        parse_trigger(&printed)
     }
 }

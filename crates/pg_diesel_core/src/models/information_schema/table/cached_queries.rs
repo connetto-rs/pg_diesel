@@ -244,11 +244,13 @@ pub(crate) fn standalone_indices(
 }
 
 /// Returns the triggers `pg_trigger` records for the table, one row per
-/// trigger, with the name the engine records the function they execute under.
+/// trigger, with the name the engine records the function they execute under
+/// and, for a trigger with a `WHEN` condition, the `CREATE TRIGGER` statement
+/// `pg_get_triggerdef` prints, the one place the condition reads as SQL.
 pub(crate) fn triggers(
     table_oid: u32,
     conn: &mut PgConnection,
-) -> Result<Vec<(PgTrigger, String)>, diesel::result::Error> {
+) -> Result<Vec<(PgTrigger, String, Option<String>)>, diesel::result::Error> {
     use crate::schema::pg_catalog::{pg_proc::pg_proc, pg_trigger::pg_trigger};
 
     pg_trigger::table
@@ -256,8 +258,15 @@ pub(crate) fn triggers(
         .filter(pg_trigger::tgrelid.eq(table_oid))
         .filter(pg_trigger::tgisinternal.eq(false))
         .order_by(pg_trigger::oid)
-        .select((PgTrigger::as_select(), pg_proc::proname))
-        .load::<(PgTrigger, String)>(conn)
+        .select((
+            PgTrigger::as_select(),
+            pg_proc::proname,
+            sql::<Nullable<Text>>(
+                "CASE WHEN pg_trigger.tgqual IS NULL THEN NULL \
+                 ELSE pg_get_triggerdef(pg_trigger.oid) END",
+            ),
+        ))
+        .load::<(PgTrigger, String, Option<String>)>(conn)
 }
 
 /// Returns the name each not-null constraint of the table holds, by the

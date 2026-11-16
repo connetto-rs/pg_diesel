@@ -14,8 +14,8 @@ use crate::{
     impls::string_to_action,
     model_metadata::{
         ColumnMetadata, PgCheckConstraint, PgColumn, PgDataType, PgForeignKey, PgIndexEntry,
-        PgPolicy, PgTable, TableMetadata, TableMetadataDetails, parse_printed_expression,
-        storage_option_entries,
+        PgPolicy, PgTable, TableMetadata, TableMetadataDetails, TriggerConditionError,
+        TriggerMetadata, parse_printed_expression, storage_option_entries, when_condition,
     },
     models::Column,
 };
@@ -150,6 +150,24 @@ pub enum TableMetadataError {
         expression: String,
         /// Why the parser rejected it, boxed to keep the error small.
         source: Box<ParserError>,
+    },
+    /// The `CREATE TRIGGER` statement `pg_get_triggerdef` prints for a
+    /// trigger with a `WHEN` condition does not yield the condition.
+    #[error(
+        "the definition `{definition}` of trigger {trigger} on table {schema}.{table} {source}"
+    )]
+    UnreadableTriggerCondition {
+        /// The schema of the table.
+        schema: String,
+        /// The name of the table.
+        table: String,
+        /// The name of the trigger.
+        trigger: String,
+        /// The definition as `PostgreSQL` printed it.
+        definition: String,
+        /// Why the definition yields no condition, boxed to keep the error
+        /// small.
+        source: Box<TriggerConditionError>,
     },
 }
 
@@ -331,7 +349,7 @@ impl Table {
 
         let triggers = cached_queries::triggers(facts.oid, conn)?
             .into_iter()
-            .map(|(trigger, function_name)| {
+            .map(|(trigger, function_name, definition)| {
                 let update_columns = trigger
                     .tgattr
                     .iter()
@@ -343,9 +361,28 @@ impl Table {
                             .map(|attribute| attribute.name.clone())
                     })
                     .collect();
-                (Arc::new(trigger), function_name, update_columns)
+                let condition = definition
+                    .map(|definition| {
+                        when_condition(&definition).map_err(|source| {
+                            TableMetadataError::UnreadableTriggerCondition {
+                                schema: self.table_schema.clone(),
+                                table: self.table_name.clone(),
+                                trigger: trigger.tgname.clone(),
+                                definition,
+                                source: Box::new(source),
+                            }
+                        })
+                    })
+                    .transpose()?;
+                Ok(Arc::new(TriggerMetadata::new(
+                    trigger,
+                    Arc::clone(table),
+                    function_name,
+                    update_columns,
+                    condition,
+                )))
             })
-            .collect();
+            .collect::<Result<_, TableMetadataError>>()?;
 
         let policies = cached_queries::policies(facts.oid, conn)?
             .into_iter()

@@ -5,7 +5,7 @@ use sql_traits::{
     structs::TargetName,
     traits::{DatabaseLike, Metadata, TriggerLike},
 };
-use sqlparser::ast::{TriggerEvent, TriggerObjectKind, TriggerPeriod};
+use sqlparser::ast::{Expr, TriggerEvent, TriggerObjectKind, TriggerPeriod};
 
 use crate::{PgDieselDatabase, model_metadata::TriggerMetadata};
 
@@ -45,6 +45,10 @@ impl TriggerLike for TriggerMetadata {
 
     fn orientation(&self) -> Option<TriggerObjectKind> {
         self.orientation
+    }
+
+    fn condition(&self) -> Option<&Expr> {
+        self.condition.as_ref()
     }
 
     fn function<'db>(
