@@ -42,6 +42,9 @@ CREATE FUNCTION types.sent_out(x types.sent) RETURNS cstring AS '$libdir/plpgsql
 CREATE FUNCTION types.sent_send(x types.sent) RETURNS bytea AS '$libdir/plpgsql', 'plpgsql_call_handler' LANGUAGE C IMMUTABLE;
 CREATE TYPE types.sent (INPUT = types.sent_in, OUTPUT = types.sent_out, SEND = types.sent_send);
 CREATE TYPE types.mood AS ENUM ('sad', 'ok');
+ALTER TYPE types.mood ADD VALUE 'meh' BEFORE 'ok';
+ALTER TYPE types.mood ADD VALUE 'glad' AFTER 'ok';
+CREATE TYPE types.vacant AS ENUM ();
 CREATE TABLE types.ledger (
     id int,
     acl aclitem,

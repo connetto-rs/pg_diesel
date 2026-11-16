@@ -227,7 +227,11 @@ async fn enumeration_preserves_catalog_order_labels_and_type_boundaries() {
 async fn enum_without_cached_members_fails_type_construction() {
     for &major in COMPILED_MAJORS {
         use diesel::{ExpressionMethods, QueryDsl, SelectableHelper};
-        use pg_diesel::{models::PgType, schema::pg_catalog::pg_type::pg_type};
+        use pg_diesel::{
+            model_metadata::{PgUserDefinedType, UserDefinedTypeError},
+            models::PgType,
+            schema::pg_catalog::pg_type::pg_type,
+        };
 
         let docker = reference_docker(major, "uncached_enum").await.unwrap();
         let mut connection: PgConnection =
@@ -242,6 +246,11 @@ async fn enum_without_cached_members_fails_type_construction() {
             .first::<PgType>(&mut connection)
             .unwrap();
         assert!(PgDataType::from_type(&row, -1, &cache, 0).is_none());
+        assert!(matches!(
+            PgUserDefinedType::load_all(&["public".to_owned()], &cache, &mut connection),
+            Err(UserDefinedTypeError::EnumLabelsMissing { name, schema })
+                if name == "later" && schema == "public"
+        ));
     }
 }
 

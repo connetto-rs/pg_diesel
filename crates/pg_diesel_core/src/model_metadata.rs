@@ -51,7 +51,7 @@ pub use domain_metadata::DomainMetadata;
 mod pg_role_membership;
 pub use pg_role_membership::{MembershipGrant, PgRoleMembership};
 mod pg_user_defined_type;
-pub use pg_user_defined_type::PgUserDefinedType;
+pub use pg_user_defined_type::{PgUserDefinedType, UserDefinedTypeError};
 
 /// Parses the whole of an expression `PostgreSQL` printed, such as
 /// `pg_get_expr` output.
