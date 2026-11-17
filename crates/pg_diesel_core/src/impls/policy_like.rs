@@ -2,10 +2,10 @@
 
 use sql_traits::{
     errors::{LookupError, ObjectKind},
-    structs::{PolicyExpression, TargetName},
+    structs::{PolicyExpression, TargetName, WrittenCall},
     traits::{DatabaseLike, Metadata, PolicyLike},
 };
-use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Expr, Function, Owner};
+use sqlparser::ast::{CreatePolicyCommand, CreatePolicyType, Expr, Owner};
 
 use crate::{
     database::PgDieselDatabase,
@@ -146,11 +146,12 @@ impl PolicyLike for PgPolicy {
         Ok(metadata(self, database)?.check_functions())
     }
 
-    fn functions_reached_by<'db>(
+    fn functions_reached_by<'db, 'call>(
         &'db self,
-        call: &Function,
+        call: impl Into<WrittenCall<'call>>,
         database: &'db Self::DB,
     ) -> Result<impl Iterator<Item = &'db <Self::DB as DatabaseLike>::Function>, LookupError> {
+        let call = call.into();
         let metadata = metadata(self, database)?;
         metadata
             .using_expression()

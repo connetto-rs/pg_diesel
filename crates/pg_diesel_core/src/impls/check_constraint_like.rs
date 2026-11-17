@@ -4,10 +4,9 @@ use std::borrow::Cow;
 
 use sql_traits::{
     errors::{LookupError, ObjectKind},
-    structs::metadata::CheckMetadata,
+    structs::{WrittenCall, metadata::CheckMetadata},
     traits::{CheckConstraintLike, DatabaseLike, Metadata},
 };
-use sqlparser::ast::Function;
 
 use crate::{PgDieselDatabase, model_metadata::PgCheckConstraint};
 
@@ -57,12 +56,13 @@ impl CheckConstraintLike for PgCheckConstraint {
         Ok(metadata(self, database)?.functions())
     }
 
-    fn functions_reached_by<'db>(
+    fn functions_reached_by<'db, 'call>(
         &'db self,
-        call: &Function,
+        call: impl Into<WrittenCall<'call>>,
         database: &'db Self::DB,
     ) -> Result<impl Iterator<Item = &'db <Self::DB as DatabaseLike>::Function> + 'db, LookupError>
     {
+        let call = call.into();
         metadata(self, database)?
             .calls()
             .reached_by(CheckConstraintLike::expression(self, database), call)

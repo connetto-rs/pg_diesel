@@ -8,9 +8,9 @@ use diesel::{PgConnection, connection::SimpleConnection};
 use pg_diesel::dialect::PostgresDialect;
 use pg_diesel::sqlparser::{
     ast::{
-        ArgMode, Expr, Function, FunctionCalledOnNull, FunctionSecurity, ReferentialAction,
-        SelectItem, SetExpr, Statement, TriggerEvent, TriggerObject, TriggerObjectKind,
-        TriggerPeriod,
+        ArgMode, Expr, Function, FunctionCalledOnNull, FunctionSecurity, InTarget,
+        ReferentialAction, SelectItem, SetExpr, Statement, TriggerEvent, TriggerObject,
+        TriggerObjectKind, TriggerPeriod,
     },
     dialect::PostgreSqlDialect,
     parser::Parser,
@@ -21,7 +21,10 @@ use pg_diesel::{
     model_metadata::PgTable,
     sql_traits::{
         errors::LookupError,
-        structs::{AggregateKind, ConstraintDeferral, FunctionKind, PrivilegeHolder, SequenceType},
+        structs::{
+            AggregateKind, ConstraintDeferral, FunctionKind, PrivilegeHolder, SequenceType,
+            WrittenCall,
+        },
         traits::{
             CheckConstraintLike, ColumnCollation, ColumnGrantLike, ColumnLike, DatabaseLike,
             DialectLike, DomainLike, ExtensionLike, ForeignKeyLike, FunctionLike, GrantLike,
@@ -65,6 +68,13 @@ ALTER FUNCTION app.doubled(INTEGER) OWNER TO app_owner;
 CREATE POLICY parents_are_doubled ON app.parents FOR UPDATE TO app_owner
     USING (app.doubled(id) > 0)
     WITH CHECK (app.doubled(id) > 0);
+
+CREATE FUNCTION app.visible_ids() RETURNS SETOF INTEGER
+    LANGUAGE sql STABLE
+    AS 'SELECT 1';
+CREATE POLICY parents_from_visible ON app.parents FOR UPDATE
+    USING (id IN (SELECT visible FROM app.visible_ids() visible))
+    WITH CHECK (id IN (SELECT visible FROM app.visible_ids() visible));
 
 CREATE FUNCTION app.keep_row() RETURNS trigger
     LANGUAGE plpgsql STRICT
@@ -198,6 +208,28 @@ fn select_expr(sql: &str) -> Expr {
         panic!("one expression, got something else")
     };
     expr.clone()
+}
+
+/// The call written as the one `FROM` item of the subquery an `IN` holds,
+/// unwrapping the parentheses the clause stores, for a call the test feeds to
+/// `functions_reached_by`.
+fn from_call(expression: &Expr) -> WrittenCall<'_> {
+    match expression {
+        Expr::Nested(inner) => from_call(inner),
+        Expr::In {
+            target: InTarget::Subquery(subquery),
+            ..
+        } => {
+            let SetExpr::Select(select) = &*subquery.body else {
+                panic!("a plain `SELECT`")
+            };
+            let [from] = select.from.as_slice() else {
+                panic!("one `FROM` item, got {:?}", select.from)
+            };
+            WrittenCall::relation(&from.relation).expect("the `FROM` item is a call")
+        }
+        other => panic!("no `IN` subquery at the top, got {other:?}"),
+    }
 }
 
 /// The schema and name of each function a call reaches.
@@ -1290,6 +1322,39 @@ async fn test_database_build() {
                     pg_diesel::sql_traits::errors::LookupError::CallNotInExpression { .. }
                 ))
         );
+
+        // A set-returning call written in `FROM` inside a policy's subquery
+        // reaches its function from either clause, matched by address, so the
+        // same call parsed apart is refused under its written name.
+        let from_visible = database
+            .policies()
+            .find(|policy| PolicyLike::name(policy) == "parents_from_visible")
+            .expect("the policy is recorded");
+        let using = from_visible
+            .using_expression(&database)
+            .expect("in database")
+            .expect("the policy carries a `USING` expression");
+        let check = from_visible
+            .check_expression(&database)
+            .expect("in database")
+            .expect("the policy carries a `WITH CHECK` expression");
+        for clause in [using, check] {
+            let reached: Vec<&str> = from_visible
+                .functions_reached_by(from_call(clause), &database)
+                .expect("the call is a node of the expression")
+                .map(FunctionLike::name)
+                .collect();
+            assert_eq!(reached, vec!["visible_ids"], "{clause}");
+        }
+        let copy = using.clone();
+        let refused = from_visible
+            .functions_reached_by(from_call(&copy), &database)
+            .map(|_| ())
+            .expect_err("a copy of the call is no node of the expression");
+        let LookupError::CallNotInExpression { call } = refused else {
+            panic!("a call outside the expression is refused, got {refused:?}")
+        };
+        assert_eq!(call, "app.visible_ids()");
 
         // A column grant on a relation that is no table resolves to that
         // relation, and the grant names the role that granted it.
