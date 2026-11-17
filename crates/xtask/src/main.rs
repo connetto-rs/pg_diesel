@@ -223,6 +223,7 @@ fn manifest(major: u32) -> String {
 name = "pg_diesel_pg{major}"
 version = "0.1.0"
 edition = "2024"
+rust-version.workspace = true
 description = "The PostgreSQL {major} catalog of pg_diesel"
 license = "MIT"
 readme = "README.md"

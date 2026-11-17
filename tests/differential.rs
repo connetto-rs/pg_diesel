@@ -242,7 +242,7 @@ fn server_facts(
 
 /// Returns the bootstrap superuser of the database `live` was read from,
 /// with the keys of its range and multirange constructor functions, which
-/// PostgreSQL names after the type they return.
+/// `PostgreSQL` names after the type they return.
 fn expected_context(
     connection: &mut PgConnection,
     live: &PgDieselDatabase,

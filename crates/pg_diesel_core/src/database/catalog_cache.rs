@@ -39,7 +39,7 @@ pub struct CompositeAttribute {
 /// The catalog rows a build resolves by OID, loaded once.
 ///
 /// `pg_proc` alone names a type per argument and a role per function, and a
-/// PostgreSQL database carries thousands of functions, so resolving each of
+/// `PostgreSQL` database carries thousands of functions, so resolving each of
 /// those by its own query dominates the cost of building a database.
 #[derive(Debug, Clone, Default)]
 pub struct CatalogCache {

@@ -123,7 +123,7 @@ fn load(connection: &mut PgConnection) -> PgDieselDatabase {
         .unwrap()
 }
 
-/// Spells a qualified operator using PostgreSQL's operator syntax.
+/// Spells a qualified operator using `PostgreSQL`'s operator syntax.
 fn operator_sql(operator: &TargetName<'_>) -> String {
     operator.schema().map_or_else(
         || operator.name().to_owned(),

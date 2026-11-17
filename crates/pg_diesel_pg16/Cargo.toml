@@ -3,6 +3,7 @@
 name = "pg_diesel_pg16"
 version = "0.1.0"
 edition = "2024"
+rust-version.workspace = true
 description = "The PostgreSQL 16 catalog of pg_diesel"
 license = "MIT"
 readme = "README.md"

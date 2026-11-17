@@ -2,8 +2,8 @@
 //!
 //! A membership is one per granted role and member, and `pg_auth_members`
 //! holds one row per grantor, so the options of the membership hold when
-//! any of the grantor rows carries them, which is how PostgreSQL decides
-//! `SET ROLE` and privilege inheritance. Before PostgreSQL 16 the `INHERIT`
+//! any of the grantor rows carries them, which is how `PostgreSQL` decides
+//! `SET ROLE` and privilege inheritance. Before `PostgreSQL` 16 the `INHERIT`
 //! and `SET` options are not stored per membership. The in-effect `INHERIT`
 //! is the member's own attribute, and `SET` was always in effect.
 

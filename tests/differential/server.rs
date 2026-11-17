@@ -10,7 +10,7 @@ use std::{
 
 use diesel::{
     ExpressionMethods, JoinOnDsl, PgConnection, QueryDsl, RunQueryDsl,
-    sql_types::{Bool, Oid, SmallInt, Text},
+    sql_types::{Oid, SmallInt, Text},
 };
 use pg_diesel::{
     schema::pg_catalog::{pg_namespace::pg_namespace, pg_policy::pg_policy},
@@ -62,7 +62,7 @@ diesel::define_sql_function! {
 /// knows, whether `pg_has_role` grants the first role the privilege on the
 /// second, as the facts the describer names.
 ///
-/// `SET` is a `pg_has_role` privilege from PostgreSQL 16 on, so a server of
+/// `SET` is a `pg_has_role` privilege from `PostgreSQL` 16 on, so a server of
 /// an older `server_major` is asked about the others only.
 ///
 /// # Errors
@@ -126,7 +126,7 @@ fn columns(
 /// `has_column_privilege` grant the role the privilege, as the facts the
 /// describer names.
 ///
-/// `MAINTAIN` is a table privilege from PostgreSQL 17 on, so a server of an
+/// `MAINTAIN` is a table privilege from `PostgreSQL` 17 on, so a server of an
 /// older `server_major` is asked about the others only.
 ///
 /// # Errors

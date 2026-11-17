@@ -209,7 +209,8 @@ fn relation_options_for<'a>(
     schema
         .zip(name)
         .and_then(|(schema, name)| options.get(&(schema.to_owned(), name.to_owned())))
-        .map_or_default(Vec::as_slice)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
 }
 
 #[derive(Default)]
