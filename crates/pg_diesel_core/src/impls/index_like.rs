@@ -4,9 +4,10 @@ use std::borrow::Cow;
 
 use sql_traits::{
     errors::{LookupError, ObjectKind},
+    structs::WrittenCall,
     traits::{DatabaseLike, IndexLike, Metadata},
 };
-use sqlparser::ast::{Expr, Function};
+use sqlparser::ast::Expr;
 
 use crate::{
     PgDieselDatabase,
@@ -69,12 +70,13 @@ impl IndexLike for PgIndexEntry {
         PgIndexEntry::predicate(self)
     }
 
-    fn functions_reached_by<'db>(
+    fn functions_reached_by<'db, 'call>(
         &'db self,
-        call: &Function,
+        call: impl Into<WrittenCall<'call>>,
         database: &'db Self::DB,
     ) -> Result<impl Iterator<Item = &'db <Self::DB as DatabaseLike>::Function> + 'db, LookupError>
     {
+        let call = call.into();
         let metadata = metadata(self, database)?;
         metadata
             .expression_calls()

@@ -4,13 +4,13 @@ use std::borrow::Cow;
 
 use sql_traits::{
     errors::{LookupError, ObjectKind},
-    structs::TargetName,
+    structs::{TargetName, WrittenCall},
     traits::{
         ColumnCollation, ColumnLike, CreatedFromQuery, DatabaseLike, IdentityGeneration, Metadata,
         NamedColumnCollation,
     },
 };
-use sqlparser::ast::{Expr, Function};
+use sqlparser::ast::Expr;
 
 use crate::{
     PgDieselDatabase,
@@ -136,12 +136,13 @@ impl ColumnLike for PgColumn {
         PgColumn::generation_expression(self)
     }
 
-    fn functions_reached_by<'db>(
+    fn functions_reached_by<'db, 'call>(
         &'db self,
-        call: &Function,
+        call: impl Into<WrittenCall<'call>>,
         database: &'db Self::DB,
     ) -> Result<impl Iterator<Item = &'db <Self::DB as DatabaseLike>::Function> + 'db, LookupError>
     {
+        let call = call.into();
         let metadata = metadata(self, database)?;
         PgColumn::default_expression(self)
             .and_then(|default| metadata.default_calls().reached_by(default, call))

@@ -2,9 +2,10 @@
 
 use sql_traits::{
     errors::{LookupError, ObjectKind},
+    structs::WrittenCall,
     traits::{DatabaseLike, DomainLike, Metadata},
 };
-use sqlparser::ast::{Expr, Function};
+use sqlparser::ast::Expr;
 
 use crate::{
     PgDieselDatabase,
@@ -52,12 +53,13 @@ impl DomainLike for PgDomainEntry {
         PgDomainEntry::check_expressions(self).iter()
     }
 
-    fn functions_reached_by<'db>(
+    fn functions_reached_by<'db, 'call>(
         &'db self,
-        call: &Function,
+        call: impl Into<WrittenCall<'call>>,
         database: &'db Self::DB,
     ) -> Result<impl Iterator<Item = &'db <Self::DB as DatabaseLike>::Function> + 'db, LookupError>
     {
+        let call = call.into();
         let metadata = database
             .domain_metadata(self)
             .ok_or_else(|| ObjectKind::Domain.not_in_database(PgDomainEntry::name(self)))?;
