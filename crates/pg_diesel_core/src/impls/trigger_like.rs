@@ -2,8 +2,8 @@
 
 use sql_traits::{
     errors::LookupError,
-    structs::TargetName,
-    traits::{DatabaseLike, Metadata, TriggerLike},
+    structs::{TargetName, TriggerEnablement},
+    traits::{DatabaseLike, Metadata, TableLike, TriggerLike},
 };
 use sqlparser::ast::{Expr, TriggerEvent, TriggerObjectKind, TriggerPeriod};
 
@@ -49,6 +49,27 @@ impl TriggerLike for TriggerMetadata {
 
     fn condition(&self) -> Option<&Expr> {
         self.condition.as_ref()
+    }
+
+    fn parent_trigger<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<Option<&'db <Self::DB as DatabaseLike>::Trigger>, LookupError>
+    where
+        Self: 'db,
+    {
+        if self.model.tgparentid == 0 {
+            return Ok(None);
+        }
+        let Some(parent_table) = TableLike::partition_root(self.table.as_ref(), database)? else {
+            return Ok(None);
+        };
+        Ok(TableLike::triggers(parent_table, database)?
+            .find(|trigger| trigger.model.oid == self.model.tgparentid))
+    }
+
+    fn enablement(&self, _database: &Self::DB) -> Result<TriggerEnablement, LookupError> {
+        Ok(self.enablement)
     }
 
     fn function<'db>(

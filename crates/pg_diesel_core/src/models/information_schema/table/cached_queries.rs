@@ -4,7 +4,7 @@ use diesel::{
     BoolExpressionMethods, ExpressionMethods, JoinOnDsl, NullableExpressionMethods,
     OptionalExtension, PgConnection, QueryDsl, RunQueryDsl, SelectableHelper,
     dsl::sql,
-    sql_types::{Nullable, Text},
+    sql_types::{Bool, Nullable, Text},
 };
 
 use crate::{
@@ -247,6 +247,10 @@ pub(crate) fn standalone_indices(
 /// trigger, with the name the engine records the function they execute under
 /// and, for a trigger with a `WHEN` condition, the `CREATE TRIGGER` statement
 /// `pg_get_triggerdef` prints, the one place the condition reads as SQL.
+///
+/// A partition's copy of a trigger on its partitioned table is internal
+/// before `PostgreSQL` 15, and it is told apart from the engine's own
+/// triggers by the dependency on the trigger it copies.
 pub(crate) fn triggers(
     table_oid: u32,
     conn: &mut PgConnection,
@@ -256,7 +260,12 @@ pub(crate) fn triggers(
     pg_trigger::table
         .inner_join(pg_proc::table.on(pg_trigger::tgfoid.eq(pg_proc::oid)))
         .filter(pg_trigger::tgrelid.eq(table_oid))
-        .filter(pg_trigger::tgisinternal.eq(false))
+        .filter(pg_trigger::tgisinternal.eq(false).or(sql::<Bool>(
+            "EXISTS (SELECT 1 FROM pg_catalog.pg_depend \
+             WHERE pg_depend.objid = pg_trigger.oid \
+             AND pg_depend.classid = 'pg_catalog.pg_trigger'::pg_catalog.regclass \
+             AND pg_depend.refclassid = 'pg_catalog.pg_trigger'::pg_catalog.regclass)",
+        )))
         .order_by(pg_trigger::oid)
         .select((
             PgTrigger::as_select(),

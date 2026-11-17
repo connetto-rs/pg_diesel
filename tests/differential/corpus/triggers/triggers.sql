@@ -1,6 +1,6 @@
 -- Triggers at both timings and both orientations, each carrying the events
--- it runs for, some of them several, and some firing only under a `WHEN`
--- condition.
+-- it runs for, some of them several, some firing only under a `WHEN`
+-- condition, and some disabled or firing in other replication roles.
 DROP SCHEMA IF EXISTS app CASCADE;
 CREATE SCHEMA app;
 CREATE FUNCTION app.touch() RETURNS trigger
@@ -39,3 +39,8 @@ CREATE TRIGGER notes_statement_guard
     FOR EACH STATEMENT
     WHEN (current_setting('app.audit', true) = 'on')
     EXECUTE FUNCTION app.touch();
+ALTER TABLE app.log DISABLE TRIGGER log_after_delete;
+ALTER TABLE app.log ENABLE REPLICA TRIGGER log_before_row;
+ALTER TABLE app.notes ENABLE ALWAYS TRIGGER notes_body_changed;
+ALTER TABLE app.notes DISABLE TRIGGER notes_statement_guard;
+ALTER TABLE app.notes ENABLE TRIGGER notes_statement_guard;
