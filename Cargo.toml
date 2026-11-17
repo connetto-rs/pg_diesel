@@ -9,6 +9,9 @@ members = [
   "crates/xtask",
 ]
 
+[workspace.package]
+rust-version = "1.95"
+
 [workspace.dependencies]
 diesel = { version = "2.4", features = [
   "postgres",
@@ -27,6 +30,7 @@ thiserror = "2.0.17"
 name = "pg_diesel"
 version = "0.1.0"
 edition = "2024"
+rust-version.workspace = true
 
 [dependencies]
 pg_diesel_core = { path = "crates/pg_diesel_core", version = "0.1.0" }

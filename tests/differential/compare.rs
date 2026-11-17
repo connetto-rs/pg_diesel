@@ -4,14 +4,14 @@
 //! comparison is the symmetric difference of two maps. A fact names the
 //! object it belongs to and the property it states, for example
 //! `table public.posts / column body / nullable`. Identifiers enter the names
-//! in the form PostgreSQL stores them, which is what
+//! in the form `PostgreSQL` stores them, which is what
 //! [`identifiers_match`](pg_diesel::sql_traits::utils::identifier_resolution::identifiers_match)
 //! compares.
 //!
 //! Expressions are compared as parsed [`Expr`] trees, after both sides pass
-//! through the print PostgreSQL stores. The live model already holds that
+//! through the print `PostgreSQL` stores. The live model already holds that
 //! print. The source model's expressions go through a [`StoredForm`], which
-//! writes them into a scratch object and reads PostgreSQL's print back.
+//! writes them into a scratch object and reads `PostgreSQL`'s print back.
 //!
 //! Nothing here depends on a test framework, so the routine can serve a
 //! caller that compares a parsed schema with a live database at run time.

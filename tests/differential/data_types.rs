@@ -1,4 +1,4 @@
-//! Declared type facts loaded from PostgreSQL catalogs.
+//! Declared type facts loaded from `PostgreSQL` catalogs.
 
 use diesel::{
     RunQueryDsl,

@@ -1,4 +1,4 @@
-//! Shared declarations and matching PostgreSQL operator catalogs.
+//! Shared declarations and matching `PostgreSQL` operator catalogs.
 
 use pg_diesel::sql_traits::prelude::{
     CastContext, PostgresCatalog, PostgresCatalogCast, PostgresCatalogOperator, TargetName,
