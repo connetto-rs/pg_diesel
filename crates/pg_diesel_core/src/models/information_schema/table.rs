@@ -15,7 +15,8 @@ use crate::{
     model_metadata::{
         ColumnMetadata, PgCheckConstraint, PgColumn, PgDataType, PgForeignKey, PgIndexEntry,
         PgPolicy, PgTable, TableMetadata, TableMetadataDetails, TriggerConditionError,
-        TriggerMetadata, parse_printed_expression, storage_option_entries, when_condition,
+        TriggerMetadata, decode_enablement, parse_printed_expression, storage_option_entries,
+        when_condition,
     },
     models::Column,
 };
@@ -168,6 +169,19 @@ pub enum TableMetadataError {
         /// Why the definition yields no condition, boxed to keep the error
         /// small.
         source: Box<TriggerConditionError>,
+    },
+    /// A trigger's `pg_trigger.tgenabled` holds a value `PostgreSQL` does not
+    /// document.
+    #[error("trigger {trigger} on table {schema}.{table} has the unknown tgenabled `{tgenabled}`")]
+    UnknownTriggerEnablement {
+        /// The schema of the table.
+        schema: String,
+        /// The name of the table.
+        table: String,
+        /// The name of the trigger.
+        trigger: String,
+        /// The value `pg_trigger.tgenabled` holds.
+        tgenabled: String,
     },
 }
 
@@ -374,12 +388,21 @@ impl Table {
                         })
                     })
                     .transpose()?;
+                let Some(enablement) = decode_enablement(&trigger.tgenabled) else {
+                    return Err(TableMetadataError::UnknownTriggerEnablement {
+                        schema: self.table_schema.clone(),
+                        table: self.table_name.clone(),
+                        trigger: trigger.tgname,
+                        tgenabled: trigger.tgenabled,
+                    });
+                };
                 Ok(Arc::new(TriggerMetadata::new(
                     trigger,
                     Arc::clone(table),
                     function_name,
                     update_columns,
                     condition,
+                    enablement,
                 )))
             })
             .collect::<Result<_, TableMetadataError>>()?;

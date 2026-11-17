@@ -1555,6 +1555,18 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 format!("{:?}", trigger.orientation()),
             );
             self.text(
+                format!("{trigger_subject} / enablement"),
+                format!("{:?}", trigger.enablement(database)?),
+            );
+            let parent = match trigger.parent_trigger(database)? {
+                Some(parent) => Some((self.table_name(parent.table(database)?), parent.name())),
+                None => None,
+            };
+            self.text(
+                format!("{trigger_subject} / parent trigger"),
+                format!("{parent:?}"),
+            );
+            self.text(
                 format!("{trigger_subject} / function"),
                 format!("{:?}", trigger.function_name()),
             );

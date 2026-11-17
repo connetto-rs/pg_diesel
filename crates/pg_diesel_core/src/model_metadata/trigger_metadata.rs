@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use sql_traits::structs::TriggerEnablement;
 use sqlparser::{
     ast::{Expr, Ident, Statement, TriggerEvent, TriggerObject, TriggerObjectKind, TriggerPeriod},
     dialect::PostgreSqlDialect,
@@ -45,6 +46,9 @@ pub struct TriggerMetadata {
     /// The `WHEN` condition the trigger fires under, without the parentheses
     /// `WHEN` writes around it.
     pub condition: Option<Expr>,
+    /// The sessions the trigger fires in, as `pg_trigger.tgenabled` records
+    /// them.
+    pub enablement: TriggerEnablement,
 }
 
 /// What stopped a trigger definition from yielding its `WHEN` condition.
@@ -82,10 +86,23 @@ pub(crate) fn when_condition(definition: &str) -> Result<Expr, TriggerConditionE
     }
 }
 
+/// Decodes the sessions a `pg_trigger.tgenabled` value fires the trigger in,
+/// or `None` for a value `PostgreSQL` does not document.
+pub(crate) fn decode_enablement(tgenabled: &str) -> Option<TriggerEnablement> {
+    match tgenabled {
+        "O" => Some(TriggerEnablement::Origin),
+        "D" => Some(TriggerEnablement::Disabled),
+        "R" => Some(TriggerEnablement::Replica),
+        "A" => Some(TriggerEnablement::Always),
+        _ => None,
+    }
+}
+
 impl TriggerMetadata {
     /// Creates a `TriggerMetadata` over a `pg_trigger` row, decoding the
     /// events, timing and orientation the row's `tgtype` mask holds, beside
-    /// the columns an `UPDATE` event fires on and the `WHEN` condition.
+    /// the columns an `UPDATE` event fires on, the `WHEN` condition and the
+    /// sessions the trigger fires in.
     #[must_use]
     pub fn new(
         model: PgTrigger,
@@ -93,6 +110,7 @@ impl TriggerMetadata {
         function_name: String,
         update_columns: Vec<String>,
         condition: Option<Expr>,
+        enablement: TriggerEnablement,
     ) -> Self {
         Self {
             events: decode_events(model.tgtype, update_columns),
@@ -101,6 +119,7 @@ impl TriggerMetadata {
             function_oid: model.tgfoid,
             function_name,
             condition,
+            enablement,
             model,
             table,
         }
@@ -187,5 +206,10 @@ mod tests {
         )
         .expect_err("the definition carries no condition");
         assert!(matches!(error, TriggerConditionError::UnexpectedShape));
+    }
+
+    #[test]
+    fn an_undocumented_tgenabled_value_decodes_to_no_enablement() {
+        assert_eq!(decode_enablement("X"), None);
     }
 }
