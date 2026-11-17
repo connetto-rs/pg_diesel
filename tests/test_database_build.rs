@@ -17,8 +17,9 @@ use pg_diesel::sqlparser::{
 };
 use pg_diesel::{
     PgDieselDatabase,
-    database::PgDieselDatabaseBuilder,
+    database::{PgDatabaseBuildError, PgDieselDatabaseBuilder},
     model_metadata::PgTable,
+    models::TableMetadataError,
     sql_traits::{
         errors::LookupError,
         structs::{
@@ -719,6 +720,56 @@ async fn foreign_key_deferral() {
             ]),
             "PostgreSQL {major}"
         );
+    }
+}
+
+#[tokio::test]
+async fn undocumented_trigger_enablement_is_refused() {
+    for &major in COMPILED_MAJORS {
+        let database_name = "undocumented_trigger_enablement";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("the database starts");
+        let mut conn: PgConnection =
+            establish_connection(docker.port, database_name).expect("the connection opens");
+        conn.batch_execute(
+            "
+            CREATE TABLE public.t (id INTEGER);
+            CREATE FUNCTION public.f() RETURNS trigger LANGUAGE plpgsql
+                AS $$ BEGIN RETURN NEW; END $$;
+            CREATE TRIGGER audit AFTER INSERT ON public.t
+                FOR EACH ROW EXECUTE FUNCTION public.f();
+            UPDATE pg_catalog.pg_trigger SET tgenabled = 'X' WHERE tgname = 'audit';
+            ",
+        )
+        .expect("the trigger fixture applies");
+
+        let refused: Result<PgDieselDatabase, PgDatabaseBuildError> =
+            PgDieselDatabaseBuilder::default()
+                .connection(&mut conn)
+                .catalog(database_name)
+                .schema("public")
+                .try_into();
+        match refused {
+            Err(PgDatabaseBuildError::TableMetadata(
+                TableMetadataError::UnknownTriggerEnablement {
+                    schema,
+                    table,
+                    trigger,
+                    tgenabled,
+                },
+            )) => assert_eq!(
+                (
+                    schema.as_str(),
+                    table.as_str(),
+                    trigger.as_str(),
+                    tgenabled.as_str()
+                ),
+                ("public", "t", "audit", "X"),
+                "PostgreSQL {major}"
+            ),
+            other => panic!("PostgreSQL {major} loads an undocumented tgenabled: {other:?}"),
+        }
     }
 }
 

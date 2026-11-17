@@ -61,11 +61,10 @@ impl TriggerLike for TriggerMetadata {
         if self.model.tgparentid == 0 {
             return Ok(None);
         }
-        let Some(parent_table) = TableLike::partition_root(self.table.as_ref(), database)? else {
-            return Ok(None);
-        };
-        Ok(TableLike::triggers(parent_table, database)?
-            .find(|trigger| trigger.model.oid == self.model.tgparentid))
+        TableLike::partition_root(self.table.as_ref(), database)?
+            .map(|parent_table| TableLike::triggers(parent_table, database))
+            .transpose()
+            .map(|triggers| triggers?.find(|trigger| trigger.model.oid == self.model.tgparentid))
     }
 
     fn enablement(&self, _database: &Self::DB) -> Result<TriggerEnablement, LookupError> {
