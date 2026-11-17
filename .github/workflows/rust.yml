@@ -40,18 +40,16 @@ jobs:
       run: cargo xtask generate --check
 
   clippy:
-    name: Clippy (${{ matrix.features }})
+    name: Clippy (${{ matrix.name }})
     runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
-        features:
-          - postgres-14
-          - postgres-15
-          - postgres-16
-          - postgres-17
-          - postgres-18
-          - postgres-14,postgres-15,postgres-16,postgres-17,postgres-18,serde,routines
+        include:
+          - name: each PostgreSQL version alone
+            feature-sets: postgres-14 postgres-15 postgres-16 postgres-17 postgres-18
+          - name: every feature
+            feature-sets: postgres-14,postgres-15,postgres-16,postgres-17,postgres-18,serde,routines
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
     - name: Install Rust
@@ -62,8 +60,20 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y libfontconfig1-dev libpq-dev
-    - name: Run clippy (${{ matrix.features }})
-      run: cargo clippy --workspace --all-targets --no-default-features --features "${{ matrix.features }}" -- -D warnings
+    - name: Run clippy (${{ matrix.name }})
+      env:
+        FEATURE_SETS: ${{ matrix.feature-sets }}
+      run: |
+        failed=""
+        for features in $FEATURE_SETS; do
+          echo "::group::$features"
+          cargo clippy --workspace --all-targets --no-default-features --features "$features" -- -D warnings || failed="$failed $features"
+          echo "::endgroup::"
+        done
+        if [ -n "$failed" ]; then
+          echo "::error::clippy failed for$failed"
+          exit 1
+        fi
 
   msrv:
     name: Clippy on the declared rust-version
