@@ -165,24 +165,28 @@ impl PgIndexEntry {
 
 #[cfg(test)]
 mod tests {
-    use sqlparser::{ast::Statement, dialect::PostgreSqlDialect, parser::Parser};
+    use sql_traits::{prelude::ParserDB, traits::DatabaseLike, traits::IndexLike};
+    use sqlparser::dialect::PostgreSqlDialect;
 
     use super::IndexShape;
 
     #[test]
-    fn an_access_method_answers_the_index_type_its_using_clause_parses_to() {
+    fn an_access_method_answers_what_parser_db_answers_for_its_using_clause() {
         for method in [
             "btree", "hash", "gin", "gist", "spgist", "brin", "bloom", "hnsw",
         ] {
-            let sql = format!("CREATE INDEX probe ON docs USING {method} (body)");
-            let statements =
-                Parser::parse_sql(&PostgreSqlDialect {}, &sql).expect("the statement parses");
-            let [Statement::CreateIndex(index)] = statements.as_slice() else {
-                panic!("{sql} parses to one CREATE INDEX");
-            };
+            let database = ParserDB::parse::<PostgreSqlDialect>(&format!(
+                "CREATE TABLE docs (body text);
+                 CREATE INDEX probe ON docs USING {method} (body);"
+            ))
+            .expect("the schema parses");
+            let index = database
+                .indexes()
+                .next()
+                .expect("the schema holds one index");
             assert_eq!(
                 Some(&IndexShape::new(method, Vec::new(), true).access_method),
-                index.using.as_ref(),
+                index.access_method(),
                 "{method}"
             );
         }
