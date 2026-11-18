@@ -30,6 +30,7 @@ pub use pg_foreign_key::PgForeignKey;
 mod pg_policy;
 pub use pg_policy::PgPolicy;
 mod pg_index_entry;
+pub(crate) use pg_index_entry::IndexShape;
 pub use pg_index_entry::PgIndexEntry;
 mod index_metadata;
 pub use index_metadata::IndexMetadata;

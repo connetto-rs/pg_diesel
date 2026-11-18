@@ -2,12 +2,13 @@
 
 use diesel::{
     BoolExpressionMethods, ExpressionMethods, JoinOnDsl, NullableExpressionMethods,
-    OptionalExtension, PgConnection, QueryDsl, RunQueryDsl, SelectableHelper,
+    OptionalExtension, PgConnection, QueryDsl, Queryable, RunQueryDsl, SelectableHelper,
     dsl::sql,
     sql_types::{Bool, Nullable, Text},
 };
 
 use crate::{
+    database::ServerVersion,
     models::{Column, KeyColumnUsage, PgDescription, PgTrigger, Table},
     shared::models::PgIndex,
 };
@@ -155,9 +156,22 @@ pub(crate) fn foreign_keys(
         .load::<KeyColumnUsage>(conn)
 }
 
-/// An index row with the name `pg_class` records the index relation under
-/// and the predicate `pg_get_expr` prints for a partial index.
-pub(crate) type IndexRow = (PgIndex, String, Option<String>);
+/// An index row with the name `pg_class` records the index relation under,
+/// the name of its access method, whether it treats nulls as equal to one
+/// another, and the predicate `pg_get_expr` prints for a partial index.
+#[derive(Queryable)]
+pub(crate) struct IndexRow {
+    /// The `pg_index` row.
+    pub(crate) index: PgIndex,
+    /// The name of the index relation.
+    pub(crate) name: String,
+    /// The `pg_am.amname` of the index's access method.
+    pub(crate) access_method: String,
+    /// Whether the index was created `NULLS NOT DISTINCT`.
+    pub(crate) nulls_not_distinct: bool,
+    /// The predicate of a partial index as `pg_get_expr` prints it.
+    pub(crate) predicate: Option<String>,
+}
 
 /// The predicate of the selected `pg_index` row as `pg_get_expr` prints it,
 /// `NULL` for an index over every row.
@@ -165,23 +179,44 @@ fn printed_predicate() -> diesel::expression::SqlLiteral<Nullable<Text>> {
     sql::<Nullable<Text>>("pg_get_expr(indpred, indrelid)")
 }
 
+/// Whether the selected `pg_index` row treats nulls as equal to one another,
+/// which a server of `version` records only from `PostgreSQL` 15 on.
+fn nulls_not_distinct(version: ServerVersion) -> diesel::expression::SqlLiteral<Bool> {
+    sql::<Bool>(if version.records_nulls_not_distinct() {
+        "indnullsnotdistinct"
+    } else {
+        "false"
+    })
+}
+
 /// Returns the indices of the table with OID `table_oid` a `PRIMARY KEY` or
-/// `UNIQUE` constraint created.
+/// `UNIQUE` constraint created, read from a server of `version`.
 pub(crate) fn unique_indices(
     table_oid: u32,
+    version: ServerVersion,
     conn: &mut PgConnection,
 ) -> Result<Vec<IndexRow>, diesel::result::Error> {
-    use crate::shared::schema::pg_catalog::{pg_class, pg_constraint, pg_index};
+    use crate::{
+        schema::pg_catalog::pg_am::pg_am,
+        shared::schema::pg_catalog::{pg_class, pg_constraint, pg_index},
+    };
 
     pg_index::table
         .inner_join(pg_class::table.on(pg_class::oid.eq(pg_index::indexrelid)))
+        .inner_join(pg_am::table.on(pg_am::oid.eq(pg_class::relam)))
         .filter(pg_index::indrelid.eq(table_oid))
         .filter(diesel::dsl::exists(
             pg_constraint::table
                 .select(pg_constraint::oid)
                 .filter(pg_constraint::conindid.eq(pg_index::indexrelid)),
         ))
-        .select((PgIndex::as_select(), pg_class::relname, printed_predicate()))
+        .select((
+            PgIndex::as_select(),
+            pg_class::relname,
+            pg_am::amname,
+            nulls_not_distinct(version),
+            printed_predicate(),
+        ))
         .load::<IndexRow>(conn)
 }
 
@@ -211,35 +246,48 @@ pub(crate) fn index_constraint_names(
         .load::<(u32, String)>(conn)
 }
 
-/// Returns all indices of the table with OID `table_oid`.
+/// Returns all indices of the table with OID `table_oid`, read from a server
+/// of `version`.
 pub(crate) fn indices(
     table_oid: u32,
+    version: ServerVersion,
     conn: &mut PgConnection,
 ) -> Result<Vec<IndexRow>, diesel::result::Error> {
-    use crate::shared::schema::pg_catalog::{pg_class, pg_index};
+    use crate::{
+        schema::pg_catalog::pg_am::pg_am,
+        shared::schema::pg_catalog::{pg_class, pg_index},
+    };
 
     pg_index::table
         .inner_join(pg_class::table.on(pg_class::oid.eq(pg_index::indexrelid)))
+        .inner_join(pg_am::table.on(pg_am::oid.eq(pg_class::relam)))
         .filter(pg_index::indrelid.eq(table_oid))
-        .select((PgIndex::as_select(), pg_class::relname, printed_predicate()))
+        .select((
+            PgIndex::as_select(),
+            pg_class::relname,
+            pg_am::amname,
+            nulls_not_distinct(version),
+            printed_predicate(),
+        ))
         .load::<IndexRow>(conn)
 }
 
 /// Returns the indices of the table with OID `table_oid` no constraint
-/// created, unique or not.
+/// created, unique or not, read from a server of `version`.
 pub(crate) fn standalone_indices(
     table_oid: u32,
+    version: ServerVersion,
     conn: &mut PgConnection,
 ) -> Result<Vec<IndexRow>, diesel::result::Error> {
-    let all = indices(table_oid, conn)?;
-    let backed: Vec<u32> = unique_indices(table_oid, conn)?
+    let all = indices(table_oid, version, conn)?;
+    let backed: Vec<u32> = unique_indices(table_oid, version, conn)?
         .into_iter()
-        .map(|(pg_index, _, _)| pg_index.indexrelid)
+        .map(|row| row.index.indexrelid)
         .collect();
 
     Ok(all
         .into_iter()
-        .filter(|(pg_index, _, _)| !backed.contains(&pg_index.indexrelid))
+        .filter(|row| !backed.contains(&row.index.indexrelid))
         .collect())
 }
 

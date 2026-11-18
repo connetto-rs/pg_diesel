@@ -13,10 +13,10 @@ use crate::{
     database::{CatalogCache, ServerVersion},
     impls::string_to_action,
     model_metadata::{
-        ColumnMetadata, PgCheckConstraint, PgColumn, PgDataType, PgForeignKey, PgIndexEntry,
-        PgPolicy, PgTable, TableMetadata, TableMetadataDetails, TriggerConditionError,
-        TriggerMetadata, decode_enablement, parse_printed_expression, storage_option_entries,
-        when_condition,
+        ColumnMetadata, IndexShape, PgCheckConstraint, PgColumn, PgDataType, PgForeignKey,
+        PgIndexEntry, PgPolicy, PgTable, TableMetadata, TableMetadataDetails,
+        TriggerConditionError, TriggerMetadata, decode_enablement, parse_printed_expression,
+        storage_option_entries, when_condition,
     },
     models::Column,
 };
@@ -214,7 +214,8 @@ impl Table {
     }
 
     /// Pairs the `pg_index` row of one of this table's indexes with its name,
-    /// its parsed predicate and the constraint it enforces.
+    /// its shape, its parsed predicate and the constraint it enforces, naming
+    /// the columns of its `INCLUDE` list from the table's `attributes`.
     ///
     /// # Errors
     ///
@@ -222,9 +223,17 @@ impl Table {
     /// printed predicate does not parse.
     fn index_entry(
         &self,
-        (index, name, predicate): IndexRow,
+        row: IndexRow,
+        attributes: &[AttributeFacts],
         constraint_name: Option<String>,
     ) -> Result<PgIndexEntry, TableMetadataError> {
+        let IndexRow {
+            index,
+            name,
+            access_method,
+            nulls_not_distinct,
+            predicate,
+        } = row;
         let predicate = predicate
             .map(|printed| {
                 parse_printed_expression(&printed).map_err(|source| {
@@ -237,10 +246,21 @@ impl Table {
                 })
             })
             .transpose()?;
+        let include_column_names = index
+            .included_attributes()
+            .iter()
+            .filter_map(|number| {
+                attributes
+                    .iter()
+                    .find(|attribute| attribute.number == *number)
+                    .map(|attribute| attribute.name.clone())
+            })
+            .collect();
         Ok(PgIndexEntry::new(
             index,
             self.table_schema.clone(),
             name,
+            IndexShape::new(&access_method, include_column_names, !nulls_not_distinct),
             constraint_name,
             predicate,
         ))
@@ -341,12 +361,16 @@ impl Table {
         let mut constraint_names = index_constraint_names(facts.oid, conn)?
             .into_iter()
             .collect::<HashMap<_, _>>();
-        for row in cached_queries::unique_indices(facts.oid, conn)? {
-            let constraint_name = constraint_names.remove(&row.0.indexrelid);
-            sql_metadata.add_unique_index(Arc::new(self.index_entry(row, constraint_name)?));
+        for row in cached_queries::unique_indices(facts.oid, version, conn)? {
+            let constraint_name = constraint_names.remove(&row.index.indexrelid);
+            sql_metadata.add_unique_index(Arc::new(self.index_entry(
+                row,
+                &attributes,
+                constraint_name,
+            )?));
         }
-        for row in cached_queries::standalone_indices(facts.oid, conn)? {
-            sql_metadata.add_index(Arc::new(self.index_entry(row, None)?));
+        for row in cached_queries::standalone_indices(facts.oid, version, conn)? {
+            sql_metadata.add_index(Arc::new(self.index_entry(row, &attributes, None)?));
         }
         let mut primary_key_columns = Vec::new();
         for pk_column in cached_queries::primary_key_columns(self, conn)? {

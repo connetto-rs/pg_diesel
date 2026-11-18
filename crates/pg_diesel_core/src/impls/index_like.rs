@@ -5,13 +5,13 @@ use std::borrow::Cow;
 use sql_traits::{
     errors::{LookupError, ObjectKind},
     structs::WrittenCall,
-    traits::{DatabaseLike, IndexLike, Metadata},
+    traits::{DatabaseLike, IndexLike, Metadata, TableLike},
 };
-use sqlparser::ast::Expr;
+use sqlparser::ast::{Expr, IndexType};
 
 use crate::{
     PgDieselDatabase,
-    model_metadata::{IndexMetadata, PgIndexEntry},
+    model_metadata::{IndexMetadata, PgColumn, PgIndexEntry},
 };
 
 impl Metadata for PgIndexEntry {
@@ -66,8 +66,35 @@ impl IndexLike for PgIndexEntry {
         Ok(metadata(self, database)?.expression())
     }
 
+    fn access_method(&self) -> Option<&IndexType> {
+        Some(PgIndexEntry::access_method(self))
+    }
+
+    fn include_columns<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<impl Iterator<Item = &'db <Self::DB as DatabaseLike>::Column>, LookupError>
+    where
+        Self: 'db,
+    {
+        let columns: Vec<&PgColumn> = metadata(self, database)?
+            .table()
+            .columns(database)?
+            .collect();
+        Ok(self.include_column_names().iter().filter_map(move |name| {
+            columns
+                .iter()
+                .copied()
+                .find(|column| column.column_name() == name)
+        }))
+    }
+
     fn predicate(&self) -> Option<&Expr> {
         PgIndexEntry::predicate(self)
+    }
+
+    fn nulls_distinct(&self) -> bool {
+        PgIndexEntry::nulls_distinct(self)
     }
 
     fn functions_reached_by<'db, 'call>(
@@ -113,7 +140,10 @@ fn metadata<'db>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{PgDieselDatabase, dialect::PostgresDialect, shared::models::PgIndex};
+    use crate::{
+        PgDieselDatabase, dialect::PostgresDialect, model_metadata::IndexShape,
+        shared::models::PgIndex,
+    };
 
     #[test]
     fn an_index_the_database_does_not_hold_is_reported_not_in_the_database() {
@@ -123,9 +153,11 @@ mod tests {
                 indrelid: 2,
                 indisunique: false,
                 indkey: vec![1],
+                indnkeyatts: 1,
             },
             "app".to_string(),
             "absent".to_string(),
+            IndexShape::new("btree", Vec::new(), true),
             None,
             None,
         );

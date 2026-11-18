@@ -19,6 +19,9 @@ const TABLE_PRIVILEGES: [&str; 8] = [
 /// The `PostgreSQL` major version that introduced the `MAINTAIN` privilege.
 const MAINTAIN_SINCE: u32 = 17;
 
+/// The `PostgreSQL` major version that introduced `NULLS NOT DISTINCT`.
+const NULLS_NOT_DISTINCT_SINCE: u32 = 15;
+
 /// The version a `PostgreSQL` server reports as `server_version_num`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ServerVersion(u32);
@@ -55,6 +58,12 @@ impl ServerVersion {
         } else {
             &TABLE_PRIVILEGES[..TABLE_PRIVILEGES.len() - 1]
         }
+    }
+
+    /// Returns whether this server records `NULLS NOT DISTINCT` in
+    /// `pg_index.indnullsnotdistinct`.
+    pub(crate) fn records_nulls_not_distinct(self) -> bool {
+        self.major() >= NULLS_NOT_DISTINCT_SINCE
     }
 }
 

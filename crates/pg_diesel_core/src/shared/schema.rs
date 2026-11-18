@@ -384,7 +384,7 @@ pub(crate) mod pg_catalog {
     use crate::schema::{
         information_schema::columns::columns,
         pg_catalog::{
-            pg_attrdef::pg_attrdef, pg_authid::pg_authid, pg_depend::pg_depend,
+            pg_am::pg_am, pg_attrdef::pg_attrdef, pg_authid::pg_authid, pg_depend::pg_depend,
             pg_description::pg_description, pg_namespace::pg_namespace, pg_rewrite::pg_rewrite,
             pg_sequence::pg_sequence, pg_type::pg_type,
         },
@@ -396,6 +396,9 @@ pub(crate) mod pg_catalog {
         pg_constraint,
         pg_index
     );
+    diesel::allow_tables_to_appear_in_same_query!(pg_am, pg_class);
+    diesel::allow_tables_to_appear_in_same_query!(pg_am, pg_constraint);
+    diesel::allow_tables_to_appear_in_same_query!(pg_am, pg_index);
     diesel::allow_tables_to_appear_in_same_query!(pg_class, columns);
     diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_attrdef);
     diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_depend);
