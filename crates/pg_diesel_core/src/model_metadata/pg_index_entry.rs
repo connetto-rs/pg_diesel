@@ -162,3 +162,29 @@ impl PgIndexEntry {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use sqlparser::{ast::Statement, dialect::PostgreSqlDialect, parser::Parser};
+
+    use super::IndexShape;
+
+    #[test]
+    fn an_access_method_answers_the_index_type_its_using_clause_parses_to() {
+        for method in [
+            "btree", "hash", "gin", "gist", "spgist", "brin", "bloom", "hnsw",
+        ] {
+            let sql = format!("CREATE INDEX probe ON docs USING {method} (body)");
+            let statements =
+                Parser::parse_sql(&PostgreSqlDialect {}, &sql).expect("the statement parses");
+            let [Statement::CreateIndex(index)] = statements.as_slice() else {
+                panic!("{sql} parses to one CREATE INDEX");
+            };
+            assert_eq!(
+                Some(&IndexShape::new(method, Vec::new(), true).access_method),
+                index.using.as_ref(),
+                "{method}"
+            );
+        }
+    }
+}
