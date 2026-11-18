@@ -42,8 +42,8 @@ use pg_diesel::{
     sqlparser::{
         ast::{
             Action, CreateRule, CreateTrigger, Expr, Function, FunctionDefinitionSetParam,
-            FunctionSetValue, Ident, IndexType, ObjectName, Query, Statement, Value as SqlValue,
-            Visit, Visitor, visit_expressions, visit_expressions_mut,
+            FunctionSetValue, Ident, IndexType, ObjectName, OrderByOptions, Query, Statement,
+            Value as SqlValue, Visit, Visitor, visit_expressions, visit_expressions_mut,
         },
         dialect::PostgreSqlDialect,
         parser::{Parser, ParserError},
@@ -1426,6 +1426,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                     .collect::<Vec<_>>()
                     .join(", "),
             );
+            self.text(format!("{index_subject} / keys"), self.index_keys(index)?);
             self.text(
                 format!("{index_subject} / reached functions"),
                 self.index_reached_functions(index)?,
@@ -1462,6 +1463,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                     .collect::<Vec<_>>()
                     .join(", "),
             );
+            self.text(format!("{index_subject} / keys"), self.index_keys(index)?);
             self.text(
                 format!("{index_subject} / include"),
                 index
@@ -1494,6 +1496,31 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             }
         }
         Ok(())
+    }
+
+    /// Returns the keys of an index in the order written, each as its
+    /// expression with every call renamed to the function it reaches,
+    /// followed by its operator class, sort direction and null ordering.
+    fn index_keys<I: IndexLike<DB = DB>>(&self, index: &I) -> Result<String, DescribeError> {
+        let database = self.database;
+        let mut keys = Vec::new();
+        for key in index.keys(database)? {
+            let expression = bound_text(key.expression(), |call| {
+                index
+                    .functions_reached_by(call, database)
+                    .map(qualified_name)
+            })?;
+            let operator_class = key
+                .operator_class()
+                .map(|operator_class| format!(" {operator_class}"))
+                .unwrap_or_default();
+            let options = OrderByOptions {
+                sort: key.order().cloned(),
+                nulls_first: key.nulls_first(),
+            };
+            keys.push(format!("{expression}{operator_class}{options}"));
+        }
+        Ok(keys.join(", "))
     }
 
     /// Returns the described functions the calls of an index's key and

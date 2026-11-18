@@ -158,7 +158,8 @@ pub(crate) fn foreign_keys(
 
 /// An index row with the name `pg_class` records the index relation under,
 /// the name of its access method, whether it treats nulls as equal to one
-/// another, and the predicate `pg_get_expr` prints for a partial index.
+/// another, the statement `pg_get_indexdef` prints for it, and the predicate
+/// `pg_get_expr` prints for a partial index.
 #[derive(Queryable)]
 pub(crate) struct IndexRow {
     /// The `pg_index` row.
@@ -169,8 +170,21 @@ pub(crate) struct IndexRow {
     pub(crate) access_method: String,
     /// Whether the index was created `NULLS NOT DISTINCT`.
     pub(crate) nulls_not_distinct: bool,
+    /// The `CREATE INDEX` statement `pg_get_indexdef` prints for the index.
+    pub(crate) definition: String,
     /// The predicate of a partial index as `pg_get_expr` prints it.
     pub(crate) predicate: Option<String>,
+}
+
+/// The `CREATE INDEX` statement of the selected `pg_index` row as
+/// `pg_get_indexdef` prints it, each key with the collation, operator class,
+/// sort direction and null ordering that differ from their defaults.
+///
+/// The pretty print wraps an expression key in the one pair of parentheses
+/// `CREATE INDEX` asks for, where the plain print adds a second pair around
+/// an operator expression.
+fn printed_definition() -> diesel::expression::SqlLiteral<Text> {
+    sql::<Text>("pg_get_indexdef(pg_index.indexrelid, 0, true)")
 }
 
 /// The predicate of the selected `pg_index` row as `pg_get_expr` prints it,
@@ -215,6 +229,7 @@ pub(crate) fn unique_indices(
             pg_class::relname,
             pg_am::amname,
             nulls_not_distinct(version),
+            printed_definition(),
             printed_predicate(),
         ))
         .load::<IndexRow>(conn)
@@ -267,6 +282,7 @@ pub(crate) fn indices(
             pg_class::relname,
             pg_am::amname,
             nulls_not_distinct(version),
+            printed_definition(),
             printed_predicate(),
         ))
         .load::<IndexRow>(conn)
