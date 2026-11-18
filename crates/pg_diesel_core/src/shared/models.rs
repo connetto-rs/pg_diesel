@@ -20,11 +20,33 @@ pub(crate) struct PgIndex {
     pub(crate) indrelid: u32,
     /// `true` if the index enforces uniqueness.
     pub(crate) indisunique: bool,
-    /// The column numbers of the indexed columns, `0` for an expression.
+    /// The column numbers of the indexed columns, `0` for an expression,
+    /// the key first and the `INCLUDE` list after it.
     pub(crate) indkey: Vec<i16>,
+    /// The number of key columns, those `indkey` lists before the `INCLUDE`
+    /// list.
+    pub(crate) indnkeyatts: i16,
 }
 
 impl PgIndex {
+    /// Returns the column numbers of the key, `0` for an expression.
+    pub(crate) fn key_attributes(&self) -> &[i16] {
+        self.indkey.split_at(self.key_count()).0
+    }
+
+    /// Returns the column numbers of the `INCLUDE` list, in the order
+    /// written.
+    pub(crate) fn included_attributes(&self) -> &[i16] {
+        self.indkey.split_at(self.key_count()).1
+    }
+
+    /// Returns how many entries of `indkey` belong to the key.
+    fn key_count(&self) -> usize {
+        usize::try_from(self.indnkeyatts)
+            .expect("pg_index.indnkeyatts counts columns")
+            .min(self.indkey.len())
+    }
+
     /// Returns the expression the index is defined over, its expression
     /// when it has one and the tuple of its columns otherwise.
     ///
@@ -75,14 +97,15 @@ impl PgIndex {
         ))
     }
 
-    /// Returns the columns that make up the index, in the order `indkey`
-    /// lists them, read from the table the index is defined on.
+    /// Returns the key columns of the index, in the order `indkey` lists
+    /// them, read from the table the index is defined on.
     fn columns(&self, conn: &mut PgConnection) -> Result<Vec<Column>, diesel::result::Error> {
         use super::schema::pg_catalog::{pg_attribute, pg_class};
         use crate::schema::{
             information_schema::columns::columns, pg_catalog::pg_namespace::pg_namespace,
         };
 
+        let key = self.key_attributes();
         let mut numbered: Vec<(i16, Column)> = pg_attribute::table
             .inner_join(pg_class::table.on(pg_class::oid.eq(pg_attribute::attrelid)))
             .inner_join(pg_namespace::table.on(pg_namespace::oid.eq(pg_class::relnamespace)))
@@ -95,11 +118,11 @@ impl PgIndex {
             .filter(
                 pg_attribute::attrelid
                     .eq(self.indrelid)
-                    .and(pg_attribute::attnum.eq_any(&self.indkey)),
+                    .and(pg_attribute::attnum.eq_any(key)),
             )
             .select((pg_attribute::attnum, Column::as_select()))
             .load::<(i16, Column)>(conn)?;
-        numbered.sort_by_key(|(number, _)| self.indkey.iter().position(|key| key == number));
+        numbered.sort_by_key(|(number, _)| key.iter().position(|attribute| attribute == number));
         Ok(numbered.into_iter().map(|(_, column)| column).collect())
     }
 }

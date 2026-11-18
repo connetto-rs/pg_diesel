@@ -42,8 +42,8 @@ use pg_diesel::{
     sqlparser::{
         ast::{
             Action, CreateRule, CreateTrigger, Expr, Function, FunctionDefinitionSetParam,
-            FunctionSetValue, Ident, ObjectName, Query, Statement, Value as SqlValue, Visit,
-            Visitor, visit_expressions, visit_expressions_mut,
+            FunctionSetValue, Ident, IndexType, ObjectName, Query, Statement, Value as SqlValue,
+            Visit, Visitor, visit_expressions, visit_expressions_mut,
         },
         dialect::PostgreSqlDialect,
         parser::{Parser, ParserError},
@@ -1446,11 +1446,13 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 format!("{index_subject} / nulls distinct"),
                 index.nulls_distinct().to_string(),
             );
+            // An index written without `USING` is a `btree` index.
             self.text(
                 format!("{index_subject} / method"),
                 index
                     .access_method()
-                    .map_or_else(|| "btree".to_owned(), ToString::to_string),
+                    .unwrap_or(&IndexType::BTree)
+                    .to_string(),
             );
             self.text(
                 format!("{index_subject} / columns"),
