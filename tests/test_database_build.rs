@@ -460,8 +460,8 @@ async fn column_and_domain_expressions() {
     }
 }
 
-/// A unique index over an expression reports that expression, the one
-/// `pg_get_expr` prints for it.
+/// A unique index over an expression reports that expression in
+/// parentheses, as `pg_get_indexdef` prints it and `ParserDB` holds it.
 #[tokio::test]
 async fn unique_index_over_an_expression() {
     for &major in COMPILED_MAJORS {
@@ -497,7 +497,7 @@ async fn unique_index_over_an_expression() {
             IndexLike::expression(index, &database)
                 .expect("in database")
                 .to_string(),
-            "lower(name)",
+            "(lower(name))",
             "PostgreSQL {major}"
         );
     }
@@ -552,7 +552,7 @@ async fn index_key_and_predicate_calls() {
 
         let expression_probe = index("expression_probe");
         let key = IndexLike::expression(expression_probe, &database).expect("in database");
-        assert_eq!(key.to_string(), "earlier.norm(x)", "PostgreSQL {major}");
+        assert_eq!(key.to_string(), "(earlier.norm(x))", "PostgreSQL {major}");
         assert_eq!(IndexLike::predicate(expression_probe), None);
         let key_call = first_call(key, "norm");
         assert_eq!(

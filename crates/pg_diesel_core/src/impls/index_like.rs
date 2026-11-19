@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 use sql_traits::{
     errors::{LookupError, ObjectKind},
-    structs::WrittenCall,
+    structs::{IndexKey, WrittenCall},
     traits::{DatabaseLike, IndexLike, Metadata, TableLike},
 };
 use sqlparser::ast::{Expr, IndexType};
@@ -63,7 +63,19 @@ impl IndexLike for PgIndexEntry {
     where
         Self: 'db,
     {
-        Ok(metadata(self, database)?.expression())
+        let _ = metadata(self, database)?;
+        Ok(PgIndexEntry::expression(self))
+    }
+
+    fn keys<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<impl Iterator<Item = IndexKey<'db>>, LookupError>
+    where
+        Self: 'db,
+    {
+        let _ = metadata(self, database)?;
+        Ok(PgIndexEntry::keys(self))
     }
 
     fn access_method(&self) -> Option<&IndexType> {
@@ -107,7 +119,7 @@ impl IndexLike for PgIndexEntry {
         let metadata = metadata(self, database)?;
         metadata
             .expression_calls()
-            .reached_by(metadata.expression(), call)
+            .reached_by(PgIndexEntry::expression(self), call)
             .or_else(|| {
                 PgIndexEntry::predicate(self)
                     .and_then(|predicate| metadata.predicate_calls().reached_by(predicate, call))
@@ -139,6 +151,8 @@ fn metadata<'db>(
 
 #[cfg(test)]
 mod tests {
+    use sqlparser::ast::{Ident, IndexColumn, OrderByExpr, OrderByOptions};
+
     use super::*;
     use crate::{
         PgDieselDatabase, dialect::PostgresDialect, model_metadata::IndexShape,
@@ -159,6 +173,14 @@ mod tests {
             "absent".to_string(),
             IndexShape::new("btree", Vec::new(), true),
             None,
+            vec![IndexColumn {
+                column: OrderByExpr {
+                    expr: Expr::Identifier(Ident::new("body")),
+                    options: OrderByOptions::default(),
+                    with_fill: None,
+                },
+                operator_class: None,
+            }],
             None,
         );
         let database = PgDieselDatabase::new("catalog".to_string(), PostgresDialect).into();

@@ -122,21 +122,15 @@ fn expression_calls(
 
 /// Returns the metadata of `index`, defined on `table`, with the calls of
 /// its key and predicate resolved against `functions` under `search_path`.
-///
-/// # Errors
-///
-/// Returns a `diesel::result::Error` if a catalog query fails.
 fn index_metadata(
     index: &PgIndexEntry,
     table: &Arc<PgTable>,
     functions: &[Arc<PgFunction>],
     search_path: &[(&str, bool)],
-    connection: &mut PgConnection,
-) -> Result<IndexMetadata, diesel::result::Error> {
-    let metadata = index.metadata(Arc::clone(table), connection)?;
-    let key_calls = expression_calls(Some(metadata.expression()), functions, search_path);
+) -> IndexMetadata {
+    let key_calls = expression_calls(Some(index.expression()), functions, search_path);
     let predicate_calls = expression_calls(index.predicate(), functions, search_path);
-    Ok(metadata.with_calls(key_calls, predicate_calls))
+    IndexMetadata::new(Arc::clone(table)).with_calls(key_calls, predicate_calls)
 }
 
 /// Returns the pinned functions the calls of the bound body `definition`
@@ -581,12 +575,12 @@ impl<'a, C: VersionCatalog> TryFrom<PgDieselDatabaseBuilder<'a, C>> for PgDiesel
             }
 
             for index in table_metadata.unique_index_arcs() {
-                let metadata = index_metadata(index, &table, &functions, &search_path, connection)?;
+                let metadata = index_metadata(index, &table, &functions, &search_path);
                 generic_builder = generic_builder.add_unique_index(Arc::clone(index), metadata);
             }
 
             for index in table_metadata.index_arcs() {
-                let metadata = index_metadata(index, &table, &functions, &search_path, connection)?;
+                let metadata = index_metadata(index, &table, &functions, &search_path);
                 generic_builder = generic_builder.add_index(Arc::clone(index), metadata);
             }
 

@@ -4,17 +4,13 @@
 use std::sync::Arc;
 
 use sql_traits::structs::metadata::ExpressionCalls;
-use sqlparser::ast::Expr;
 
 use crate::model_metadata::{PgFunction, PgTable};
 
-/// The key of an index, the table it is defined on, and the functions the
-/// calls of its key and predicate may reach.
+/// The table an index is defined on, and the functions the calls of its key
+/// and predicate may reach.
 #[derive(Debug, Clone)]
 pub struct IndexMetadata {
-    /// The expression the index is defined over, its key expressions when
-    /// it has some and the tuple of its columns otherwise.
-    expression: Expr,
     /// The table the index is defined on.
     table: Arc<PgTable>,
     /// The call record of the key expression.
@@ -24,12 +20,10 @@ pub struct IndexMetadata {
 }
 
 impl IndexMetadata {
-    /// Creates the metadata of an index over `expression` on `table`, with
-    /// no calls resolved.
+    /// Creates the metadata of an index on `table`, with no calls resolved.
     #[must_use]
-    pub fn new(expression: Expr, table: Arc<PgTable>) -> Self {
+    pub fn new(table: Arc<PgTable>) -> Self {
         Self {
-            expression,
             table,
             expression_calls: ExpressionCalls::default(),
             predicate_calls: ExpressionCalls::default(),
@@ -48,12 +42,6 @@ impl IndexMetadata {
         self.expression_calls = expression_calls;
         self.predicate_calls = predicate_calls;
         self
-    }
-
-    /// Returns the expression the index is defined over.
-    #[must_use]
-    pub fn expression(&self) -> &Expr {
-        &self.expression
     }
 
     /// Returns the table the index is defined on.

@@ -16,7 +16,7 @@ use crate::{
         ColumnMetadata, IndexShape, PgCheckConstraint, PgColumn, PgDataType, PgForeignKey,
         PgIndexEntry, PgPolicy, PgTable, TableMetadata, TableMetadataDetails,
         TriggerConditionError, TriggerMetadata, decode_enablement, parse_printed_expression,
-        storage_option_entries, when_condition,
+        printed_key, storage_option_entries, when_condition,
     },
     models::Column,
 };
@@ -152,6 +152,21 @@ pub enum TableMetadataError {
         /// Why the parser rejected it, boxed to keep the error small.
         source: Box<ParserError>,
     },
+    /// The `CREATE INDEX` statement `pg_get_indexdef` prints for an index
+    /// does not yield its keys.
+    #[error(
+        "the keys of the definition `{definition}` of index {schema}.{index} do not parse: {source}"
+    )]
+    UnparsableIndexKey {
+        /// The schema of the index.
+        schema: String,
+        /// The name of the index.
+        index: String,
+        /// The definition as `PostgreSQL` printed it.
+        definition: String,
+        /// Why the parser rejected it, boxed to keep the error small.
+        source: Box<ParserError>,
+    },
     /// The `CREATE TRIGGER` statement `pg_get_triggerdef` prints for a
     /// trigger with a `WHEN` condition does not yield the condition.
     #[error(
@@ -214,13 +229,16 @@ impl Table {
     }
 
     /// Pairs the `pg_index` row of one of this table's indexes with its name,
-    /// its shape, its parsed predicate and the constraint it enforces, naming
-    /// the columns of its `INCLUDE` list from the table's `attributes`.
+    /// its shape, its parsed keys and predicate and the constraint it
+    /// enforces, naming the columns of its `INCLUDE` list from the table's
+    /// `attributes`.
     ///
     /// # Errors
     ///
-    /// Returns [`TableMetadataError::UnparsableIndexPredicate`] when the
-    /// printed predicate does not parse.
+    /// Returns [`TableMetadataError::UnparsableIndexKey`] when the printed
+    /// definition yields no keys, and
+    /// [`TableMetadataError::UnparsableIndexPredicate`] when the printed
+    /// predicate does not parse.
     fn index_entry(
         &self,
         row: IndexRow,
@@ -232,8 +250,16 @@ impl Table {
             name,
             access_method,
             nulls_not_distinct,
+            definition,
             predicate,
         } = row;
+        let key =
+            printed_key(&definition).map_err(|source| TableMetadataError::UnparsableIndexKey {
+                schema: self.table_schema.clone(),
+                index: name.clone(),
+                definition,
+                source: Box::new(source),
+            })?;
         let predicate = predicate
             .map(|printed| {
                 parse_printed_expression(&printed).map_err(|source| {
@@ -262,6 +288,7 @@ impl Table {
             name,
             IndexShape::new(&access_method, include_column_names, !nulls_not_distinct),
             constraint_name,
+            key,
             predicate,
         ))
     }
