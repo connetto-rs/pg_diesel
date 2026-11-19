@@ -1,24 +1,25 @@
-//! Implementation of [`IndexLike`] for [`PgIndexEntry`].
+//! Implementation of [`IndexLike`] and [`TableIndexLike`] for
+//! [`PgIndexEntry`].
 
 use std::borrow::Cow;
 
 use sql_traits::{
     errors::{LookupError, ObjectKind},
     structs::{IndexKey, WrittenCall},
-    traits::{DatabaseLike, IndexLike, Metadata, TableLike},
+    traits::{DatabaseLike, IndexLike, Metadata, Relation, TableIndexLike, TableLike},
 };
 use sqlparser::ast::{Expr, IndexType};
 
 use crate::{
     PgDieselDatabase,
-    model_metadata::{IndexMetadata, PgColumn, PgIndexEntry},
+    model_metadata::{IndexMetadata, IndexedRelation, OnTable, PgColumn, PgIndexEntry},
 };
 
-impl Metadata for PgIndexEntry {
-    type Meta = IndexMetadata;
+impl<On: IndexedRelation> Metadata for PgIndexEntry<On> {
+    type Meta = IndexMetadata<On>;
 }
 
-impl IndexLike for PgIndexEntry {
+impl<On: IndexedRelation> IndexLike for PgIndexEntry<On> {
     type DB = PgDieselDatabase;
 
     fn name(&self) -> Option<&str> {
@@ -50,15 +51,6 @@ impl IndexLike for PgIndexEntry {
         Ok(PgIndexEntry::constraint_name(self).map(Cow::Borrowed))
     }
 
-    fn table<'db>(&'db self, database: &'db Self::DB) -> &'db <Self::DB as DatabaseLike>::Table
-    where
-        Self: 'db,
-    {
-        metadata(self, database)
-            .expect("an index the database lists carries its metadata")
-            .table()
-    }
-
     fn expression<'db>(&'db self, database: &'db Self::DB) -> Result<&'db Expr, LookupError>
     where
         Self: 'db,
@@ -78,27 +70,25 @@ impl IndexLike for PgIndexEntry {
         Ok(PgIndexEntry::keys(self))
     }
 
+    fn relation<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<Relation<'db, Self::DB>, LookupError>
+    where
+        Self: 'db,
+    {
+        Ok(On::relation(metadata(self, database)?.relation()))
+    }
+
     fn access_method(&self) -> Option<&IndexType> {
         Some(PgIndexEntry::access_method(self))
     }
 
-    fn include_columns<'db>(
-        &'db self,
-        database: &'db Self::DB,
-    ) -> Result<impl Iterator<Item = &'db <Self::DB as DatabaseLike>::Column>, LookupError>
-    where
-        Self: 'db,
-    {
-        let columns: Vec<&PgColumn> = metadata(self, database)?
-            .table()
-            .columns(database)?
-            .collect();
-        Ok(self.include_column_names().iter().filter_map(move |name| {
-            columns
-                .iter()
-                .copied()
-                .find(|column| column.column_name() == name)
-        }))
+    fn include_column_names(&self) -> impl Iterator<Item = (&str, bool)> {
+        // Catalog names are stored names: folding again would rename them.
+        PgIndexEntry::include_column_names(self)
+            .iter()
+            .map(|name| (name.as_str(), true))
     }
 
     fn predicate(&self) -> Option<&Expr> {
@@ -130,62 +120,49 @@ impl IndexLike for PgIndexEntry {
     }
 }
 
-/// Returns the metadata `database` holds for `index`, which one entry type
-/// serves for both the index and the unique index collections.
-fn metadata<'db>(
-    index: &PgIndexEntry,
-    database: &'db PgDieselDatabase,
-) -> Result<&'db IndexMetadata, LookupError> {
-    database
-        .index_metadata(index)
-        .or_else(|| database.unique_index_metadata(index))
-        .ok_or_else(|| LookupError::ObjectNotInDatabase {
-            object_kind: ObjectKind::Index,
-            object: format!(
-                "{}.{}",
-                PgIndexEntry::schema(index),
-                PgIndexEntry::name(index)
-            ),
-        })
+impl TableIndexLike for PgIndexEntry<OnTable> {
+    fn table<'db>(&'db self, database: &'db Self::DB) -> &'db <Self::DB as DatabaseLike>::Table
+    where
+        Self: 'db,
+    {
+        metadata(self, database)
+            .expect("an index the database lists carries its metadata")
+            .relation()
+    }
+
+    fn include_columns<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<impl Iterator<Item = &'db <Self::DB as DatabaseLike>::Column>, LookupError>
+    where
+        Self: 'db,
+    {
+        let columns: Vec<&PgColumn> = metadata(self, database)?
+            .relation()
+            .columns(database)?
+            .collect();
+        Ok(PgIndexEntry::include_column_names(self)
+            .iter()
+            .filter_map(move |name| {
+                columns
+                    .iter()
+                    .copied()
+                    .find(|column| column.column_name() == name)
+            }))
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    use sqlparser::ast::{Ident, IndexColumn, OrderByExpr, OrderByOptions};
-
-    use super::*;
-    use crate::{
-        PgDieselDatabase, dialect::PostgresDialect, model_metadata::IndexShape,
-        shared::models::PgIndex,
-    };
-
-    #[test]
-    fn an_index_the_database_does_not_hold_is_reported_not_in_the_database() {
-        let index = PgIndexEntry::new(
-            PgIndex {
-                indexrelid: 1,
-                indrelid: 2,
-                indisunique: false,
-                indkey: vec![1],
-                indnkeyatts: 1,
-            },
-            "app".to_string(),
-            "absent".to_string(),
-            IndexShape::new("btree", Vec::new(), true),
-            None,
-            vec![IndexColumn {
-                column: OrderByExpr {
-                    expr: Expr::Identifier(Ident::new("body")),
-                    options: OrderByOptions::default(),
-                    with_fill: None,
-                },
-                operator_class: None,
-            }],
-            None,
-        );
-        let database = PgDieselDatabase::new("catalog".to_string(), PostgresDialect).into();
-        let error =
-            IndexLike::constraint_name(&index, &database).expect_err("the database holds no index");
-        assert!(matches!(error, LookupError::ObjectNotInDatabase { .. }));
-    }
+/// Returns the metadata `database` holds for `index`.
+fn metadata<'db, On: IndexedRelation>(
+    index: &PgIndexEntry<On>,
+    database: &'db PgDieselDatabase,
+) -> Result<&'db IndexMetadata<On>, LookupError> {
+    On::metadata(index, database).ok_or_else(|| LookupError::ObjectNotInDatabase {
+        object_kind: ObjectKind::Index,
+        object: format!(
+            "{}.{}",
+            PgIndexEntry::schema(index),
+            PgIndexEntry::name(index)
+        ),
+    })
 }

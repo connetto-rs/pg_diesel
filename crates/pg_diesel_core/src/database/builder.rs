@@ -30,7 +30,8 @@ use crate::{
     dialect::PostgresDialect,
     impls::{RoleColumnGrantsMetadata, RoleTableGrantsMetadata, string_to_action},
     model_metadata::{
-        DomainDefinitionError, DomainMetadata, IndexMetadata, PgCastEntry, PgColumn, PgDomainEntry,
+        DomainDefinitionError, DomainMetadata, IndexDefinitionError, IndexMetadata,
+        IndexedRelation, OnMaterializedView, PgCastEntry, PgColumn, PgDomainEntry,
         PgExtensionEntry, PgFunction, PgIndexEntry, PgOperatorEntry, PgPolicy, PgRoleMembership,
         PgRuleEntry, PgSchema, PgSequenceEntry, PgTable, PgTableError, PgUserDefinedType,
         PgViewDefinition, RuleDefinitionError, UserDefinedTypeError, ViewDefinitionError,
@@ -120,17 +121,17 @@ fn expression_calls(
     })
 }
 
-/// Returns the metadata of `index`, defined on `table`, with the calls of
+/// Returns the metadata of `index`, defined on `relation`, with the calls of
 /// its key and predicate resolved against `functions` under `search_path`.
-fn index_metadata(
-    index: &PgIndexEntry,
-    table: &Arc<PgTable>,
+fn index_metadata<On: IndexedRelation>(
+    index: &PgIndexEntry<On>,
+    relation: &Arc<On::Relation>,
     functions: &[Arc<PgFunction>],
     search_path: &[(&str, bool)],
-) -> IndexMetadata {
+) -> IndexMetadata<On> {
     let key_calls = expression_calls(Some(index.expression()), functions, search_path);
     let predicate_calls = expression_calls(index.predicate(), functions, search_path);
-    IndexMetadata::new(Arc::clone(table)).with_calls(key_calls, predicate_calls)
+    IndexMetadata::new(Arc::clone(relation)).with_calls(key_calls, predicate_calls)
 }
 
 /// Returns the pinned functions the calls of the bound body `definition`
@@ -191,6 +192,41 @@ fn relation_options(
         .into_iter()
         .map(|(schema, name, options)| ((schema, name), options.unwrap_or_default()))
         .collect())
+}
+
+/// Returns the indexes `pg_index` records on the materialized view `view`,
+/// read from a server of `version`.
+///
+/// # Errors
+///
+/// Returns [`PgDatabaseBuildError::Diesel`] when a catalog query fails, and
+/// [`PgDatabaseBuildError::IndexDefinition`] when an index's printed key or
+/// predicate does not parse.
+fn materialized_view_indexes(
+    view: &PgViewDefinition,
+    version: ServerVersion,
+    connection: &mut PgConnection,
+) -> Result<Vec<PgIndexEntry<OnMaterializedView>>, PgDatabaseBuildError> {
+    use crate::{
+        schema::pg_catalog::pg_namespace::pg_namespace, shared::schema::pg_catalog::pg_class,
+    };
+
+    let oid: u32 = pg_class::table
+        .inner_join(pg_namespace::table.on(pg_namespace::oid.eq(pg_class::relnamespace)))
+        .filter(pg_namespace::nspname.eq(view.schema()))
+        .filter(pg_class::relname.eq(view.name()))
+        .filter(pg_class::relkind.eq("m"))
+        .select(pg_class::oid)
+        .first(connection)?;
+    let attributes = crate::models::attributes(oid, connection)?;
+    crate::models::indices(oid, version, connection)?
+        .into_iter()
+        .map(|row| {
+            // A materialized view carries no constraint for an index to back.
+            PgIndexEntry::from_catalog(row, view.schema().to_owned(), &attributes, None)
+                .map_err(PgDatabaseBuildError::from)
+        })
+        .collect()
 }
 
 /// Returns the `pg_class.reloptions` the relation of the given schema and
@@ -262,6 +298,9 @@ pub enum PgDatabaseBuildError {
     #[error("Table metadata: {0}")]
     /// A table's columns, keys or indexes could not be read.
     TableMetadata(#[from] TableMetadataError),
+    #[error("Index definition: {0}")]
+    /// An index on a materialized view could not be read from the catalogs.
+    IndexDefinition(#[from] IndexDefinitionError),
     #[error("The privilege {privilege} on {object} has no sqlparser action")]
     /// The catalog grants a privilege `sqlparser::ast::Action` cannot spell.
     UnrepresentablePrivilege {
@@ -647,10 +686,13 @@ impl<'a, C: VersionCatalog> TryFrom<PgDieselDatabaseBuilder<'a, C>> for PgDiesel
                 view.schemaname.as_deref(),
                 view.matviewname.as_deref(),
             );
-            generic_builder = generic_builder.add_materialized_view(
-                Arc::new(PgViewDefinition::materialized(view, options)?),
-                (),
-            );
+            let view = Arc::new(PgViewDefinition::materialized(view, options)?);
+            for index in materialized_view_indexes(&view, version, connection)? {
+                let metadata = index_metadata(&index, &view, &functions, &search_path);
+                generic_builder =
+                    generic_builder.add_materialized_view_index(Arc::new(index), metadata);
+            }
+            generic_builder = generic_builder.add_materialized_view(view, ());
         }
 
         for sequence in PgSequenceEntry::load_all(&table_schemas, connection)? {

@@ -5,26 +5,27 @@ use std::sync::Arc;
 
 use sql_traits::structs::metadata::ExpressionCalls;
 
-use crate::model_metadata::{PgFunction, PgTable};
+use crate::model_metadata::{IndexedRelation, OnTable, PgFunction};
 
-/// The table an index is defined on, and the functions the calls of its key
+/// The relation an index is built on, and the functions the calls of its key
 /// and predicate may reach.
 #[derive(Debug, Clone)]
-pub struct IndexMetadata {
-    /// The table the index is defined on.
-    table: Arc<PgTable>,
+pub struct IndexMetadata<On: IndexedRelation = OnTable> {
+    /// The relation the index is built on.
+    relation: Arc<On::Relation>,
     /// The call record of the key expression.
     expression_calls: ExpressionCalls<PgFunction>,
     /// The call record of the predicate of a partial index.
     predicate_calls: ExpressionCalls<PgFunction>,
 }
 
-impl IndexMetadata {
-    /// Creates the metadata of an index on `table`, with no calls resolved.
+impl<On: IndexedRelation> IndexMetadata<On> {
+    /// Creates the metadata of an index on `relation`, with no calls
+    /// resolved.
     #[must_use]
-    pub fn new(table: Arc<PgTable>) -> Self {
+    pub fn new(relation: Arc<On::Relation>) -> Self {
         Self {
-            table,
+            relation,
             expression_calls: ExpressionCalls::default(),
             predicate_calls: ExpressionCalls::default(),
         }
@@ -44,10 +45,10 @@ impl IndexMetadata {
         self
     }
 
-    /// Returns the table the index is defined on.
+    /// Returns the relation the index is built on.
     #[must_use]
-    pub fn table(&self) -> &PgTable {
-        &self.table
+    pub fn relation(&self) -> &On::Relation {
+        &self.relation
     }
 
     /// Returns the call record of the key expression.
