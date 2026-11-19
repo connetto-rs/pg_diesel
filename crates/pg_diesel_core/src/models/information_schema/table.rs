@@ -13,10 +13,10 @@ use crate::{
     database::{CatalogCache, ServerVersion},
     impls::string_to_action,
     model_metadata::{
-        ColumnMetadata, IndexShape, PgCheckConstraint, PgColumn, PgDataType, PgForeignKey,
-        PgIndexEntry, PgPolicy, PgTable, TableMetadata, TableMetadataDetails,
+        ColumnMetadata, IndexDefinitionError, PgCheckConstraint, PgColumn, PgDataType,
+        PgForeignKey, PgIndexEntry, PgPolicy, PgTable, TableMetadata, TableMetadataDetails,
         TriggerConditionError, TriggerMetadata, decode_enablement, parse_printed_expression,
-        printed_key, storage_option_entries, when_condition,
+        storage_option_entries, when_condition,
     },
     models::Column,
 };
@@ -139,34 +139,10 @@ pub enum TableMetadataError {
         /// Why the parser rejected it, boxed to keep the error small.
         source: Box<ParserError>,
     },
-    /// The predicate `pg_get_expr` prints for a partial index does not
-    /// parse.
-    #[error("the predicate `{expression}` of index {schema}.{index} does not parse: {source}")]
-    UnparsableIndexPredicate {
-        /// The schema of the index.
-        schema: String,
-        /// The name of the index.
-        index: String,
-        /// The predicate as `PostgreSQL` printed it.
-        expression: String,
-        /// Why the parser rejected it, boxed to keep the error small.
-        source: Box<ParserError>,
-    },
-    /// The `CREATE INDEX` statement `pg_get_indexdef` prints for an index
-    /// does not yield its keys.
-    #[error(
-        "the keys of the definition `{definition}` of index {schema}.{index} do not parse: {source}"
-    )]
-    UnparsableIndexKey {
-        /// The schema of the index.
-        schema: String,
-        /// The name of the index.
-        index: String,
-        /// The definition as `PostgreSQL` printed it.
-        definition: String,
-        /// Why the parser rejected it, boxed to keep the error small.
-        source: Box<ParserError>,
-    },
+    /// A `pg_index` row of one of the table's indexes does not read as an
+    /// index.
+    #[error(transparent)]
+    IndexDefinition(#[from] IndexDefinitionError),
     /// The `CREATE TRIGGER` statement `pg_get_triggerdef` prints for a
     /// trigger with a `WHEN` condition does not yield the condition.
     #[error(
@@ -226,71 +202,6 @@ impl Table {
                 })
             })
             .transpose()
-    }
-
-    /// Pairs the `pg_index` row of one of this table's indexes with its name,
-    /// its shape, its parsed keys and predicate and the constraint it
-    /// enforces, naming the columns of its `INCLUDE` list from the table's
-    /// `attributes`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TableMetadataError::UnparsableIndexKey`] when the printed
-    /// definition yields no keys, and
-    /// [`TableMetadataError::UnparsableIndexPredicate`] when the printed
-    /// predicate does not parse.
-    fn index_entry(
-        &self,
-        row: IndexRow,
-        attributes: &[AttributeFacts],
-        constraint_name: Option<String>,
-    ) -> Result<PgIndexEntry, TableMetadataError> {
-        let IndexRow {
-            index,
-            name,
-            access_method,
-            nulls_not_distinct,
-            definition,
-            predicate,
-        } = row;
-        let key =
-            printed_key(&definition).map_err(|source| TableMetadataError::UnparsableIndexKey {
-                schema: self.table_schema.clone(),
-                index: name.clone(),
-                definition,
-                source: Box::new(source),
-            })?;
-        let predicate = predicate
-            .map(|printed| {
-                parse_printed_expression(&printed).map_err(|source| {
-                    TableMetadataError::UnparsableIndexPredicate {
-                        schema: self.table_schema.clone(),
-                        index: name.clone(),
-                        expression: printed,
-                        source: Box::new(source),
-                    }
-                })
-            })
-            .transpose()?;
-        let include_column_names = index
-            .included_attributes()
-            .iter()
-            .filter_map(|number| {
-                attributes
-                    .iter()
-                    .find(|attribute| attribute.number == *number)
-                    .map(|attribute| attribute.name.clone())
-            })
-            .collect();
-        Ok(PgIndexEntry::new(
-            index,
-            self.table_schema.clone(),
-            name,
-            IndexShape::new(&access_method, include_column_names, !nulls_not_distinct),
-            constraint_name,
-            key,
-            predicate,
-        ))
     }
 
     /// Initializes and returns the metadata for the table, read from a server
@@ -390,14 +301,20 @@ impl Table {
             .collect::<HashMap<_, _>>();
         for row in cached_queries::unique_indices(facts.oid, version, conn)? {
             let constraint_name = constraint_names.remove(&row.index.indexrelid);
-            sql_metadata.add_unique_index(Arc::new(self.index_entry(
+            sql_metadata.add_unique_index(Arc::new(PgIndexEntry::from_catalog(
                 row,
+                self.table_schema.clone(),
                 &attributes,
                 constraint_name,
             )?));
         }
         for row in cached_queries::standalone_indices(facts.oid, version, conn)? {
-            sql_metadata.add_index(Arc::new(self.index_entry(row, &attributes, None)?));
+            sql_metadata.add_index(Arc::new(PgIndexEntry::from_catalog(
+                row,
+                self.table_schema.clone(),
+                &attributes,
+                None,
+            )?));
         }
         let mut primary_key_columns = Vec::new();
         for pk_column in cached_queries::primary_key_columns(self, conn)? {

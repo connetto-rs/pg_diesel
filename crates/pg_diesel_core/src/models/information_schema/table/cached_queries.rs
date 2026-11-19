@@ -261,10 +261,10 @@ pub(crate) fn index_constraint_names(
         .load::<(u32, String)>(conn)
 }
 
-/// Returns all indices of the table with OID `table_oid`, read from a server
-/// of `version`.
+/// Returns all indices of the table or materialized view with OID
+/// `relation_oid`, read from a server of `version`.
 pub(crate) fn indices(
-    table_oid: u32,
+    relation_oid: u32,
     version: ServerVersion,
     conn: &mut PgConnection,
 ) -> Result<Vec<IndexRow>, diesel::result::Error> {
@@ -276,7 +276,7 @@ pub(crate) fn indices(
     pg_index::table
         .inner_join(pg_class::table.on(pg_class::oid.eq(pg_index::indexrelid)))
         .inner_join(pg_am::table.on(pg_am::oid.eq(pg_class::relam)))
-        .filter(pg_index::indrelid.eq(table_oid))
+        .filter(pg_index::indrelid.eq(relation_oid))
         .select((
             PgIndex::as_select(),
             pg_class::relname,
@@ -612,9 +612,10 @@ pub(crate) fn table_acl_entries(
     .load::<TableAclEntry>(conn)
 }
 
-/// Returns what `pg_attribute` records for every live column of the table.
+/// Returns what `pg_attribute` records for every live column of the table or
+/// materialized view with OID `relation_oid`.
 pub(crate) fn attributes(
-    table_oid: u32,
+    relation_oid: u32,
     conn: &mut PgConnection,
 ) -> Result<Vec<AttributeFacts>, diesel::result::Error> {
     use crate::shared::schema::pg_catalog::pg_attribute;
@@ -622,7 +623,7 @@ pub(crate) fn attributes(
     // `attndims` is an `integer` before `PostgreSQL` 16 and a `smallint`
     // from it on, so the cast reads both widths alike.
     Ok(pg_attribute::table
-        .filter(pg_attribute::attrelid.eq(table_oid))
+        .filter(pg_attribute::attrelid.eq(relation_oid))
         .filter(pg_attribute::attnum.gt(0))
         .filter(pg_attribute::attisdropped.eq(false))
         .order_by(pg_attribute::attnum)

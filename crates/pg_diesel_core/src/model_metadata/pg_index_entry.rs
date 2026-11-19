@@ -1,5 +1,7 @@
 //! Submodule providing [`PgIndexEntry`], the index a `PgDieselDatabase` holds.
 
+use std::marker::PhantomData;
+
 use sql_traits::structs::IndexKey;
 use sqlparser::{
     ast::{Expr, Ident, IndexColumn, IndexType, ObjectName, OrderByOptions},
@@ -9,7 +11,44 @@ use sqlparser::{
     tokenizer::Token,
 };
 
-use crate::shared::models::PgIndex;
+use crate::{
+    model_metadata::{OnTable, parse_printed_expression},
+    models::{AttributeFacts, IndexRow},
+    shared::models::PgIndex,
+};
+
+/// What stopped a `pg_index` row from becoming a [`PgIndexEntry`].
+#[derive(Debug, thiserror::Error)]
+pub enum IndexDefinitionError {
+    /// The `CREATE INDEX` statement `pg_get_indexdef` prints for an index
+    /// does not yield its keys.
+    #[error(
+        "the keys of the definition `{definition}` of index {schema}.{index} do not parse: {source}"
+    )]
+    UnparsableKey {
+        /// The schema of the index.
+        schema: String,
+        /// The name of the index.
+        index: String,
+        /// The definition as `PostgreSQL` printed it.
+        definition: String,
+        /// Why the parser rejected it, boxed to keep the error small.
+        source: Box<ParserError>,
+    },
+    /// The predicate `pg_get_expr` prints for a partial index does not
+    /// parse.
+    #[error("the predicate `{expression}` of index {schema}.{index} does not parse: {source}")]
+    UnparsablePredicate {
+        /// The schema of the index.
+        schema: String,
+        /// The name of the index.
+        index: String,
+        /// The predicate as `PostgreSQL` printed it.
+        expression: String,
+        /// Why the parser rejected it, boxed to keep the error small.
+        source: Box<ParserError>,
+    },
+}
 
 /// What an index is beyond its key and predicate, as `pg_class.relam` and
 /// `pg_index` record it.
@@ -110,9 +149,13 @@ pub(crate) fn printed_key(definition: &str) -> Result<Vec<IndexColumn>, ParserEr
 /// its access method, the columns of its `INCLUDE` list, its keys and the
 /// predicate of a partial index.
 ///
+/// `On` marks the kind of relation `indrelid` names, [`OnTable`] or
+/// [`OnMaterializedView`](crate::model_metadata::OnMaterializedView), which
+/// decides the collection the database lists the index in.
+///
 /// `IndexLike` asks for these without handing over a database.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PgIndexEntry {
+pub struct PgIndexEntry<On = OnTable> {
     /// The `pg_catalog.pg_index` row describing the index.
     model: PgIndex,
     /// The schema the index lives in.
@@ -131,9 +174,75 @@ pub struct PgIndexEntry {
     key_options: Vec<KeyOptions>,
     /// The predicate `pg_get_expr` prints for a partial index.
     predicate: Option<Expr>,
+    /// The kind of relation the index is built on.
+    relation: PhantomData<On>,
 }
 
-impl PgIndexEntry {
+impl<On> PgIndexEntry<On> {
+    /// Reads the index `row` describes, which lives in `schema` on a relation
+    /// whose columns are `attributes`, naming the columns of its `INCLUDE`
+    /// list from them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndexDefinitionError::UnparsableKey`] when the printed
+    /// definition yields no keys, and
+    /// [`IndexDefinitionError::UnparsablePredicate`] when the printed
+    /// predicate does not parse.
+    pub(crate) fn from_catalog(
+        row: IndexRow,
+        schema: String,
+        attributes: &[AttributeFacts],
+        constraint_name: Option<String>,
+    ) -> Result<Self, IndexDefinitionError> {
+        let IndexRow {
+            index,
+            name,
+            access_method,
+            nulls_not_distinct,
+            definition,
+            predicate,
+        } = row;
+        let key =
+            printed_key(&definition).map_err(|source| IndexDefinitionError::UnparsableKey {
+                schema: schema.clone(),
+                index: name.clone(),
+                definition,
+                source: Box::new(source),
+            })?;
+        let predicate = predicate
+            .map(|printed| {
+                parse_printed_expression(&printed).map_err(|source| {
+                    IndexDefinitionError::UnparsablePredicate {
+                        schema: schema.clone(),
+                        index: name.clone(),
+                        expression: printed,
+                        source: Box::new(source),
+                    }
+                })
+            })
+            .transpose()?;
+        let include_column_names = index
+            .included_attributes()
+            .iter()
+            .filter_map(|number| {
+                attributes
+                    .iter()
+                    .find(|attribute| attribute.number == *number)
+                    .map(|attribute| attribute.name.clone())
+            })
+            .collect();
+        Ok(Self::new(
+            index,
+            schema,
+            name,
+            IndexShape::new(&access_method, include_column_names, !nulls_not_distinct),
+            constraint_name,
+            key,
+            predicate,
+        ))
+    }
+
     /// Pairs a `pg_index` row with the relation name its `indexrelid` names
     /// and the keys `key` its printed definition holds.
     #[must_use]
@@ -171,6 +280,7 @@ impl PgIndexEntry {
             expression,
             key_options,
             predicate,
+            relation: PhantomData,
         }
     }
 
@@ -252,11 +362,46 @@ impl PgIndexEntry {
 
 #[cfg(test)]
 mod tests {
-    use sql_traits::{prelude::ParserDB, traits::DatabaseLike, traits::IndexLike};
-    use sqlparser::dialect::PostgreSqlDialect;
+    use sql_traits::{
+        errors::LookupError, prelude::ParserDB, traits::DatabaseLike, traits::IndexLike,
+    };
+    use sqlparser::{
+        ast::{Expr, Ident, IndexColumn, OrderByExpr, OrderByOptions},
+        dialect::PostgreSqlDialect,
+    };
 
     use super::{IndexShape, PgIndexEntry, printed_key};
-    use crate::shared::models::PgIndex;
+    use crate::{PgDieselDatabase, dialect::PostgresDialect, shared::models::PgIndex};
+
+    #[test]
+    fn an_index_the_database_does_not_hold_is_reported_not_in_the_database() {
+        let index: PgIndexEntry = PgIndexEntry::new(
+            PgIndex {
+                indexrelid: 1,
+                indrelid: 2,
+                indisunique: false,
+                indkey: vec![1],
+                indnkeyatts: 1,
+            },
+            "app".to_string(),
+            "absent".to_string(),
+            IndexShape::new("btree", Vec::new(), true),
+            None,
+            vec![IndexColumn {
+                column: OrderByExpr {
+                    expr: Expr::Identifier(Ident::new("body")),
+                    options: OrderByOptions::default(),
+                    with_fill: None,
+                },
+                operator_class: None,
+            }],
+            None,
+        );
+        let database = PgDieselDatabase::new("catalog".to_string(), PostgresDialect).into();
+        let error =
+            IndexLike::constraint_name(&index, &database).expect_err("the database holds no index");
+        assert!(matches!(error, LookupError::ObjectNotInDatabase { .. }));
+    }
 
     #[test]
     fn an_access_method_answers_what_parser_db_answers_for_its_using_clause() {
@@ -319,7 +464,7 @@ mod tests {
                 .indexes()
                 .next()
                 .expect("the schema holds one index");
-            let live = PgIndexEntry::new(
+            let live: PgIndexEntry = PgIndexEntry::new(
                 PgIndex {
                     indexrelid: 1,
                     indrelid: 2,

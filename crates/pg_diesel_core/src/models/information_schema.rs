@@ -114,6 +114,7 @@ pub use sql_features::SqlFeatures;
 pub use sql_implementation_info::SqlImplementationInfo;
 pub use sql_parts::SqlParts;
 pub use sql_sizing::SqlSizing;
+pub(crate) use table::{AttributeFacts, IndexRow, attributes, indices};
 pub use table::{Table, TableFacts, TableMetadataError};
 pub use table_privileges::TablePrivileges;
 pub use transforms::Transforms;

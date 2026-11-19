@@ -30,8 +30,8 @@ use pg_diesel::{
             CheckConstraintLike, ColumnCollation, ColumnGrantLike, ColumnLike, DatabaseLike,
             DialectLike, DomainLike, ExtensionLike, ForeignKeyLike, FunctionLike, GrantLike,
             IndexLike, PartitionStrategy, PolicyLike, Relation, RoleLike, SchemaLike, SequenceLike,
-            TableGrantLike, TableLike, TriggerLike, TypeMatch, UserDefinedTypeKind, ViewLike,
-            grant::GrantTarget,
+            TableGrantLike, TableIndexLike, TableLike, TriggerLike, TypeMatch, UserDefinedTypeKind,
+            ViewLike, grant::GrantTarget,
         },
     },
 };
@@ -984,7 +984,7 @@ async fn test_database_build() {
             .expect("in database")
             .next()
             .expect("the index is recorded");
-        assert_eq!(IndexLike::table(index, &database).name(), "children");
+        assert_eq!(TableIndexLike::table(index, &database).name(), "children");
         let indexed_columns: Vec<&str> = index
             .columns(&database)
             .expect("in database")

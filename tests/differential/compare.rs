@@ -34,8 +34,8 @@ use pg_diesel::{
             BinarySend, CheckConstraintLike, ColumnGrantLike, ColumnLike, DataTypeLike,
             DatabaseLike, DomainLike, ExtensionLike, ForeignKeyLike, FunctionLike, GrantLike,
             IndexLike, PolicyLike, Relation, RoleLike, RolePrivilege, RuleLike, SchemaLike,
-            SequenceLike, SequenceOwner, TableGrantLike, TableLike, TriggerLike, UniqueIndexLike,
-            UserDefinedTypeLike, ViewLike, grant::GrantTarget,
+            SequenceLike, SequenceOwner, TableGrantLike, TableIndexLike, TableLike, TriggerLike,
+            UniqueIndexLike, UserDefinedTypeLike, ViewLike, grant::GrantTarget,
         },
         utils::{identifier_resolution::normalize_identifier, normalize_postgres_type},
     },
@@ -1436,26 +1436,6 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             let name = index.name().unwrap_or("<unnamed>").to_owned();
             let index_subject = format!("{subject} / index {name}");
             self.text(
-                format!("{index_subject} / unique"),
-                index.is_unique().to_string(),
-            );
-            self.text(
-                format!("{index_subject} / schema"),
-                self.index_schema(index),
-            );
-            self.text(
-                format!("{index_subject} / nulls distinct"),
-                index.nulls_distinct().to_string(),
-            );
-            // An index written without `USING` is a `btree` index.
-            self.text(
-                format!("{index_subject} / method"),
-                index
-                    .access_method()
-                    .unwrap_or(&IndexType::BTree)
-                    .to_string(),
-            );
-            self.text(
                 format!("{index_subject} / columns"),
                 index
                     .columns(database)?
@@ -1463,7 +1443,6 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                     .collect::<Vec<_>>()
                     .join(", "),
             );
-            self.text(format!("{index_subject} / keys"), self.index_keys(index)?);
             self.text(
                 format!("{index_subject} / include"),
                 index
@@ -1472,28 +1451,63 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                     .collect::<Vec<_>>()
                     .join(", "),
             );
-            self.text(
-                format!("{index_subject} / reached functions"),
-                self.index_reached_functions(index)?,
+            self.index(schema, table_name, &index_subject, index)?;
+        }
+        Ok(())
+    }
+
+    /// Records what every index answers alike, whether it is built on a table
+    /// or on a materialized view, the relation `schema`.`relation` names.
+    fn index<I: IndexLike<DB = DB>>(
+        &mut self,
+        schema: &str,
+        relation: &str,
+        index_subject: &str,
+        index: &I,
+    ) -> Result<(), DescribeError> {
+        let database = self.database;
+        self.text(
+            format!("{index_subject} / unique"),
+            index.is_unique().to_string(),
+        );
+        self.text(
+            format!("{index_subject} / schema"),
+            self.index_schema(index),
+        );
+        self.text(
+            format!("{index_subject} / nulls distinct"),
+            index.nulls_distinct().to_string(),
+        );
+        // An index written without `USING` is a `btree` index.
+        self.text(
+            format!("{index_subject} / method"),
+            index
+                .access_method()
+                .unwrap_or(&IndexType::BTree)
+                .to_string(),
+        );
+        self.text(format!("{index_subject} / keys"), self.index_keys(index)?);
+        self.text(
+            format!("{index_subject} / reached functions"),
+            self.index_reached_functions(index)?,
+        );
+        if let Some(predicate) = index.predicate() {
+            let bound = bound_text(predicate, |call| {
+                index
+                    .functions_reached_by(call, database)
+                    .map(qualified_name)
+            })?;
+            let stored = self.stored.expression(
+                schema,
+                relation,
+                Slot::IndexPredicate,
+                &predicate.to_string(),
+                &bound,
+            )?;
+            self.facts.insert(
+                format!("{index_subject} / predicate"),
+                Value::Expr(Box::new(stored)),
             );
-            if let Some(predicate) = index.predicate() {
-                let bound = bound_text(predicate, |call| {
-                    index
-                        .functions_reached_by(call, database)
-                        .map(qualified_name)
-                })?;
-                let stored = self.stored.expression(
-                    schema,
-                    table_name,
-                    Slot::IndexPredicate,
-                    &predicate.to_string(),
-                    &bound,
-                )?;
-                self.facts.insert(
-                    format!("{index_subject} / predicate"),
-                    Value::Expr(Box::new(stored)),
-                );
-            }
         }
         Ok(())
     }
@@ -1729,6 +1743,39 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         }
         for view in database.materialized_views() {
             self.view("materialized view", view)?;
+            self.materialized_view_indexes(view)?;
+        }
+        Ok(())
+    }
+
+    /// Records the indexes on one materialized view, keyed by name.
+    fn materialized_view_indexes(
+        &mut self,
+        view: &DB::MaterializedView,
+    ) -> Result<(), DescribeError> {
+        let (schema, name) = self.view_name(view);
+        if !self.scope.covers_object(&schema, &name) {
+            return Ok(());
+        }
+        let database = self.database;
+        for index in database.indexes_on_materialized_view(view)? {
+            let index_subject = format!(
+                "materialized view {schema}.{name} / index {}",
+                index.name().unwrap_or("<unnamed>")
+            );
+            self.text(
+                format!("{index_subject} / relation"),
+                self.relation_name(&index.relation(database)?),
+            );
+            self.text(
+                format!("{index_subject} / include"),
+                index
+                    .include_column_names()
+                    .map(|(column, quoted)| normalize_identifier(column, quoted))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            self.index(&schema, &name, &index_subject, index)?;
         }
         Ok(())
     }

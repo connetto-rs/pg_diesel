@@ -6,10 +6,10 @@ use sql_traits::structs::{GenericDB, SchemaProfile};
 
 use crate::dialect::PostgresDialect;
 use crate::model_metadata::{
-    PgCastEntry, PgCheckConstraint, PgColumn, PgDataType, PgDomainEntry, PgExtensionEntry,
-    PgForeignKey, PgFunction, PgIndexEntry, PgOperatorEntry, PgPolicy, PgRoleMembership,
-    PgRuleEntry, PgSchema, PgSequenceEntry, PgTable, PgUserDefinedType, PgViewDefinition,
-    TableMetadata, TriggerMetadata,
+    OnMaterializedView, PgCastEntry, PgCheckConstraint, PgColumn, PgDataType, PgDomainEntry,
+    PgExtensionEntry, PgForeignKey, PgFunction, PgIndexEntry, PgOperatorEntry, PgPolicy,
+    PgRoleMembership, PgRuleEntry, PgSchema, PgSequenceEntry, PgTable, PgUserDefinedType,
+    PgViewDefinition, TableMetadata, TriggerMetadata,
 };
 use crate::models::{PgRole, RoleColumnGrants, RoleTableGrants};
 mod key_column_usage_metadata;
@@ -60,6 +60,7 @@ impl SchemaProfile for PgDieselProfile {
     type Index = PgIndexEntry;
     type Ingestion = Option<Arc<PgCatalogMetadata>>;
     type MaterializedView = PgViewDefinition;
+    type MaterializedViewIndex = PgIndexEntry<OnMaterializedView>;
     type Operator = PgOperatorEntry;
     type Policy = PgPolicy;
     type Role = PgRole;
