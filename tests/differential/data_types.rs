@@ -255,6 +255,82 @@ async fn enum_without_cached_members_fails_type_construction() {
 }
 
 #[tokio::test]
+async fn attributes_answer_composite_fields_with_their_collations() {
+    for &major in COMPILED_MAJORS {
+        use pg_diesel::{
+            model_metadata::PgUserDefinedType, sql_traits::traits::UserDefinedTypeLike,
+        };
+
+        let docker = reference_docker(major, "attributes").await.unwrap();
+        let mut connection: PgConnection = establish_connection(docker.port, "attributes").unwrap();
+        connection
+            .batch_execute(
+                r#"
+    CREATE TYPE pair AS (left_side INT, discarded text, "Right" VARCHAR(3) COLLATE "C");
+    ALTER TYPE pair DROP ATTRIBUTE discarded;
+    CREATE TYPE mood AS ENUM ('sad');
+"#,
+            )
+            .unwrap();
+        let cache = CatalogCache::load(&mut connection).unwrap();
+        let database: PgDieselDatabase =
+            GenericDBBuilder::new("attributes".to_owned(), PostgresDialect).into();
+        let types =
+            PgUserDefinedType::load_all(&["public".to_owned()], &cache, &mut connection).unwrap();
+        let type_named = |name: &str| types.iter().find(|type_| type_.name() == name);
+        let fields: Vec<_> = type_named("pair")
+            .unwrap()
+            .attributes(&database)
+            .unwrap()
+            .collect();
+        assert_eq!(
+            fields
+                .iter()
+                .map(|field| (
+                    field.name(),
+                    field.name_is_quoted(),
+                    field.data_type().normalized_name(&database),
+                    field.data_type().max_character_length(&database)
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (Some("left_side"), true, "INT".into(), None),
+                (Some("Right"), true, "VARCHAR".into(), Some(3))
+            ]
+        );
+        assert_eq!(fields[0].collation(), &ColumnCollation::DatabaseDefault);
+        let ColumnCollation::Named(collation) = fields[1].collation() else {
+            panic!("a declared COLLATE names the collation");
+        };
+        assert_eq!(
+            collation.name(),
+            &TargetName::new("C", true).with_schema("pg_catalog", true)
+        );
+        assert!(type_named("mood").unwrap().attributes(&database).is_none());
+    }
+}
+
+#[tokio::test]
+async fn composite_without_cached_attributes_fails_type_loading() {
+    for &major in COMPILED_MAJORS {
+        use pg_diesel::model_metadata::{PgUserDefinedType, UserDefinedTypeError};
+
+        let docker = reference_docker(major, "uncached_composite").await.unwrap();
+        let mut connection: PgConnection =
+            establish_connection(docker.port, "uncached_composite").unwrap();
+        let cache = CatalogCache::load(&mut connection).unwrap();
+        connection
+            .batch_execute("CREATE TYPE later AS (value text)")
+            .unwrap();
+        assert!(matches!(
+            PgUserDefinedType::load_all(&["public".to_owned()], &cache, &mut connection),
+            Err(UserDefinedTypeError::CompositeAttributesMissing { name, schema })
+                if name == "later" && schema == "public"
+        ));
+    }
+}
+
+#[tokio::test]
 async fn lengths_and_units_preserve_declared_type_boundaries() {
     for &major in COMPILED_MAJORS {
         use pg_diesel::sql_traits::traits::CharacterLengthUnit;

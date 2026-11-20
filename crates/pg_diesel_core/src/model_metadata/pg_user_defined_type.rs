@@ -9,7 +9,9 @@
 //! its own, which names the pool but is not a type the schema lists of its
 //! own. A shell is the bare `CREATE TYPE name;`, which stays undefined until
 //! a later definition fills it. An enum type holds its labels in the order
-//! `pg_enum` sorts them, the order every `ALTER TYPE ... ADD VALUE` leaves.
+//! `pg_enum` sorts them, the order every `ALTER TYPE ... ADD VALUE` leaves. A
+//! composite type holds the declared type a column of it carries, whose
+//! fields are its attributes.
 
 use std::sync::Arc;
 
@@ -20,6 +22,7 @@ use sql_traits::traits::UserDefinedTypeKind;
 
 use crate::database::{CatalogCache, FIRST_NORMAL_OBJECT_ID};
 use crate::{
+    model_metadata::PgDataType,
     schema::pg_catalog::{pg_namespace::pg_namespace, pg_type::pg_type},
     shared::schema::pg_catalog::pg_class,
 };
@@ -33,6 +36,16 @@ pub enum UserDefinedTypeError {
         /// The name of the enum type.
         name: String,
         /// The schema of the enum type.
+        schema: String,
+    },
+    /// The attributes of the composite type are not in the catalog cache.
+    #[error(
+        "the attributes of the composite type {schema}.{name} are missing from the catalog cache"
+    )]
+    CompositeAttributesMissing {
+        /// The name of the composite type.
+        name: String,
+        /// The schema of the composite type.
         schema: String,
     },
     /// A query failed.
@@ -52,6 +65,9 @@ pub struct PgUserDefinedType {
     /// The labels of an enum type in sort order, shared with the catalog
     /// cache, and `None` for every other kind.
     enum_labels: Option<Arc<[String]>>,
+    /// The declared type of a composite type, whose fields are its
+    /// attributes, and `None` for every other kind.
+    composite: Option<PgDataType>,
 }
 
 impl PgUserDefinedType {
@@ -80,15 +96,25 @@ impl PgUserDefinedType {
         self.enum_labels.as_deref()
     }
 
+    /// Returns the declared type of a composite type, whose fields are its
+    /// attributes in declaration order, or `None` for every other kind.
+    #[must_use]
+    pub fn composite(&self) -> Option<&PgDataType> {
+        self.composite.as_ref()
+    }
+
     /// Loads every user-defined type of the schemas `schemas` names, from
     /// the rows `pg_type` holds for them, with the labels of each enum type
-    /// as `cache` holds them.
+    /// and the attributes of each composite type as `cache` holds them.
     ///
     /// # Errors
     ///
-    /// Returns [`UserDefinedTypeError::Query`] if the query fails, and
+    /// Returns [`UserDefinedTypeError::Query`] if the query fails,
     /// [`UserDefinedTypeError::EnumLabelsMissing`] if `cache` holds no labels
-    /// for an enum type, one created after the cache was loaded.
+    /// for an enum type, and
+    /// [`UserDefinedTypeError::CompositeAttributesMissing`] if `cache` holds
+    /// no complete attributes for a composite type. Either happens to a type
+    /// created after the cache was loaded.
     pub fn load_all(
         schemas: &[String],
         cache: &CatalogCache,
@@ -149,11 +175,26 @@ impl PgUserDefinedType {
                 } else {
                     None
                 };
+                let composite = if kind == UserDefinedTypeKind::Composite {
+                    let Some(composite) = cache
+                        .pg_type(oid)
+                        .and_then(|pg_type| PgDataType::from_type(pg_type, -1, cache, 0))
+                    else {
+                        return Err(UserDefinedTypeError::CompositeAttributesMissing {
+                            name,
+                            schema,
+                        });
+                    };
+                    Some(composite)
+                } else {
+                    None
+                };
                 Ok(Self {
                     name,
                     schema,
                     kind,
                     enum_labels,
+                    composite,
                 })
             })
             .collect()

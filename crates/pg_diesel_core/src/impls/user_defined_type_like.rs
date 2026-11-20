@@ -1,11 +1,14 @@
 //! Implementation of [`UserDefinedTypeLike`] for [`PgUserDefinedType`].
 
 use sql_traits::traits::{
-    Enumeration, EnumerationKind, EnumerationMember, Metadata, UserDefinedTypeKind,
-    UserDefinedTypeLike,
+    DataTypeLike, Enumeration, EnumerationKind, EnumerationMember, Metadata, StructuredField,
+    UserDefinedTypeKind, UserDefinedTypeLike,
 };
 
-use crate::{PgDieselDatabase, model_metadata::PgUserDefinedType};
+use crate::{
+    PgDieselDatabase,
+    model_metadata::{PgDataType, PgUserDefinedType},
+};
 
 impl Metadata for PgUserDefinedType {
     type Meta = ();
@@ -45,5 +48,12 @@ impl UserDefinedTypeLike for PgUserDefinedType {
                     .map(|label| EnumerationMember::new(label, None)),
             )
         })
+    }
+
+    fn attributes<'db>(
+        &'db self,
+        database: &'db PgDieselDatabase,
+    ) -> Option<impl Iterator<Item = StructuredField<'db, PgDataType>>> {
+        self.composite()?.structured_fields(database)
     }
 }
