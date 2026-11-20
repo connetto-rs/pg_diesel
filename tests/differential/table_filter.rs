@@ -366,7 +366,7 @@ async fn unfiltered_readers_return_all_schema_metadata() {
         assert_eq!(
             rules
                 .iter()
-                .map(|rule| (rule.relation_schema(), rule.relation_name(), rule.name()))
+                .map(|rule| (rule.target().schema(), rule.target().name(), rule.name()))
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([
                 ("app", "kept", "kept_no_delete"),

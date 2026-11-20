@@ -8,7 +8,6 @@ use sqlparser::ast::Action;
 use crate::{
     model_metadata::{
         ColumnMetadata, PgCheckConstraint, PgColumn, PgForeignKey, PgIndexEntry, PgPolicy, PgTable,
-        TriggerMetadata,
     },
     models::PgDescription,
 };
@@ -22,8 +21,6 @@ pub type TableIdentity = (String, String);
 pub struct TableMetadataDetails {
     /// The description of the table, if any.
     pub description: Option<PgDescription>,
-    /// The triggers `pg_trigger` records for the table.
-    pub triggers: Vec<Arc<TriggerMetadata>>,
     /// The policies defined on the table.
     pub policies: Vec<Arc<PgPolicy>>,
     /// The tables this one inherits from through `INHERITS`.
@@ -43,8 +40,6 @@ pub struct TableMetadata {
     metadata: sql_traits::structs::TableMetadata<PgTable>,
     /// The description of the table, if any.
     description: Option<PgDescription>,
-    /// The triggers `pg_trigger` records for the table.
-    triggers: Vec<Arc<TriggerMetadata>>,
     /// The policies defined on the table.
     policies: Vec<Arc<PgPolicy>>,
     /// The tables this one inherits from through `INHERITS`.
@@ -67,7 +62,6 @@ impl TableMetadata {
         Self {
             metadata,
             description: details.description,
-            triggers: details.triggers,
             policies: details.policies,
             parents: details.parents,
             partition_root: details.partition_root,
@@ -153,11 +147,6 @@ impl TableMetadata {
     #[must_use]
     pub fn description(&self) -> Option<&PgDescription> {
         self.description.as_ref()
-    }
-
-    /// Returns an iterator over the triggers of the table.
-    pub fn triggers(&self) -> impl Iterator<Item = &Arc<TriggerMetadata>> {
-        self.triggers.iter()
     }
 
     /// Returns an iterator over the policies of the table.

@@ -2,15 +2,12 @@
 
 use sql_traits::{
     errors::LookupError,
-    structs::{IdentifierCase, TargetName},
-    traits::{DatabaseLike, Metadata, Relation, RuleLike},
+    structs::TargetName,
+    traits::{Metadata, Relation, RuleLike},
 };
 use sqlparser::ast::{CreateRuleAction, CreateRuleEvent, Expr};
 
-use crate::{
-    PgDieselDatabase,
-    model_metadata::{PgRuleEntry, RuleRelationKind},
-};
+use crate::{PgDieselDatabase, model_metadata::PgRuleEntry};
 
 impl Metadata for PgRuleEntry {
     type Meta = ();
@@ -24,8 +21,7 @@ impl RuleLike for PgRuleEntry {
     }
 
     fn target_relation_name(&self) -> TargetName<'_> {
-        // Catalog names are stored names: folding again would rename them.
-        TargetName::new(self.relation_name(), true).with_schema(self.relation_schema(), true)
+        self.target().target_name()
     }
 
     /// The relation is read by the stored name the catalog bound it to, the
@@ -37,22 +33,7 @@ impl RuleLike for PgRuleEntry {
     where
         Self: 'db,
     {
-        let target = self.target_relation_name();
-        let not_found = || LookupError::RelationNotFound {
-            object_name: format!("{}.{}", self.relation_schema(), self.relation_name()),
-        };
-        match self.relation_kind() {
-            RuleRelationKind::View => database
-                .view_by_target(target, IdentifierCase::AsWritten)?
-                .map(Relation::View),
-            RuleRelationKind::ForeignTable => database
-                .foreign_table_by_target(target, IdentifierCase::AsWritten)?
-                .map(Relation::ForeignTable),
-            RuleRelationKind::Table => database
-                .table_by_target(target, IdentifierCase::AsWritten)?
-                .map(Relation::Table),
-        }
-        .ok_or_else(not_found)
+        self.target().resolve(database)
     }
 
     fn event(&self) -> CreateRuleEvent {

@@ -18,8 +18,7 @@ use pg_diesel::sqlparser::{
 use pg_diesel::{
     PgDieselDatabase,
     database::{PgDatabaseBuildError, PgDieselDatabaseBuilder},
-    model_metadata::PgTable,
-    models::TableMetadataError,
+    model_metadata::{PgTable, TriggerDefinitionError},
     sql_traits::{
         errors::LookupError,
         structs::{
@@ -751,17 +750,17 @@ async fn undocumented_trigger_enablement_is_refused() {
                 .schema("public")
                 .try_into();
         match refused {
-            Err(PgDatabaseBuildError::TableMetadata(
-                TableMetadataError::UnknownTriggerEnablement {
+            Err(PgDatabaseBuildError::TriggerDefinition(
+                TriggerDefinitionError::UnknownEnablement {
                     schema,
-                    table,
+                    relation,
                     trigger,
                     tgenabled,
                 },
             )) => assert_eq!(
                 (
                     schema.as_str(),
-                    table.as_str(),
+                    relation.as_str(),
                     trigger.as_str(),
                     tgenabled.as_str()
                 ),
@@ -1209,14 +1208,13 @@ async fn test_database_build() {
             .triggers()
             .find(|trigger| TriggerLike::name(trigger) == "children_are_kept")
             .expect("the trigger is recorded");
-        assert_eq!(trigger.target_table_name().name(), "children");
-        assert_eq!(trigger.target_table_name().schema(), Some("app"));
-        assert_eq!(
-            TriggerLike::table(trigger, &database)
-                .expect("in database")
-                .name(),
-            "children"
-        );
+        assert_eq!(trigger.target_relation_name().name(), "children");
+        assert_eq!(trigger.target_relation_name().schema(), Some("app"));
+        let Relation::Table(on) = TriggerLike::relation(trigger, &database).expect("in database")
+        else {
+            panic!("the trigger is on a table")
+        };
+        assert_eq!(on.name(), "children");
         assert_eq!(trigger.timing(), Some(TriggerPeriod::Before));
         assert_eq!(
             trigger.orientation(),

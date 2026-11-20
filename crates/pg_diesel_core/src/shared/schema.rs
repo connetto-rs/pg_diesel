@@ -385,8 +385,9 @@ pub(crate) mod pg_catalog {
         information_schema::columns::columns,
         pg_catalog::{
             pg_am::pg_am, pg_attrdef::pg_attrdef, pg_authid::pg_authid, pg_depend::pg_depend,
-            pg_description::pg_description, pg_namespace::pg_namespace, pg_rewrite::pg_rewrite,
-            pg_sequence::pg_sequence, pg_type::pg_type,
+            pg_description::pg_description, pg_namespace::pg_namespace, pg_proc::pg_proc,
+            pg_rewrite::pg_rewrite, pg_sequence::pg_sequence, pg_trigger::pg_trigger,
+            pg_type::pg_type,
         },
     };
     diesel::allow_tables_to_appear_in_same_query!(
@@ -404,8 +405,10 @@ pub(crate) mod pg_catalog {
     diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_depend);
     diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_description);
     diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_namespace);
+    diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_proc);
     diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_rewrite);
     diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_sequence);
+    diesel::allow_tables_to_appear_in_same_query!(pg_class, pg_trigger);
     diesel::allow_tables_to_appear_in_same_query!(pg_attribute, columns);
     diesel::allow_tables_to_appear_in_same_query!(pg_attribute, pg_attrdef);
     diesel::allow_tables_to_appear_in_same_query!(pg_attribute, pg_depend);
