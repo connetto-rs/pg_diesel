@@ -9,7 +9,7 @@ use diesel::{
 
 use crate::{
     database::ServerVersion,
-    models::{Column, KeyColumnUsage, PgDescription, PgTrigger, Table},
+    models::{Column, KeyColumnUsage, PgDescription, Table},
     shared::models::PgIndex,
 };
 
@@ -305,41 +305,6 @@ pub(crate) fn standalone_indices(
         .into_iter()
         .filter(|row| !backed.contains(&row.index.indexrelid))
         .collect())
-}
-
-/// Returns the triggers `pg_trigger` records for the table, one row per
-/// trigger, with the name the engine records the function they execute under
-/// and, for a trigger with a `WHEN` condition, the `CREATE TRIGGER` statement
-/// `pg_get_triggerdef` prints, the one place the condition reads as SQL.
-///
-/// A partition's copy of a trigger on its partitioned table is internal
-/// before `PostgreSQL` 15, and it is told apart from the engine's own
-/// triggers by the dependency on the trigger it copies.
-pub(crate) fn triggers(
-    table_oid: u32,
-    conn: &mut PgConnection,
-) -> Result<Vec<(PgTrigger, String, Option<String>)>, diesel::result::Error> {
-    use crate::schema::pg_catalog::{pg_proc::pg_proc, pg_trigger::pg_trigger};
-
-    pg_trigger::table
-        .inner_join(pg_proc::table.on(pg_trigger::tgfoid.eq(pg_proc::oid)))
-        .filter(pg_trigger::tgrelid.eq(table_oid))
-        .filter(pg_trigger::tgisinternal.eq(false).or(sql::<Bool>(
-            "EXISTS (SELECT 1 FROM pg_catalog.pg_depend \
-             WHERE pg_depend.objid = pg_trigger.oid \
-             AND pg_depend.classid = 'pg_catalog.pg_trigger'::pg_catalog.regclass \
-             AND pg_depend.refclassid = 'pg_catalog.pg_trigger'::pg_catalog.regclass)",
-        )))
-        .order_by(pg_trigger::oid)
-        .select((
-            PgTrigger::as_select(),
-            pg_proc::proname,
-            sql::<Nullable<Text>>(
-                "CASE WHEN pg_trigger.tgqual IS NULL THEN NULL \
-                 ELSE pg_get_triggerdef(pg_trigger.oid) END",
-            ),
-        ))
-        .load::<(PgTrigger, String, Option<String>)>(conn)
 }
 
 /// Returns the name each not-null constraint of the table holds, by the

@@ -14,8 +14,11 @@ pub use pg_column::PgColumn;
 mod pg_data_type;
 pub use pg_data_type::PgDataType;
 mod trigger_metadata;
-pub use trigger_metadata::{TriggerConditionError, TriggerMetadata};
-pub(crate) use trigger_metadata::{decode_enablement, when_condition};
+pub use trigger_metadata::{
+    TriggerConditionError, TriggerDefinitionError, TriggerMetadata, TriggerRow,
+};
+mod target_relation;
+pub use target_relation::{TargetRelation, TargetRelationKind};
 mod policy_metadata;
 pub use policy_metadata::PolicyMetadata;
 mod role_metadata;
@@ -44,7 +47,7 @@ pub use view_definition::{PgViewDefinition, ViewDefinitionError};
 mod pg_sequence_entry;
 pub use pg_sequence_entry::PgSequenceEntry;
 mod pg_rule_entry;
-pub use pg_rule_entry::{PgRuleEntry, RuleDefinitionError, RuleRelationKind};
+pub use pg_rule_entry::{PgRuleEntry, RuleDefinitionError};
 mod pg_extension_entry;
 pub use pg_extension_entry::PgExtensionEntry;
 mod pg_domain_entry;

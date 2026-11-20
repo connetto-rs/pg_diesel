@@ -3,7 +3,7 @@
 use sql_traits::{
     errors::LookupError,
     structs::{TargetName, TriggerEnablement},
-    traits::{DatabaseLike, Metadata, TableLike, TriggerLike},
+    traits::{DatabaseLike, Metadata, Relation, TableLike, TriggerLike},
 };
 use sqlparser::ast::{Expr, TriggerEvent, TriggerObjectKind, TriggerPeriod};
 
@@ -20,19 +20,20 @@ impl TriggerLike for TriggerMetadata {
         &self.model.tgname
     }
 
-    fn table<'db>(
+    /// The relation is read by the stored name the catalog bound it to, the
+    /// kind `pg_class` records deciding the store it lives in.
+    fn relation<'db>(
         &'db self,
-        _database: &'db Self::DB,
-    ) -> Result<&'db <Self::DB as DatabaseLike>::Table, LookupError>
+        database: &'db Self::DB,
+    ) -> Result<Relation<'db, Self::DB>, LookupError>
     where
         Self: 'db,
     {
-        Ok(&self.table)
+        self.target.resolve(database)
     }
 
-    fn target_table_name(&self) -> TargetName<'_> {
-        // Catalog names are stored names: folding again would rename them.
-        TargetName::new(self.table.name(), true).with_schema(self.table.schema(), true)
+    fn target_relation_name(&self) -> TargetName<'_> {
+        self.target.target_name()
     }
 
     fn events(&self) -> &[TriggerEvent] {
@@ -51,6 +52,8 @@ impl TriggerLike for TriggerMetadata {
         self.condition.as_ref()
     }
 
+    /// Only a partition's copy of a trigger records a parent, and a partition
+    /// is a table or a foreign table.
     fn parent_trigger<'db>(
         &'db self,
         database: &'db Self::DB,
@@ -61,7 +64,11 @@ impl TriggerLike for TriggerMetadata {
         if self.model.tgparentid == 0 {
             return Ok(None);
         }
-        TableLike::partition_root(self.table.as_ref(), database)?
+        let (Relation::Table(table) | Relation::ForeignTable(table)) = self.relation(database)?
+        else {
+            return Ok(None);
+        };
+        TableLike::partition_root(table, database)?
             .map(|parent_table| TableLike::triggers(parent_table, database))
             .transpose()
             .map(|triggers| triggers?.find(|trigger| trigger.model.oid == self.model.tgparentid))

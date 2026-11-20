@@ -18,20 +18,10 @@ use sqlparser::{
 };
 
 use crate::{
+    model_metadata::TargetRelation,
     schema::pg_catalog::{pg_namespace::pg_namespace, pg_rewrite::pg_rewrite},
     shared::schema::pg_catalog::pg_class,
 };
-
-/// The relation a rule's `pg_rewrite` row points at, by its kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuleRelationKind {
-    /// A table, including a partitioned one.
-    Table,
-    /// A foreign table.
-    ForeignTable,
-    /// A plain view.
-    View,
-}
 
 /// The catalog facts a rule row loads, the definition rendered by
 /// `pg_get_ruledef`.
@@ -77,12 +67,8 @@ pub struct PgRuleEntry {
     oid: u32,
     /// The stored name of the rule, in exact case.
     name: String,
-    /// The stored name of the schema the rule's relation lives in.
-    relation_schema: String,
-    /// The stored name of the relation the rule is defined on.
-    relation_name: String,
-    /// The kind of the relation the rule is defined on.
-    relation_kind: RuleRelationKind,
+    /// The relation the rule is defined on.
+    target: TargetRelation,
     /// The parsed definition the trait answers from.
     rule: CreateRule,
 }
@@ -94,22 +80,10 @@ impl PgRuleEntry {
         &self.name
     }
 
-    /// Returns the schema the rule's relation lives in.
+    /// Returns the relation the rule is defined on.
     #[must_use]
-    pub fn relation_schema(&self) -> &str {
-        &self.relation_schema
-    }
-
-    /// Returns the name of the relation the rule is defined on.
-    #[must_use]
-    pub fn relation_name(&self) -> &str {
-        &self.relation_name
-    }
-
-    /// Returns the kind of the relation the rule is defined on.
-    #[must_use]
-    pub fn relation_kind(&self) -> RuleRelationKind {
-        self.relation_kind
+    pub fn target(&self) -> &TargetRelation {
+        &self.target
     }
 
     /// Returns the command the rule fires on.
@@ -198,17 +172,10 @@ impl PgRuleEntry {
             Some(Statement::CreateRule(rule)) if statements.is_empty() => rule,
             _ => return Err(RuleDefinitionError::UnexpectedShape { name: row.rulename }),
         };
-        let kind = match row.relkind.as_str() {
-            "v" => RuleRelationKind::View,
-            "f" => RuleRelationKind::ForeignTable,
-            _ => RuleRelationKind::Table,
-        };
         Ok(Self {
             oid: row.oid,
             name: row.rulename,
-            relation_schema: row.nspname,
-            relation_name: row.relname,
-            relation_kind: kind,
+            target: TargetRelation::new(row.nspname, row.relname, &row.relkind),
             rule,
         })
     }
@@ -239,32 +206,5 @@ mod tests {
     fn a_statement_that_is_no_rule_is_reported_as_the_wrong_shape() {
         let error = PgRuleEntry::new(row("SELECT 1")).expect_err("the statement is no rule");
         assert!(matches!(error, RuleDefinitionError::UnexpectedShape { .. }));
-    }
-
-    fn entry_of(relkind: &str) -> PgRuleEntry {
-        let row = RuleRow {
-            relkind: relkind.to_string(),
-            ..row("CREATE RULE keep AS ON SELECT TO app.relation DO INSTEAD NOTHING")
-        };
-        PgRuleEntry::new(row).expect("the definition parses back")
-    }
-
-    #[test]
-    fn a_relation_the_database_does_not_hold_is_reported_not_found() {
-        use sql_traits::{errors::LookupError, traits::RuleLike};
-
-        use crate::PgDieselDatabase;
-        use crate::dialect::PostgresDialect;
-
-        for relkind in ["v", "f", "r"] {
-            let entry = entry_of(relkind);
-            let database = PgDieselDatabase::new("catalog".to_string(), PostgresDialect).into();
-            let error =
-                RuleLike::relation(&entry, &database).expect_err("the database holds no relation");
-            assert!(
-                matches!(error, LookupError::RelationNotFound { .. }),
-                "relkind {relkind} reports the missing relation"
-            );
-        }
     }
 }

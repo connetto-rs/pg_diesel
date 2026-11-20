@@ -1,7 +1,11 @@
 //! Submodule providing the `TriggerMetadata` struct for a [`PgTrigger`] model.
 
-use std::sync::Arc;
-
+use diesel::{
+    BoolExpressionMethods, ExpressionMethods, JoinOnDsl, PgConnection, QueryDsl, RunQueryDsl,
+    SelectableHelper,
+    dsl::sql,
+    sql_types::{Array, Bool, Nullable, Text},
+};
 use sql_traits::structs::TriggerEnablement;
 use sqlparser::{
     ast::{Expr, Ident, Statement, TriggerEvent, TriggerObject, TriggerObjectKind, TriggerPeriod},
@@ -9,7 +13,12 @@ use sqlparser::{
     parser::{Parser, ParserError},
 };
 
-use crate::{model_metadata::PgTable, models::PgTrigger};
+use crate::{
+    model_metadata::TargetRelation,
+    models::PgTrigger,
+    schema::pg_catalog::{pg_namespace::pg_namespace, pg_proc::pg_proc, pg_trigger::pg_trigger},
+    shared::schema::pg_catalog::pg_class,
+};
 
 /// One bit of the `pg_trigger.tgtype` mask, which a trigger decodes against.
 const TYPE_ROW: i16 = 1;
@@ -31,8 +40,8 @@ const TYPE_INSTEAD: i16 = 64;
 pub struct TriggerMetadata {
     /// The underlying trigger model.
     pub model: PgTrigger,
-    /// The table that the trigger is defined on.
-    pub table: Arc<PgTable>,
+    /// The table or view the trigger is defined on.
+    pub target: TargetRelation,
     /// The events that fire the trigger.
     pub events: Vec<TriggerEvent>,
     /// The timing of the trigger.
@@ -49,6 +58,61 @@ pub struct TriggerMetadata {
     /// The sessions the trigger fires in, as `pg_trigger.tgenabled` records
     /// them.
     pub enablement: TriggerEnablement,
+}
+
+/// The catalog facts a trigger row loads beside its `pg_trigger` row.
+#[derive(Debug, diesel::Queryable)]
+pub struct TriggerRow {
+    /// The `pg_trigger` row.
+    trigger: PgTrigger,
+    /// The name the engine records the function the trigger executes under.
+    function_name: String,
+    /// The `CREATE TRIGGER` statement `pg_get_triggerdef` prints, read only
+    /// for a trigger with a `WHEN` condition.
+    definition: Option<String>,
+    /// The stored name of the schema the relation lives in.
+    nspname: String,
+    /// The stored name of the relation the trigger is defined on.
+    relname: String,
+    /// The kind of the relation the trigger is defined on.
+    relkind: String,
+    /// The stored names of the columns an `UPDATE OF` fires the trigger on,
+    /// in the order `pg_trigger.tgattr` lists them.
+    update_columns: Vec<String>,
+}
+
+/// What stopped a `pg_trigger` row from becoming a [`TriggerMetadata`].
+#[derive(Debug, thiserror::Error)]
+pub enum TriggerDefinitionError {
+    /// The definition `pg_get_triggerdef` printed for a trigger with a `WHEN`
+    /// condition yields no condition.
+    #[error("the definition `{definition}` of trigger {trigger} on {schema}.{relation} {source}")]
+    UnreadableCondition {
+        /// The schema of the relation.
+        schema: String,
+        /// The name of the relation.
+        relation: String,
+        /// The name of the trigger.
+        trigger: String,
+        /// The definition as `PostgreSQL` printed it.
+        definition: String,
+        /// Why the definition yields no condition, boxed to keep the error
+        /// small.
+        source: Box<TriggerConditionError>,
+    },
+    /// A trigger's `pg_trigger.tgenabled` holds a value `PostgreSQL` does not
+    /// document.
+    #[error("trigger {trigger} on {schema}.{relation} has the unknown tgenabled `{tgenabled}`")]
+    UnknownEnablement {
+        /// The schema of the relation.
+        schema: String,
+        /// The name of the relation.
+        relation: String,
+        /// The name of the trigger.
+        trigger: String,
+        /// The value `pg_trigger.tgenabled` holds.
+        tgenabled: String,
+    },
 }
 
 /// What stopped a trigger definition from yielding its `WHEN` condition.
@@ -72,7 +136,7 @@ pub enum TriggerConditionError {
 /// Returns [`TriggerConditionError::Unparsable`] when `sqlparser` cannot read
 /// `definition`, and [`TriggerConditionError::UnexpectedShape`] when it is not
 /// one `CREATE TRIGGER` carrying a condition.
-pub(crate) fn when_condition(definition: &str) -> Result<Expr, TriggerConditionError> {
+fn when_condition(definition: &str) -> Result<Expr, TriggerConditionError> {
     let mut statements = Parser::parse_sql(&PostgreSqlDialect {}, definition)?;
     match statements.pop() {
         Some(Statement::CreateTrigger(trigger)) if statements.is_empty() => {
@@ -88,7 +152,7 @@ pub(crate) fn when_condition(definition: &str) -> Result<Expr, TriggerConditionE
 
 /// Decodes the sessions a `pg_trigger.tgenabled` value fires the trigger in,
 /// or `None` for a value `PostgreSQL` does not document.
-pub(crate) fn decode_enablement(tgenabled: &str) -> Option<TriggerEnablement> {
+fn decode_enablement(tgenabled: &str) -> Option<TriggerEnablement> {
     match tgenabled {
         "O" => Some(TriggerEnablement::Origin),
         "D" => Some(TriggerEnablement::Disabled),
@@ -99,20 +163,104 @@ pub(crate) fn decode_enablement(tgenabled: &str) -> Option<TriggerEnablement> {
 }
 
 impl TriggerMetadata {
-    /// Creates a `TriggerMetadata` over a `pg_trigger` row, decoding the
-    /// events, timing and orientation the row's `tgtype` mask holds, beside
-    /// the columns an `UPDATE` event fires on, the `WHEN` condition and the
-    /// sessions the trigger fires in.
-    #[must_use]
-    pub fn new(
-        model: PgTrigger,
-        table: Arc<PgTable>,
-        function_name: String,
-        update_columns: Vec<String>,
-        condition: Option<Expr>,
-        enablement: TriggerEnablement,
-    ) -> Self {
-        Self {
+    /// Loads the trigger rows of the tables, foreign tables and plain views
+    /// the schemas `schemas` hold, restricting the tables to the OIDs
+    /// `table_oids` when it names some.
+    ///
+    /// A partition's copy of a trigger on its partitioned table is internal
+    /// before `PostgreSQL` 15, and it is told apart from the engine's own
+    /// triggers by the dependency on the trigger it copies.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `diesel::result::Error` if the query fails.
+    pub(crate) fn load_filtered(
+        schemas: &[String],
+        table_oids: Option<&[u32]>,
+        conn: &mut PgConnection,
+    ) -> Result<Vec<TriggerRow>, diesel::result::Error> {
+        let mut query = pg_trigger::table
+            .inner_join(pg_proc::table.on(pg_trigger::tgfoid.eq(pg_proc::oid)))
+            .inner_join(pg_class::table.on(pg_trigger::tgrelid.eq(pg_class::oid)))
+            .inner_join(pg_namespace::table.on(pg_class::relnamespace.eq(pg_namespace::oid)))
+            .filter(pg_class::relkind.eq_any(&["r", "p", "f", "v"]))
+            .filter(pg_namespace::nspname.eq_any(schemas))
+            .filter(pg_trigger::tgisinternal.eq(false).or(sql::<Bool>(
+                "EXISTS (SELECT 1 FROM pg_catalog.pg_depend \
+                 WHERE pg_depend.objid = pg_trigger.oid \
+                 AND pg_depend.classid = 'pg_catalog.pg_trigger'::pg_catalog.regclass \
+                 AND pg_depend.refclassid = 'pg_catalog.pg_trigger'::pg_catalog.regclass)",
+            )))
+            .order_by((pg_namespace::nspname, pg_class::relname, pg_trigger::oid))
+            .select((
+                PgTrigger::as_select(),
+                pg_proc::proname,
+                sql::<Nullable<Text>>(
+                    "CASE WHEN pg_trigger.tgqual IS NULL THEN NULL \
+                     ELSE pg_get_triggerdef(pg_trigger.oid) END",
+                ),
+                pg_namespace::nspname,
+                pg_class::relname,
+                pg_class::relkind,
+                sql::<Array<Text>>(
+                    "ARRAY(SELECT attribute.attname::text \
+                     FROM unnest(pg_trigger.tgattr::int2[]) WITH ORDINALITY AS fired(number, position) \
+                     JOIN pg_catalog.pg_attribute AS attribute \
+                     ON attribute.attrelid = pg_trigger.tgrelid AND attribute.attnum = fired.number \
+                     ORDER BY fired.position)",
+                ),
+            ))
+            .into_boxed();
+        if let Some(oids) = table_oids {
+            query = query.filter(pg_class::relkind.eq("v").or(pg_class::oid.eq_any(oids)));
+        }
+        query.load(conn)
+    }
+
+    /// Reads one trigger row, decoding the events, timing and orientation the
+    /// row's `tgtype` mask holds, beside the columns an `UPDATE` event fires
+    /// on, the `WHEN` condition and the sessions the trigger fires in.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TriggerDefinitionError::UnreadableCondition`] when the
+    /// printed definition yields no `WHEN` condition, and
+    /// [`TriggerDefinitionError::UnknownEnablement`] when `tgenabled` holds a
+    /// value `PostgreSQL` does not document.
+    pub fn new(row: TriggerRow) -> Result<Self, TriggerDefinitionError> {
+        let TriggerRow {
+            trigger: model,
+            function_name,
+            definition,
+            nspname,
+            relname,
+            relkind,
+            update_columns,
+        } = row;
+        let condition = match definition {
+            Some(definition) => match when_condition(&definition) {
+                Ok(condition) => Some(condition),
+                Err(source) => {
+                    return Err(TriggerDefinitionError::UnreadableCondition {
+                        schema: nspname,
+                        relation: relname,
+                        trigger: model.tgname,
+                        definition,
+                        source: Box::new(source),
+                    });
+                }
+            },
+            None => None,
+        };
+        let Some(enablement) = decode_enablement(&model.tgenabled) else {
+            return Err(TriggerDefinitionError::UnknownEnablement {
+                schema: nspname,
+                relation: relname,
+                trigger: model.tgname,
+                tgenabled: model.tgenabled,
+            });
+        };
+        Ok(Self {
             events: decode_events(model.tgtype, update_columns),
             timing: Some(decode_timing(model.tgtype)),
             orientation: Some(decode_orientation(model.tgtype)),
@@ -120,15 +268,9 @@ impl TriggerMetadata {
             function_name,
             condition,
             enablement,
+            target: TargetRelation::new(nspname, relname, &relkind),
             model,
-            table,
-        }
-    }
-
-    /// Returns the table that the trigger is defined on.
-    #[must_use]
-    pub fn table(&self) -> &PgTable {
-        &self.table
+        })
     }
 }
 

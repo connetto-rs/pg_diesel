@@ -15,8 +15,7 @@ use crate::{
     model_metadata::{
         ColumnMetadata, IndexDefinitionError, PgCheckConstraint, PgColumn, PgDataType,
         PgForeignKey, PgIndexEntry, PgPolicy, PgTable, TableMetadata, TableMetadataDetails,
-        TriggerConditionError, TriggerMetadata, decode_enablement, parse_printed_expression,
-        storage_option_entries, when_condition,
+        parse_printed_expression, storage_option_entries,
     },
     models::Column,
 };
@@ -143,37 +142,6 @@ pub enum TableMetadataError {
     /// index.
     #[error(transparent)]
     IndexDefinition(#[from] IndexDefinitionError),
-    /// The `CREATE TRIGGER` statement `pg_get_triggerdef` prints for a
-    /// trigger with a `WHEN` condition does not yield the condition.
-    #[error(
-        "the definition `{definition}` of trigger {trigger} on table {schema}.{table} {source}"
-    )]
-    UnreadableTriggerCondition {
-        /// The schema of the table.
-        schema: String,
-        /// The name of the table.
-        table: String,
-        /// The name of the trigger.
-        trigger: String,
-        /// The definition as `PostgreSQL` printed it.
-        definition: String,
-        /// Why the definition yields no condition, boxed to keep the error
-        /// small.
-        source: Box<TriggerConditionError>,
-    },
-    /// A trigger's `pg_trigger.tgenabled` holds a value `PostgreSQL` does not
-    /// document.
-    #[error("trigger {trigger} on table {schema}.{table} has the unknown tgenabled `{tgenabled}`")]
-    UnknownTriggerEnablement {
-        /// The schema of the table.
-        schema: String,
-        /// The name of the table.
-        table: String,
-        /// The name of the trigger.
-        trigger: String,
-        /// The value `pg_trigger.tgenabled` holds.
-        tgenabled: String,
-    },
 }
 
 impl Table {
@@ -329,52 +297,6 @@ impl Table {
         }
         sql_metadata.set_primary_key(primary_key_columns);
 
-        let triggers = cached_queries::triggers(facts.oid, conn)?
-            .into_iter()
-            .map(|(trigger, function_name, definition)| {
-                let update_columns = trigger
-                    .tgattr
-                    .iter()
-                    .filter(|number| **number != 0)
-                    .filter_map(|number| {
-                        attributes
-                            .iter()
-                            .find(|attribute| attribute.number == *number)
-                            .map(|attribute| attribute.name.clone())
-                    })
-                    .collect();
-                let condition = definition
-                    .map(|definition| {
-                        when_condition(&definition).map_err(|source| {
-                            TableMetadataError::UnreadableTriggerCondition {
-                                schema: self.table_schema.clone(),
-                                table: self.table_name.clone(),
-                                trigger: trigger.tgname.clone(),
-                                definition,
-                                source: Box::new(source),
-                            }
-                        })
-                    })
-                    .transpose()?;
-                let Some(enablement) = decode_enablement(&trigger.tgenabled) else {
-                    return Err(TableMetadataError::UnknownTriggerEnablement {
-                        schema: self.table_schema.clone(),
-                        table: self.table_name.clone(),
-                        trigger: trigger.tgname,
-                        tgenabled: trigger.tgenabled,
-                    });
-                };
-                Ok(Arc::new(TriggerMetadata::new(
-                    trigger,
-                    Arc::clone(table),
-                    function_name,
-                    update_columns,
-                    condition,
-                    enablement,
-                )))
-            })
-            .collect::<Result<_, TableMetadataError>>()?;
-
         let policies = cached_queries::policies(facts.oid, conn)?
             .into_iter()
             .map(|policy| Arc::new(PgPolicy::new(policy, Arc::clone(table))))
@@ -423,7 +345,6 @@ impl Table {
                 description: descriptions
                     .into_iter()
                     .find(|description| description.objsubid == 0),
-                triggers,
                 policies,
                 parents,
                 partition_root,

@@ -34,8 +34,8 @@ use crate::{
         IndexedRelation, OnMaterializedView, PgCastEntry, PgColumn, PgDomainEntry,
         PgExtensionEntry, PgFunction, PgIndexEntry, PgOperatorEntry, PgPolicy, PgRoleMembership,
         PgRuleEntry, PgSchema, PgSequenceEntry, PgTable, PgTableError, PgUserDefinedType,
-        PgViewDefinition, RuleDefinitionError, UserDefinedTypeError, ViewDefinitionError,
-        catalog_identity::CatalogObjects,
+        PgViewDefinition, RuleDefinitionError, TriggerDefinitionError, TriggerMetadata,
+        UserDefinedTypeError, ViewDefinitionError, catalog_identity::CatalogObjects,
     },
     models::{
         PgDbRoleSetting, PgMatview, PgProc, PgRole, PgView, RoleColumnGrants, RoleSettingError,
@@ -283,6 +283,9 @@ pub enum PgDatabaseBuildError {
     #[error("Rule definition: {0}")]
     /// A rule's definition could not be read from the catalogs.
     RuleDefinition(#[from] RuleDefinitionError),
+    #[error("Trigger definition: {0}")]
+    /// A trigger could not be read from the catalogs.
+    TriggerDefinition(#[from] TriggerDefinitionError),
     #[error("Domain definition: {0}")]
     /// A domain could not be read from the catalogs.
     DomainDefinition(#[from] DomainDefinitionError),
@@ -623,10 +626,6 @@ impl<'a, C: VersionCatalog> TryFrom<PgDieselDatabaseBuilder<'a, C>> for PgDiesel
                 generic_builder = generic_builder.add_index(Arc::clone(index), metadata);
             }
 
-            for trigger in table_metadata.triggers() {
-                generic_builder = generic_builder.add_trigger(Arc::clone(trigger), ());
-            }
-
             for policy in table_metadata.policies() {
                 let parse_expr = |sql: Option<String>| -> Option<Expr> {
                     Parser::new(&PostgreSqlDialect {})
@@ -701,6 +700,12 @@ impl<'a, C: VersionCatalog> TryFrom<PgDieselDatabaseBuilder<'a, C>> for PgDiesel
 
         for row in PgRuleEntry::load_filtered(&table_schemas, table_oids.as_deref(), connection)? {
             generic_builder = generic_builder.add_rule(Arc::new(PgRuleEntry::new(row)?), ());
+        }
+
+        for row in
+            TriggerMetadata::load_filtered(&table_schemas, table_oids.as_deref(), connection)?
+        {
+            generic_builder = generic_builder.add_trigger(Arc::new(TriggerMetadata::new(row)?), ());
         }
 
         for extension in PgExtensionEntry::load_all(connection)? {

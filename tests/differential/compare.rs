@@ -1094,7 +1094,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         self.checks(&schema, &name, &subject, table)?;
         self.foreign_keys(&subject, table)?;
         self.indexes(&schema, &name, &subject, table)?;
-        self.triggers(&schema, &name, &subject, table)?;
+        self.triggers(&schema, &name, &subject, table.triggers(database)?)?;
         self.policies(&schema, &name, &subject, table)?;
         if !foreign {
             self.table_privileges(&schema, &name, table)?;
@@ -1573,18 +1573,34 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         Ok(set(reached))
     }
 
-    /// Records a table's triggers, keyed by name, each `WHEN` condition
+    /// Records the triggers on a table or view, keyed by name, each with the
+    /// kind and name of the relation it answers and its `WHEN` condition
     /// brought into the form `PostgreSQL` stores.
-    fn triggers(
+    fn triggers<'t>(
         &mut self,
         schema: &str,
-        table_name: &str,
+        relation_name: &str,
         subject: &str,
-        table: &DB::Table,
-    ) -> Result<(), DescribeError> {
+        triggers: impl Iterator<Item = &'t DB::Trigger>,
+    ) -> Result<(), DescribeError>
+    where
+        DB::Trigger: 't,
+    {
         let database = self.database;
-        for trigger in table.triggers(database)? {
+        for trigger in triggers {
             let trigger_subject = format!("{subject} / trigger {}", trigger.name());
+            let relation = trigger.relation(database)?;
+            let kind = match relation {
+                Relation::Table(_) => "table",
+                Relation::ForeignTable(_) => "foreign table",
+                Relation::View(_) => "view",
+                Relation::MaterializedView(_) => "materialized view",
+                Relation::Sequence(_) => "sequence",
+            };
+            self.text(
+                format!("{trigger_subject} / relation"),
+                format!("{kind} {}", self.relation_name(&relation)),
+            );
             self.text(
                 format!("{trigger_subject} / timing"),
                 format!("{:?}", trigger.timing()),
@@ -1602,7 +1618,10 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 format!("{:?}", trigger.enablement(database)?),
             );
             let parent = match trigger.parent_trigger(database)? {
-                Some(parent) => Some((self.table_name(parent.table(database)?), parent.name())),
+                Some(parent) => Some((
+                    self.relation_name(&parent.relation(database)?),
+                    parent.name(),
+                )),
                 None => None,
             };
             self.text(
@@ -1636,7 +1655,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                         .timing()
                         .map_or_else(String::new, |timing| timing.to_string()),
                     quoted(schema),
-                    quoted(table_name),
+                    quoted(relation_name),
                     trigger
                         .orientation()
                         .map_or_else(String::new, |orientation| orientation.to_string()),
@@ -1804,6 +1823,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             format!("{subject} / owner"),
             format!("{:?}", view.owner(self.database)?),
         );
+        self.triggers(&schema, &name, &subject, view.triggers(self.database))?;
         Ok(())
     }
 
