@@ -354,4 +354,44 @@ mod tests {
     fn an_undocumented_tgenabled_value_decodes_to_no_enablement() {
         assert_eq!(decode_enablement("X"), None);
     }
+
+    #[test]
+    fn a_row_whose_definition_yields_no_condition_is_refused_on_its_relation() {
+        let row = TriggerRow {
+            trigger: PgTrigger {
+                oid: 1,
+                tgrelid: 2,
+                tgparentid: 0,
+                tgname: "audit".to_string(),
+                tgfoid: 3,
+                tgtype: TYPE_ROW | TYPE_INSTEAD | TYPE_INSERT,
+                tgenabled: "O".to_string(),
+                tgisinternal: false,
+                tgconstrrelid: 0,
+                tgconstrindid: 0,
+                tgconstraint: 0,
+                tgdeferrable: false,
+                tginitdeferred: false,
+                tgnargs: 0,
+                tgattr: Vec::new(),
+                tgargs: Vec::new(),
+                tgoldtable: None,
+                tgnewtable: None,
+                tgqual: Some("{OPEXPR}".to_string()),
+            },
+            function_name: "touch".to_string(),
+            definition: Some("not a statement".to_string()),
+            nspname: "app".to_string(),
+            relname: "note_view".to_string(),
+            relkind: "v".to_string(),
+            update_columns: Vec::new(),
+        };
+        let error = TriggerMetadata::new(row).expect_err("the definition does not parse");
+        assert!(matches!(
+            error,
+            TriggerDefinitionError::UnreadableCondition { schema, relation, trigger, .. }
+                if (schema.as_str(), relation.as_str(), trigger.as_str())
+                    == ("app", "note_view", "audit")
+        ));
+    }
 }

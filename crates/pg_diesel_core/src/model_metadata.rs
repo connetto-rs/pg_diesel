@@ -18,7 +18,7 @@ pub use trigger_metadata::{
     TriggerConditionError, TriggerDefinitionError, TriggerMetadata, TriggerRow,
 };
 mod target_relation;
-pub use target_relation::{TargetRelation, TargetRelationKind};
+pub use target_relation::TargetRelation;
 mod policy_metadata;
 pub use policy_metadata::PolicyMetadata;
 mod role_metadata;

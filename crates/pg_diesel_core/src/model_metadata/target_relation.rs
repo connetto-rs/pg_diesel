@@ -11,7 +11,7 @@ use crate::PgDieselDatabase;
 /// The kind of relation a rule or trigger is defined on, by the
 /// `pg_class.relkind` of its target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TargetRelationKind {
+enum TargetRelationKind {
     /// A table, including a partitioned one.
     Table,
     /// A foreign table.
@@ -23,8 +23,7 @@ pub enum TargetRelationKind {
 impl TargetRelationKind {
     /// Returns the kind a `pg_class.relkind` names, a table for any kind
     /// other than a view or a foreign table.
-    #[must_use]
-    pub fn from_relkind(relkind: &str) -> Self {
+    fn from_relkind(relkind: &str) -> Self {
         match relkind {
             "v" => Self::View,
             "f" => Self::ForeignTable,
@@ -67,12 +66,6 @@ impl TargetRelation {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
-    }
-
-    /// Returns the kind of the relation.
-    #[must_use]
-    pub fn kind(&self) -> TargetRelationKind {
-        self.kind
     }
 
     /// Returns the schema-qualified name of the relation, both parts marked

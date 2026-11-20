@@ -207,4 +207,18 @@ mod tests {
         let error = PgRuleEntry::new(row("SELECT 1")).expect_err("the statement is no rule");
         assert!(matches!(error, RuleDefinitionError::UnexpectedShape { .. }));
     }
+
+    #[test]
+    fn the_target_keeps_the_stored_names_quoted() {
+        use sql_traits::traits::RuleLike;
+
+        let row = RuleRow {
+            relname: "Notes".to_string(),
+            ..row("CREATE RULE keep AS ON DELETE TO app.\"Notes\" DO INSTEAD NOTHING")
+        };
+        let entry = PgRuleEntry::new(row).expect("the definition parses back");
+        let target = RuleLike::target_relation_name(&entry);
+        assert_eq!((target.schema(), target.name()), (Some("app"), "Notes"),);
+        assert!(target.name_is_quoted() && target.schema_is_quoted());
+    }
 }
