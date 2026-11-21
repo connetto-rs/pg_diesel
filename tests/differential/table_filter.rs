@@ -115,13 +115,7 @@ async fn selected_tables_preserve_local_facts() {
             key.referenced_table(&with_external_key),
             Err(LookupError::TableNotFound { .. })
         ));
-        assert_eq!(
-            with_external_key
-                .foreign_key_metadata(key)
-                .unwrap()
-                .referenced_columns(),
-            ["id"]
-        );
+        assert_eq!(key.referenced_attnames(), ["id"]);
         connection
             .batch_execute("DROP TABLE app.kept CASCADE")
             .unwrap();
