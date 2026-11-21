@@ -121,6 +121,18 @@ impl PgProc {
         cached_queries::load_bound_dependencies(conn)
     }
 
+    /// Loads `(function, extension name)` pairs, one per function an
+    /// extension's install script created.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `diesel::result::Error` if the query fails.
+    pub fn load_extension_memberships(
+        conn: &mut PgConnection,
+    ) -> Result<Vec<(u32, String)>, diesel::result::Error> {
+        cached_queries::load_extension_memberships(conn)
+    }
+
     /// Loads `(function, kind)` pairs, one per aggregate `pg_aggregate`
     /// records.
     ///

@@ -15,7 +15,7 @@ use sqlparser::ast::{
 use crate::{
     PgDieselDatabase,
     database::{ExecuteHolder, PgProcMetadata},
-    model_metadata::PgFunction,
+    model_metadata::{PgExtensionEntry, PgFunction},
 };
 
 impl Metadata for PgFunction {
@@ -222,6 +222,20 @@ impl FunctionLike for PgFunction {
         Ok(metadata(self, database)?.owner())
     }
 
+    fn extension<'db>(
+        &self,
+        database: &'db Self::DB,
+    ) -> Result<Option<&'db PgExtensionEntry>, LookupError> {
+        let Some(name) = metadata(self, database)?.extension() else {
+            return Ok(None);
+        };
+        database
+            .extensions()
+            .find(|extension| extension.name() == name)
+            .map(Some)
+            .ok_or_else(|| ObjectKind::Extension.not_in_database(name))
+    }
+
     fn returns_null_on_null_argument(&self, database: &Self::DB, index: usize) -> bool {
         let inputs: Vec<(ArgMode, Cow<'_, str>)> = self
             .argument_modes()
@@ -309,6 +323,24 @@ mod tests {
             rolconfig: None,
             oid: Some(oid),
         }
+    }
+
+    #[test]
+    fn a_member_of_an_unloaded_extension_reports_the_extension() {
+        let function = Arc::new(PgFunction::new(
+            PgProc::fixture(1),
+            "app".to_string(),
+            Some("c".to_string()),
+        ));
+        let metadata = PgProcMetadata::new(function.model(), &CatalogCache::default(), None)
+            .with_extension(Some("postgis".to_owned()));
+        let database = PgDieselDatabase::new("catalog".to_string(), PostgresDialect)
+            .add_function(Arc::clone(&function), metadata)
+            .into();
+        assert_eq!(
+            function.extension(&database),
+            Err(ObjectKind::Extension.not_in_database("postgis"))
+        );
     }
 
     #[test]

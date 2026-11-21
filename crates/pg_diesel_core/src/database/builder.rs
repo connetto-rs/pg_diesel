@@ -488,11 +488,17 @@ impl<'a, C: VersionCatalog> TryFrom<PgDieselDatabaseBuilder<'a, C>> for PgDiesel
             PgProc::load_aggregate_kinds(connection)?
                 .into_iter()
                 .collect();
+        // PostgreSQL lets a function belong to one extension at most.
+        let mut extension_memberships: HashMap<u32, String> =
+            PgProc::load_extension_memberships(connection)?
+                .into_iter()
+                .collect();
         let mut loaded = Vec::new();
         for function in PgProc::load_all(connection)? {
             let acls = function_acls.remove(&function.oid);
             let metadata = crate::database::PgProcMetadata::new(&function, &cache, acls.as_deref())
-                .with_aggregate_kind(aggregate_kinds.remove(&function.oid));
+                .with_aggregate_kind(aggregate_kinds.remove(&function.oid))
+                .with_extension(extension_memberships.remove(&function.oid));
             let schema = cache
                 .namespace(function.pronamespace)
                 .unwrap_or_default()

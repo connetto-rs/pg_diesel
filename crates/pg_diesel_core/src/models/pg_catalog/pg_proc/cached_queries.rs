@@ -105,6 +105,25 @@ pub(super) fn load_bound_dependencies(
         .load(conn)
 }
 
+/// Loads the extension each extension member function belongs to, as
+/// `(function, extension name)` pairs.
+///
+/// An install script records an `e` dependency from each function it creates
+/// on the extension, while `ALTER FUNCTION ... DEPENDS ON EXTENSION` records
+/// an `x` one, which leaves the function to the schema.
+pub(super) fn load_extension_memberships(
+    conn: &mut PgConnection,
+) -> Result<Vec<(u32, String)>, diesel::result::Error> {
+    use crate::schema::pg_catalog::{pg_depend::pg_depend, pg_extension::pg_extension};
+    pg_depend::table
+        .inner_join(pg_extension::table.on(pg_extension::oid.eq(pg_depend::refobjid)))
+        .filter(pg_depend::classid.eq(sql::<Oid>("'pg_proc'::regclass")))
+        .filter(pg_depend::refclassid.eq(sql::<Oid>("'pg_extension'::regclass")))
+        .filter(pg_depend::deptype.eq("e"))
+        .select((pg_depend::objid, pg_extension::extname))
+        .load(conn)
+}
+
 /// Loads the kind of every aggregate `pg_aggregate` records, beside the OID
 /// of its `pg_proc` row.
 pub(super) fn load_aggregate_kinds(
