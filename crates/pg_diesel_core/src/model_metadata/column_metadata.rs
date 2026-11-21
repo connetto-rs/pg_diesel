@@ -113,6 +113,7 @@ mod tests {
                 oid: 1,
                 row_security: false,
                 forced_row_security: false,
+                replica_identity: "d".to_owned(),
                 owner: 1,
                 is_partition: false,
                 unlogged: false,

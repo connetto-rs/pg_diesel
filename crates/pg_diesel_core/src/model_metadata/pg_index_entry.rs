@@ -310,6 +310,13 @@ impl<On> PgIndexEntry<On> {
         self.model.indisunique
     }
 
+    /// Returns whether the index is its table's replica identity, as
+    /// `ALTER TABLE ... REPLICA IDENTITY USING INDEX` chose it.
+    #[must_use]
+    pub fn is_replica_identity(&self) -> bool {
+        self.model.indisreplident
+    }
+
     /// Returns the schema the index lives in.
     #[must_use]
     pub fn schema(&self) -> &str {
@@ -380,6 +387,7 @@ mod tests {
                 indexrelid: 1,
                 indrelid: 2,
                 indisunique: false,
+                indisreplident: false,
                 indkey: vec![1],
                 indnkeyatts: 1,
             },
@@ -469,6 +477,7 @@ mod tests {
                     indexrelid: 1,
                     indrelid: 2,
                     indisunique: false,
+                    indisreplident: false,
                     indkey: vec![1],
                     indnkeyatts: 1,
                 },

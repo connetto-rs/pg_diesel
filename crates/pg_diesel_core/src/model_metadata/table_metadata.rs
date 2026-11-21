@@ -15,6 +15,36 @@ use crate::{
 /// The schema and name a table is recorded under, as the catalogs spell them.
 pub type TableIdentity = (String, String);
 
+/// What a table's `UPDATE` and `DELETE` write to the logical replication
+/// stream to identify the old row, as `pg_class.relreplident` records it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplicaIdentitySetting {
+    /// `d`, the columns of the primary key, and none without one.
+    Default,
+    /// `n`, no column.
+    Nothing,
+    /// `f`, every column.
+    Full,
+    /// `i`, the columns of the index whose `pg_index.indisreplident` is set,
+    /// and none once that index is dropped.
+    Index,
+}
+
+impl ReplicaIdentitySetting {
+    /// Reads a `pg_class.relreplident` value, [`None`] for a letter
+    /// `PostgreSQL` does not document.
+    #[must_use]
+    pub fn from_relreplident(letter: &str) -> Option<Self> {
+        match letter {
+            "d" => Some(Self::Default),
+            "n" => Some(Self::Nothing),
+            "f" => Some(Self::Full),
+            "i" => Some(Self::Index),
+            _ => None,
+        }
+    }
+}
+
 /// The `PostgreSQL` catalog facts `TableMetadata` records around its core
 /// metadata, each loaded by a separate catalog read.
 #[derive(Clone, Debug)]
@@ -31,6 +61,8 @@ pub struct TableMetadataDetails {
     pub column_metadata: HashMap<String, ColumnMetadata>,
     /// The table-level privileges the owner's own entry holds.
     pub owner_privileges: Vec<Action>,
+    /// The replica identity `pg_class.relreplident` records.
+    pub replica_identity: ReplicaIdentitySetting,
 }
 
 #[derive(Clone, Debug)]
@@ -50,6 +82,8 @@ pub struct TableMetadata {
     column_metadata: HashMap<String, ColumnMetadata>,
     /// The table-level privileges the owner's own entry holds.
     owner_privileges: Vec<Action>,
+    /// The replica identity `pg_class.relreplident` records.
+    replica_identity: ReplicaIdentitySetting,
 }
 
 impl TableMetadata {
@@ -67,6 +101,7 @@ impl TableMetadata {
             partition_root: details.partition_root,
             column_metadata: details.column_metadata,
             owner_privileges: details.owner_privileges,
+            replica_identity: details.replica_identity,
         }
     }
 
@@ -164,6 +199,12 @@ impl TableMetadata {
     #[must_use]
     pub fn forced_row_security(&self) -> bool {
         self.metadata.rls_forced()
+    }
+
+    /// Returns the replica identity `pg_class.relreplident` records.
+    #[must_use]
+    pub fn replica_identity(&self) -> ReplicaIdentitySetting {
+        self.replica_identity
     }
 
     /// Returns the role owning the table.

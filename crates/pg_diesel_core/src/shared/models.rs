@@ -12,6 +12,9 @@ pub(crate) struct PgIndex {
     pub(crate) indrelid: u32,
     /// `true` if the index enforces uniqueness.
     pub(crate) indisunique: bool,
+    /// `true` if the index is the table's replica identity, which
+    /// `ALTER TABLE ... REPLICA IDENTITY USING INDEX` chose.
+    pub(crate) indisreplident: bool,
     /// The column numbers of the indexed columns, `0` for an expression,
     /// the key first and the `INCLUDE` list after it.
     pub(crate) indkey: Vec<i16>,

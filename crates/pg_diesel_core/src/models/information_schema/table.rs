@@ -14,8 +14,8 @@ use crate::{
     impls::string_to_action,
     model_metadata::{
         ColumnMetadata, IndexDefinitionError, PgCheckConstraint, PgColumn, PgDataType,
-        PgForeignKey, PgIndexEntry, PgPolicy, PgTable, TableMetadata, TableMetadataDetails,
-        parse_printed_expression, storage_option_entries,
+        PgForeignKey, PgIndexEntry, PgPolicy, PgTable, ReplicaIdentitySetting, TableMetadata,
+        TableMetadataDetails, parse_printed_expression, storage_option_entries,
     },
     models::Column,
 };
@@ -142,6 +142,17 @@ pub enum TableMetadataError {
     /// index.
     #[error(transparent)]
     IndexDefinition(#[from] IndexDefinitionError),
+    /// `pg_class.relreplident` records a replica identity `PostgreSQL` does
+    /// not document.
+    #[error("table {schema}.{table} records the undocumented replica identity `{letter}`")]
+    UnknownReplicaIdentity {
+        /// The schema of the table.
+        schema: String,
+        /// The name of the table.
+        table: String,
+        /// The `pg_class.relreplident` value.
+        letter: String,
+    },
 }
 
 impl Table {
@@ -178,9 +189,10 @@ impl Table {
     /// # Errors
     ///
     /// Returns a [`TableMetadataError`] when a catalog query fails, a
-    /// column's type reaches a type the catalog cache does not hold, or a
+    /// column's type reaches a type the catalog cache does not hold, a
     /// column's default or generation expression or an index's predicate
-    /// does not parse.
+    /// does not parse, or the table records an undocumented replica
+    /// identity.
     #[allow(clippy::too_many_lines)]
     pub fn metadata(
         &self,
@@ -349,6 +361,16 @@ impl Table {
             cached_queries::table_acl_entries(facts.oid, conn)?
         };
 
+        let Some(replica_identity) =
+            ReplicaIdentitySetting::from_relreplident(&facts.replica_identity)
+        else {
+            return Err(TableMetadataError::UnknownReplicaIdentity {
+                schema: self.table_schema.clone(),
+                table: self.table_name.clone(),
+                letter: facts.replica_identity,
+            });
+        };
+
         Ok(TableMetadata::new(
             sql_metadata,
             TableMetadataDetails {
@@ -365,6 +387,7 @@ impl Table {
                     facts.owner,
                     &acl_entries,
                 ),
+                replica_identity,
             },
         ))
     }

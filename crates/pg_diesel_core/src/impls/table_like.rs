@@ -4,14 +4,17 @@ use std::borrow::Cow;
 
 use sql_traits::{
     errors::LookupError,
-    structs::{ActingRole, ForeignTableSource, PartitionBound, TablePrivileges},
+    structs::{
+        ActingRole, ForeignTableSource, PartitionBound, ReplicaIdentity, ReplicaIdentityIndex,
+        TablePrivileges,
+    },
     traits::{DatabaseLike, Metadata, PartitionStrategy, TableLike},
 };
 use sqlparser::ast::Action;
 
 use crate::{
     PgDieselDatabase,
-    model_metadata::{PgTable, TableMetadata},
+    model_metadata::{PgTable, ReplicaIdentitySetting, TableMetadata},
 };
 
 impl Metadata for PgTable {
@@ -247,5 +250,34 @@ impl TableLike for PgTable {
 
     fn has_forced_row_level_security(&self, database: &Self::DB) -> Result<bool, LookupError> {
         Ok(metadata(self, database)?.forced_row_security())
+    }
+
+    fn replica_identity<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<ReplicaIdentity<'db, Self::DB>, LookupError>
+    where
+        Self: 'db,
+    {
+        let metadata = metadata(self, database)?;
+        Ok(match metadata.replica_identity() {
+            ReplicaIdentitySetting::Default => ReplicaIdentity::Default,
+            ReplicaIdentitySetting::Nothing => ReplicaIdentity::Nothing,
+            ReplicaIdentitySetting::Full => ReplicaIdentity::Full,
+            // A dropped index leaves `relreplident` at `i` with no index
+            // holding `indisreplident`.
+            ReplicaIdentitySetting::Index => ReplicaIdentity::Index(
+                metadata
+                    .unique_indices()
+                    .find(|index| index.is_replica_identity())
+                    .map(ReplicaIdentityIndex::UniqueIndex)
+                    .or_else(|| {
+                        metadata
+                            .indices()
+                            .find(|index| index.is_replica_identity())
+                            .map(ReplicaIdentityIndex::Index)
+                    }),
+            ),
+        })
     }
 }

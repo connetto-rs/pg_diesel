@@ -4,7 +4,7 @@ pub(crate) mod catalog_identity;
 mod pg_cast_entry;
 pub use pg_cast_entry::PgCastEntry;
 mod table_metadata;
-pub use table_metadata::{TableMetadata, TableMetadataDetails};
+pub use table_metadata::{ReplicaIdentitySetting, TableMetadata, TableMetadataDetails};
 mod column_metadata;
 pub use column_metadata::ColumnMetadata;
 mod pg_check_constraint;
