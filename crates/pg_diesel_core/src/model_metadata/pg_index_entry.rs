@@ -413,11 +413,18 @@ mod tests {
 
     #[test]
     fn an_access_method_answers_what_parser_db_answers_for_its_using_clause() {
-        for method in [
-            "btree", "hash", "gin", "gist", "spgist", "brin", "bloom", "hnsw",
+        for (method, key_type) in [
+            ("btree", "text"),
+            ("hash", "text"),
+            ("gin", "text[]"),
+            ("gist", "int4range"),
+            ("spgist", "text"),
+            ("brin", "text"),
+            ("bloom", "text"),
+            ("hnsw", "text"),
         ] {
             let database = ParserDB::parse::<PostgreSqlDialect>(&format!(
-                "CREATE TABLE docs (body text);
+                "CREATE TABLE docs (body {key_type});
                  CREATE INDEX probe ON docs USING {method} (body);"
             ))
             .expect("the schema parses");
