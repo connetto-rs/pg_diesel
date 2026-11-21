@@ -262,7 +262,17 @@ impl Table {
         }
         for foreign_key in cached_queries::foreign_keys(self, conn)? {
             let (schema, name) = foreign_key.referenced_relation(conn)?;
-            sql_metadata.add_foreign_key(Arc::new(PgForeignKey::new(foreign_key, schema, name)));
+            let columns = cached_queries::referenced_column_names(
+                facts.oid,
+                &foreign_key.constraint_name,
+                conn,
+            )?;
+            sql_metadata.add_foreign_key(Arc::new(PgForeignKey::new(
+                foreign_key,
+                schema,
+                name,
+                columns,
+            )));
         }
         let mut constraint_names = index_constraint_names(facts.oid, conn)?
             .into_iter()

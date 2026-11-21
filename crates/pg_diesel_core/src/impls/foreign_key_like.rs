@@ -46,6 +46,12 @@ impl ForeignKeyLike for PgForeignKey {
         TargetName::new(self.referenced_name(), true).with_schema(self.referenced_schema(), true)
     }
 
+    fn referenced_column_names(&self) -> impl Iterator<Item = (&str, bool)> {
+        self.referenced_attnames()
+            .iter()
+            .map(|name| (name.as_str(), true))
+    }
+
     fn referenced_table<'db>(
         &self,
         database: &'db Self::DB,
@@ -122,9 +128,8 @@ impl ForeignKeyLike for PgForeignKey {
     where
         Self: 'db,
     {
-        let names = metadata(self, database)?.referenced_columns();
         let table = self.referenced_table(database)?;
-        Ok(names.iter().filter_map(|name| {
+        Ok(self.referenced_attnames().iter().filter_map(|name| {
             table
                 .column(name, database, IdentifierCase::Exact)
                 .ok()

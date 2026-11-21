@@ -51,54 +51,6 @@ pub(super) fn deferral(
     })
 }
 
-/// Returns the names of the columns this foreign key references, in the
-/// order the foreign key lists them, each paired with the host column at the
-/// same position.
-pub(super) fn referenced_columns(
-    key_column_usage: &KeyColumnUsage,
-    conn: &mut PgConnection,
-) -> Result<Vec<String>, diesel::result::Error> {
-    use crate::schema::information_schema::key_column_usage::key_column_usage as usage;
-
-    let referential_constraint = referential_constraint(key_column_usage, conn)?;
-    let positions: Vec<Option<i32>> = usage::table
-        .filter(usage::constraint_name.eq(&key_column_usage.constraint_name))
-        .filter(usage::constraint_schema.eq(&key_column_usage.constraint_schema))
-        .filter(usage::constraint_catalog.eq(&key_column_usage.constraint_catalog))
-        .order_by(usage::ordinal_position)
-        .select(usage::position_in_unique_constraint)
-        .load(conn)?;
-    let unique_key: Vec<(i32, String)> = usage::table
-        .filter(
-            usage::constraint_catalog.eq(referential_constraint
-                .unique_constraint_catalog
-                .ok_or(diesel::result::Error::NotFound)?),
-        )
-        .filter(
-            usage::constraint_schema.eq(referential_constraint
-                .unique_constraint_schema
-                .ok_or(diesel::result::Error::NotFound)?),
-        )
-        .filter(
-            usage::constraint_name.eq(referential_constraint
-                .unique_constraint_name
-                .ok_or(diesel::result::Error::NotFound)?),
-        )
-        .select((usage::ordinal_position, usage::column_name))
-        .load(conn)?;
-    positions
-        .into_iter()
-        .map(|position| {
-            let position = position.ok_or(diesel::result::Error::NotFound)?;
-            unique_key
-                .iter()
-                .find(|(ordinal, _)| *ordinal == position)
-                .map(|(_, name)| name.clone())
-                .ok_or(diesel::result::Error::NotFound)
-        })
-        .collect()
-}
-
 /// Returns the names of the host columns of this key column usage, in the
 /// order the constraint declares them.
 pub(crate) fn host_columns(

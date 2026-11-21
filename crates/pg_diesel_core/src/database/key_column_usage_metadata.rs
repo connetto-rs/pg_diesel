@@ -10,9 +10,6 @@ use crate::{model_metadata::PgTable, models::ReferentialConstraint};
 /// Struct collecting metadata about a foreign key represented by a
 /// [`PgForeignKey`](crate::model_metadata::PgForeignKey) entry.
 pub struct KeyColumnUsageMetadata {
-    /// The names of the columns in the referenced table the foreign key
-    /// points to.
-    referenced_columns: Vec<String>,
     /// The table that contains the foreign key.
     host_table: Arc<PgTable>,
     /// The names of the columns in the host table that are part of the
@@ -27,14 +24,12 @@ pub struct KeyColumnUsageMetadata {
 impl KeyColumnUsageMetadata {
     /// Creates a new `KeyColumnUsageMetadata` instance.
     pub(crate) fn new(
-        referenced_columns: Vec<String>,
         host_table: Arc<PgTable>,
         host_columns: Vec<String>,
         referential_constraint: ReferentialConstraint,
         deferral: ConstraintDeferral,
     ) -> Self {
         Self {
-            referenced_columns,
             host_table,
             host_columns,
             referential_constraint,
@@ -46,13 +41,6 @@ impl KeyColumnUsageMetadata {
     #[must_use]
     pub fn host_table(&self) -> &PgTable {
         &self.host_table
-    }
-
-    /// Returns the names of the columns in the referenced table that the
-    /// foreign key points to.
-    #[must_use]
-    pub fn referenced_columns(&self) -> &[String] {
-        &self.referenced_columns
     }
 
     /// Returns the names of the columns in the host table that are part of

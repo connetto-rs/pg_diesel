@@ -779,6 +779,54 @@ async fn foreign_key_deferral() {
 }
 
 #[tokio::test]
+async fn foreign_key_referenced_column_names() {
+    for &major in COMPILED_MAJORS {
+        let database_name = "foreign_key_referenced_column_names";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("the database starts");
+        let mut conn: PgConnection =
+            establish_connection(docker.port, database_name).expect("the connection opens");
+        conn.batch_execute(
+            r#"
+            CREATE TABLE public.p (a INTEGER, "Code" TEXT, b INTEGER, UNIQUE (b, "Code", a));
+            CREATE TABLE public.c (
+                x INTEGER,
+                y TEXT,
+                z INTEGER,
+                FOREIGN KEY (z, y, x) REFERENCES public.p (b, "Code", a)
+            );
+            "#,
+        )
+        .expect("the foreign key fixture applies");
+
+        let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+            .connection(&mut conn)
+            .catalog(database_name)
+            .schema("public")
+            .try_into()
+            .expect("the public schema loads");
+        let key = table(&database, "c")
+            .foreign_keys(&database)
+            .expect("in database")
+            .next()
+            .expect("the reference is recorded");
+        let written: Vec<(&str, bool)> = key.referenced_column_names().collect();
+        assert_eq!(
+            written,
+            [("b", true), ("Code", true), ("a", true)],
+            "PostgreSQL {major}"
+        );
+        let resolved: Vec<&str> = key
+            .referenced_columns(&database)
+            .expect("in database")
+            .map(ColumnLike::column_name)
+            .collect();
+        assert_eq!(resolved, ["b", "Code", "a"], "PostgreSQL {major}");
+    }
+}
+
+#[tokio::test]
 async fn undocumented_trigger_enablement_is_refused() {
     for &major in COMPILED_MAJORS {
         let database_name = "undocumented_trigger_enablement";

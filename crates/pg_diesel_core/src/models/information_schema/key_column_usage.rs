@@ -51,7 +51,6 @@ impl KeyColumnUsage {
         conn: &mut PgConnection,
     ) -> Result<KeyColumnUsageMetadata, diesel::result::Error> {
         Ok(KeyColumnUsageMetadata::new(
-            referenced_columns(self, conn)?,
             host_table,
             host_columns(self, conn)?,
             referential_constraint(self, conn)?,

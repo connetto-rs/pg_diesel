@@ -334,6 +334,38 @@ pub(crate) fn not_null_constraint_names(
         .collect())
 }
 
+/// Returns the names of the columns the foreign key `constraint_name` of the
+/// table references, in the order its `confkey` lists them.
+pub(crate) fn referenced_column_names(
+    table_oid: u32,
+    constraint_name: &str,
+    conn: &mut PgConnection,
+) -> Result<Vec<String>, diesel::result::Error> {
+    use crate::shared::schema::pg_catalog::{pg_attribute, pg_constraint};
+
+    let (referenced_oid, key) = pg_constraint::table
+        .filter(pg_constraint::conrelid.eq(table_oid))
+        .filter(pg_constraint::conname.eq(constraint_name))
+        .filter(pg_constraint::contype.eq("f"))
+        .select((pg_constraint::confrelid, pg_constraint::confkey))
+        .first::<(u32, Option<Vec<i16>>)>(conn)?;
+    let key = key.ok_or(diesel::result::Error::NotFound)?;
+    let mut names = pg_attribute::table
+        .filter(pg_attribute::attrelid.eq(referenced_oid))
+        .filter(pg_attribute::attnum.eq_any(&key))
+        .select((pg_attribute::attnum, pg_attribute::attname))
+        .load::<(i16, String)>(conn)?;
+    key.iter()
+        .map(|number| {
+            names
+                .iter_mut()
+                .find(|(attnum, _)| attnum == number)
+                .map(|(_, name)| std::mem::take(name))
+                .ok_or(diesel::result::Error::NotFound)
+        })
+        .collect()
+}
+
 /// Returns the policies associated with the table, ordered by name, the
 /// order `PostgreSQL` applies them in.
 pub(crate) fn policies(
