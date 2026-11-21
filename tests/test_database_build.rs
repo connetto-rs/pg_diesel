@@ -761,6 +761,54 @@ async fn function_row_estimate() {
 }
 
 #[tokio::test]
+async fn function_extension_membership() {
+    for &major in COMPILED_MAJORS {
+        let database_name = "function_extension_membership";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("the database starts");
+        let mut conn: PgConnection =
+            establish_connection(docker.port, database_name).expect("the connection opens");
+        conn.batch_execute(
+            r#"
+            CREATE EXTENSION "uuid-ossp";
+            CREATE FUNCTION public.mine() RETURNS INT
+                LANGUAGE sql AS 'SELECT 1';
+            CREATE FUNCTION public.tied() RETURNS INT
+                LANGUAGE sql AS 'SELECT 1';
+            ALTER FUNCTION public.tied() DEPENDS ON EXTENSION "uuid-ossp";
+            "#,
+        )
+        .expect("the function fixture applies");
+
+        let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+            .connection(&mut conn)
+            .catalog(database_name)
+            .schema("public")
+            .try_into()
+            .expect("the public schema loads");
+        let cases: [(&str, &str, &[&str], Option<&str>); 5] = [
+            ("public", "uuid_generate_v4", &[], Some("uuid-ossp")),
+            ("pg_catalog", "plpgsql_call_handler", &[], Some("plpgsql")),
+            ("public", "mine", &[], None),
+            ("public", "tied", &[], None),
+            ("pg_catalog", "lower", &["text"], None),
+        ];
+        for (schema, name, arguments, extension) in cases {
+            let function = function(&database, schema, name, arguments);
+            assert_eq!(
+                function
+                    .extension(&database)
+                    .expect("the function is loaded")
+                    .map(ExtensionLike::name),
+                extension,
+                "{schema}.{name} on PostgreSQL {major}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn foreign_key_deferral() {
     for &major in COMPILED_MAJORS {
         let database_name = "foreign_key_deferral";

@@ -111,6 +111,9 @@ pub struct PgProcMetadata {
     /// How the aggregate reads its arguments, as `pg_aggregate` records it,
     /// or `None` for a function that is no aggregate.
     aggregate_kind: Option<AggregateKind>,
+    /// The name of the extension whose install script created the function,
+    /// or `None` for a function no extension owns.
+    extension: Option<String>,
 }
 
 impl PgProcMetadata {
@@ -168,6 +171,7 @@ impl PgProcMetadata {
             execute: ExecutePrivileges::decode(execute_grants, owner_oid),
             bound_functions: Ok(Vec::new()),
             aggregate_kind: None,
+            extension: None,
         }
     }
 
@@ -192,6 +196,21 @@ impl PgProcMetadata {
     #[must_use]
     pub fn aggregate_kind(&self) -> Option<AggregateKind> {
         self.aggregate_kind
+    }
+
+    /// Records the extension whose install script created the function,
+    /// `None` when no extension owns it.
+    #[must_use]
+    pub fn with_extension(mut self, extension: Option<String>) -> Self {
+        self.extension = extension;
+        self
+    }
+
+    /// Returns the name of the extension whose install script created the
+    /// function, `None` when no extension owns it.
+    #[must_use]
+    pub fn extension(&self) -> Option<&str> {
+        self.extension.as_deref()
     }
 
     /// Returns the OIDs of the functions a body bound at creation reached.
@@ -479,6 +498,7 @@ mod tests {
             execute: ExecutePrivileges::decode(None, 1),
             bound_functions: Ok(Vec::new()),
             aggregate_kind: None,
+            extension: None,
         };
 
         assert_eq!(metadata.argument_types().len(), 1);
@@ -504,6 +524,7 @@ mod tests {
             execute: ExecutePrivileges::decode(None, 7),
             bound_functions: Ok(Vec::new()),
             aggregate_kind: None,
+            extension: None,
         };
 
         assert!(metadata.is_executable_by_public());
@@ -536,6 +557,7 @@ mod tests {
             execute: ExecutePrivileges::decode(Some(&execute_grants(&[(7, true)])), 7),
             bound_functions: Ok(Vec::new()),
             aggregate_kind: None,
+            extension: None,
         };
 
         assert!(!metadata.is_executable_by_public());
@@ -569,6 +591,7 @@ mod tests {
             ),
             bound_functions: Ok(Vec::new()),
             aggregate_kind: None,
+            extension: None,
         };
 
         assert!(metadata.is_executable_by_public());
@@ -593,6 +616,7 @@ mod tests {
             execute: ExecutePrivileges::decode(Some(&execute_grants(&[(3, false)])), 7),
             bound_functions: Ok(Vec::new()),
             aggregate_kind: None,
+            extension: None,
         };
 
         assert!(metadata.can_execute(Some(3)));
