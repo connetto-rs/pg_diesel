@@ -183,6 +183,25 @@ impl Table {
             .transpose()
     }
 
+    /// Reads `letter`, the `pg_class.relreplident` the table records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TableMetadataError::UnknownReplicaIdentity`] when `letter`
+    /// is not one `PostgreSQL` documents.
+    fn replica_identity(
+        &self,
+        letter: String,
+    ) -> Result<ReplicaIdentitySetting, TableMetadataError> {
+        ReplicaIdentitySetting::from_relreplident(&letter).ok_or_else(|| {
+            TableMetadataError::UnknownReplicaIdentity {
+                schema: self.table_schema.clone(),
+                table: self.table_name.clone(),
+                letter,
+            }
+        })
+    }
+
     /// Initializes and returns the metadata for the table, read from a server
     /// of `version`.
     ///
@@ -361,15 +380,7 @@ impl Table {
             cached_queries::table_acl_entries(facts.oid, conn)?
         };
 
-        let Some(replica_identity) =
-            ReplicaIdentitySetting::from_relreplident(&facts.replica_identity)
-        else {
-            return Err(TableMetadataError::UnknownReplicaIdentity {
-                schema: self.table_schema.clone(),
-                table: self.table_name.clone(),
-                letter: facts.replica_identity,
-            });
-        };
+        let replica_identity = self.replica_identity(facts.replica_identity)?;
 
         Ok(TableMetadata::new(
             sql_metadata,
@@ -438,5 +449,63 @@ impl Table {
         table_names: Option<&[String]>,
     ) -> Result<Vec<Self>, diesel::result::Error> {
         load_all_tables(table_catalog, table_schema, table_names, conn)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Table, TableMetadataError};
+    use crate::model_metadata::ReplicaIdentitySetting;
+
+    /// Returns the `information_schema.tables` row of `app.events`.
+    fn events() -> Table {
+        Table {
+            table_catalog: "catalog".to_owned(),
+            table_schema: "app".to_owned(),
+            table_name: "events".to_owned(),
+            table_type: "BASE TABLE".to_owned(),
+            self_referencing_column_name: None,
+            reference_generation: None,
+            user_defined_type_catalog: None,
+            user_defined_type_schema: None,
+            user_defined_type_name: None,
+            is_insertable_into: "YES".to_owned(),
+            is_typed: "NO".to_owned(),
+            commit_action: None,
+        }
+    }
+
+    #[test]
+    fn every_documented_replica_identity_letter_reads() {
+        let table = events();
+        for (letter, setting) in [
+            ("d", ReplicaIdentitySetting::Default),
+            ("n", ReplicaIdentitySetting::Nothing),
+            ("f", ReplicaIdentitySetting::Full),
+            ("i", ReplicaIdentitySetting::Index),
+        ] {
+            assert_eq!(
+                table
+                    .replica_identity(letter.to_owned())
+                    .expect("PostgreSQL documents the letter"),
+                setting
+            );
+        }
+    }
+
+    #[test]
+    fn an_undocumented_replica_identity_letter_fails_the_load_naming_the_table() {
+        let error = events()
+            .replica_identity("x".to_owned())
+            .expect_err("PostgreSQL documents no `x` replica identity");
+        assert!(matches!(
+            &error,
+            TableMetadataError::UnknownReplicaIdentity { schema, table, letter }
+                if schema == "app" && table == "events" && letter == "x"
+        ));
+        assert_eq!(
+            error.to_string(),
+            "table app.events records the undocumented replica identity `x`"
+        );
     }
 }
