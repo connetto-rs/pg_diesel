@@ -5,7 +5,7 @@ use std::{collections::HashMap, fmt::Display, sync::Arc};
 use diesel::{PgConnection, Queryable, QueryableByName, Selectable};
 use sql_traits::structs::ForeignTableSource;
 use sqlparser::{
-    ast::{Action, Expr},
+    ast::{Action, Expr, GeneratedExpressionMode},
     parser::ParserError,
 };
 
@@ -153,6 +153,21 @@ pub enum TableMetadataError {
         /// The `pg_class.relreplident` value.
         letter: String,
     },
+    /// `pg_attribute.attgenerated` records a generated column storage
+    /// `PostgreSQL` does not document.
+    #[error(
+        "column {column} of table {schema}.{table} records the undocumented generated column storage `{letter}`"
+    )]
+    UnknownGenerationStorage {
+        /// The schema of the table.
+        schema: String,
+        /// The name of the table.
+        table: String,
+        /// The name of the column.
+        column: String,
+        /// The `pg_attribute.attgenerated` value.
+        letter: String,
+    },
 }
 
 impl Table {
@@ -202,6 +217,32 @@ impl Table {
         })
     }
 
+    /// Reads `letter`, the `pg_attribute.attgenerated` the column named
+    /// `column` records: `s` for `STORED`, `v` for `VIRTUAL`, and empty for
+    /// a column that is not generated, which answers [`None`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TableMetadataError::UnknownGenerationStorage`] when `letter`
+    /// is not one `PostgreSQL` documents.
+    fn generation_storage(
+        &self,
+        column: &str,
+        letter: &str,
+    ) -> Result<Option<GeneratedExpressionMode>, TableMetadataError> {
+        match letter {
+            "" => Ok(None),
+            "s" => Ok(Some(GeneratedExpressionMode::Stored)),
+            "v" => Ok(Some(GeneratedExpressionMode::Virtual)),
+            _ => Err(TableMetadataError::UnknownGenerationStorage {
+                schema: self.table_schema.clone(),
+                table: self.table_name.clone(),
+                column: column.to_owned(),
+                letter: letter.to_owned(),
+            }),
+        }
+    }
+
     /// Initializes and returns the metadata for the table, read from a server
     /// of `version`.
     ///
@@ -211,7 +252,7 @@ impl Table {
     /// column's type reaches a type the catalog cache does not hold, a
     /// column's default or generation expression or an index's predicate
     /// does not parse, or the table records an undocumented replica
-    /// identity.
+    /// identity or a column an undocumented generated column storage.
     #[allow(clippy::too_many_lines)]
     pub fn metadata(
         &self,
@@ -267,12 +308,14 @@ impl Table {
                 .map(|(_, name)| name.clone());
             let default_expression =
                 self.column_expression(&column, column.column_default.as_deref())?;
+            let generation_storage =
+                self.generation_storage(&column.column_name, &attribute.generation)?;
             let generation_expression = self.column_expression(
                 &column,
                 column
                     .generation_expression
                     .as_deref()
-                    .filter(|_| column.is_generated == "ALWAYS"),
+                    .filter(|_| generation_storage.is_some()),
             )?;
             column_metadata.insert(
                 column.column_name.clone(),
@@ -285,7 +328,7 @@ impl Table {
                 not_null,
                 serial,
                 default_expression,
-                generation_expression,
+                generation_expression.zip(generation_storage),
             )));
         }
         for check_constraint in PgCheckConstraint::load(table, facts.oid, conn)? {
@@ -454,6 +497,8 @@ impl Table {
 
 #[cfg(test)]
 mod tests {
+    use sqlparser::ast::GeneratedExpressionMode;
+
     use super::{Table, TableMetadataError};
     use crate::model_metadata::ReplicaIdentitySetting;
 
@@ -506,6 +551,39 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "table app.events records the undocumented replica identity `x`"
+        );
+    }
+
+    #[test]
+    fn every_documented_generated_column_storage_letter_reads() {
+        let table = events();
+        for (letter, storage) in [
+            ("", None),
+            ("s", Some(GeneratedExpressionMode::Stored)),
+            ("v", Some(GeneratedExpressionMode::Virtual)),
+        ] {
+            assert_eq!(
+                table
+                    .generation_storage("total", letter)
+                    .expect("PostgreSQL documents the letter"),
+                storage
+            );
+        }
+    }
+
+    #[test]
+    fn an_undocumented_generated_column_storage_letter_fails_the_load_naming_the_column() {
+        let error = events()
+            .generation_storage("total", "x")
+            .expect_err("PostgreSQL documents no `x` generated column storage");
+        assert!(matches!(
+            &error,
+            TableMetadataError::UnknownGenerationStorage { schema, table, column, letter }
+                if schema == "app" && table == "events" && column == "total" && letter == "x"
+        ));
+        assert_eq!(
+            error.to_string(),
+            "column total of table app.events records the undocumented generated column storage `x`"
         );
     }
 }

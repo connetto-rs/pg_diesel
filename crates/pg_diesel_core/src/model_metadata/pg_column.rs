@@ -2,7 +2,7 @@
 //! `information_schema.columns` with the facts its `pg_attribute` row
 //! carries beside the `information_schema` row.
 
-use sqlparser::ast::Expr;
+use sqlparser::ast::{Expr, GeneratedExpressionMode};
 
 use crate::{model_metadata::PgDataType, models::Column};
 
@@ -24,8 +24,8 @@ pub struct PgColumn {
     /// The expression the column defaults to, as `PostgreSQL` prints it.
     default_expression: Option<Expr>,
     /// The expression a generated column derives its value from, as
-    /// `PostgreSQL` prints it.
-    generation_expression: Option<Expr>,
+    /// `PostgreSQL` prints it, and whether the row stores the value.
+    generation: Option<(Expr, GeneratedExpressionMode)>,
 }
 
 impl PgColumn {
@@ -38,7 +38,7 @@ impl PgColumn {
         not_null_constraint_name: Option<String>,
         serial: bool,
         default_expression: Option<Expr>,
-        generation_expression: Option<Expr>,
+        generation: Option<(Expr, GeneratedExpressionMode)>,
     ) -> Self {
         Self {
             model,
@@ -47,7 +47,7 @@ impl PgColumn {
             not_null_constraint_name,
             serial,
             default_expression,
-            generation_expression,
+            generation,
         }
     }
 
@@ -92,7 +92,14 @@ impl PgColumn {
     /// `PostgreSQL` prints it.
     #[must_use]
     pub fn generation_expression(&self) -> Option<&Expr> {
-        self.generation_expression.as_ref()
+        self.generation.as_ref().map(|(expression, _)| expression)
+    }
+
+    /// Whether a generated column keeps its value in the row or derives it on
+    /// every read, as `pg_attribute.attgenerated` records it.
+    #[must_use]
+    pub fn generation_storage(&self) -> Option<GeneratedExpressionMode> {
+        self.generation.as_ref().map(|(_, storage)| *storage)
     }
 
     /// The foreign data wrapper options the column declares, each key first.

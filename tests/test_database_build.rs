@@ -8,8 +8,8 @@ use diesel::{PgConnection, connection::SimpleConnection};
 use pg_diesel::dialect::PostgresDialect;
 use pg_diesel::sqlparser::{
     ast::{
-        ArgMode, Expr, Function, FunctionCalledOnNull, FunctionSecurity, InTarget,
-        ReferentialAction, SelectItem, SetExpr, Statement, TriggerEvent, TriggerObject,
+        ArgMode, Expr, Function, FunctionCalledOnNull, FunctionSecurity, GeneratedExpressionMode,
+        InTarget, ReferentialAction, SelectItem, SetExpr, Statement, TriggerEvent, TriggerObject,
         TriggerObjectKind, TriggerPeriod,
     },
     dialect::PostgreSqlDialect,
@@ -378,6 +378,16 @@ async fn column_and_domain_expressions() {
         ",
         )
         .expect("the expression fixture applies");
+        if major >= 18 {
+            conn.batch_execute(
+                "CREATE TABLE public.halves (
+                    price INTEGER,
+                    halved INTEGER GENERATED ALWAYS AS (price / 2) VIRTUAL,
+                    thirded INTEGER GENERATED ALWAYS AS (price / 3)
+                );",
+            )
+            .expect("the virtual generated columns apply");
+        }
 
         let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
             .connection(&mut conn)
@@ -401,6 +411,7 @@ async fn column_and_domain_expressions() {
             Some("app.twice(1)")
         );
         assert_eq!(ColumnLike::generation_expression(x), None);
+        assert_eq!(ColumnLike::generation_storage(x, &database), None);
         let Some(Expr::Function(call)) = ColumnLike::default_expression(x) else {
             panic!("the default is the call itself")
         };
@@ -414,6 +425,10 @@ async fn column_and_domain_expressions() {
         assert_eq!(
             printed(ColumnLike::generation_expression(y)).as_deref(),
             Some("app.twice(x)")
+        );
+        assert_eq!(
+            ColumnLike::generation_storage(y, &database),
+            Some(GeneratedExpressionMode::Stored)
         );
         let Some(Expr::Function(call)) = ColumnLike::generation_expression(y) else {
             panic!("the generation expression is the call itself")
@@ -433,10 +448,26 @@ async fn column_and_domain_expressions() {
         assert!(id.identity_generation(&database).is_some());
         assert_eq!(ColumnLike::default_expression(id), None);
         assert_eq!(ColumnLike::generation_expression(id), None);
+        assert_eq!(ColumnLike::generation_storage(id, &database), None);
         assert!(matches!(
             ColumnLike::functions_reached_by(id, call, &database),
             Err(LookupError::CallNotInExpression { .. })
         ));
+
+        if major >= 18 {
+            for name in ["halved", "thirded"] {
+                let column = table(&database, "halves")
+                    .columns(&database)
+                    .expect("in database")
+                    .find(|column| column.column_name() == name)
+                    .unwrap_or_else(|| panic!("the column {name} is recorded"));
+                assert_eq!(
+                    ColumnLike::generation_storage(column, &database),
+                    Some(GeneratedExpressionMode::Virtual),
+                    "{name}"
+                );
+            }
+        }
 
         let checked = database
             .domains()

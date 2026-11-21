@@ -10,7 +10,7 @@ use sql_traits::{
         NamedColumnCollation,
     },
 };
-use sqlparser::ast::Expr;
+use sqlparser::ast::{Expr, GeneratedExpressionMode};
 
 use crate::{
     PgDieselDatabase,
@@ -134,6 +134,10 @@ impl ColumnLike for PgColumn {
 
     fn generation_expression(&self) -> Option<&Expr> {
         PgColumn::generation_expression(self)
+    }
+
+    fn generation_storage(&self, _database: &Self::DB) -> Option<GeneratedExpressionMode> {
+        PgColumn::generation_storage(self)
     }
 
     fn functions_reached_by<'db, 'call>(

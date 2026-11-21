@@ -52,7 +52,8 @@ pub struct PgAttribute {
     /// The identity type of the column (e.g., 'a' for always, 'd' for by
     /// default).
     pub attidentity: String,
-    /// The generation expression for the column (if any).
+    /// The generated column storage: 's' for stored, 'v' for virtual
+    /// (`PostgreSQL` 18 and later), and '' when the column is not generated.
     pub attgenerated: String,
     /// Whether the column has been dropped.
     pub attisdropped: bool,
