@@ -412,6 +412,9 @@ struct TableFactsRow {
     /// Whether Row Level Security applies to the table's owner too.
     #[diesel(sql_type = diesel::sql_types::Bool)]
     forced_row_security: bool,
+    /// The replica identity `pg_class.relreplident` records, one letter.
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    replica_identity: String,
     /// The OID of the role owning the table.
     #[diesel(sql_type = diesel::sql_types::Oid)]
     owner: u32,
@@ -453,6 +456,10 @@ pub struct TableFacts {
     pub(crate) row_security: bool,
     /// Whether Row Level Security applies to the table's owner too.
     pub(crate) forced_row_security: bool,
+    /// The replica identity `pg_class.relreplident` records: `d` for
+    /// `DEFAULT`, `n` for `NOTHING`, `f` for `FULL` and `i` for
+    /// `USING INDEX`.
+    pub(crate) replica_identity: String,
     /// The OID of the role owning the table.
     pub(crate) owner: u32,
     /// Whether the table is a partition of another one, as opposed to an
@@ -477,9 +484,9 @@ pub struct TableFacts {
 }
 
 /// Returns what `pg_catalog` records about the table beyond its columns:
-/// its identity, row security settings, owner, partition status and bound,
-/// its storage parameters, the server a foreign table reads through, and
-/// whether an explicit ACL was written.
+/// its identity, row security settings, replica identity, owner, partition
+/// status and bound, its storage parameters, the server a foreign table
+/// reads through, and whether an explicit ACL was written.
 pub(crate) fn table_facts(
     table: &Table,
     conn: &mut PgConnection,
@@ -496,6 +503,7 @@ pub(crate) fn table_facts(
                 cls.oid AS oid,
                 cls.relrowsecurity AS row_security,
                 cls.relforcerowsecurity AS forced_row_security,
+                cls.relreplident::text AS replica_identity,
                 cls.relowner AS owner,
                 cls.relispartition AS is_partition,
                 cls.relpersistence = 'u' AS unlogged,
@@ -529,6 +537,7 @@ pub(crate) fn table_facts(
         oid,
         row_security,
         forced_row_security,
+        replica_identity,
         owner,
         is_partition,
         unlogged,
@@ -542,6 +551,7 @@ pub(crate) fn table_facts(
         row.oid,
         row.row_security,
         row.forced_row_security,
+        row.replica_identity,
         row.owner,
         row.is_partition,
         row.unlogged,
@@ -557,6 +567,7 @@ pub(crate) fn table_facts(
         oid,
         row_security,
         forced_row_security,
+        replica_identity,
         owner,
         is_partition,
         unlogged,

@@ -27,8 +27,8 @@ use pg_diesel::{
     sql_traits::{
         errors::LookupError,
         structs::{
-            ColumnPrivilege, GateFailure, GateTerm, PolicyClause, RowSecurity, RowStatement,
-            RowVersion,
+            ColumnPrivilege, GateFailure, GateTerm, PolicyClause, ReplicaIdentity,
+            ReplicaIdentityIndex, RowSecurity, RowStatement, RowVersion,
         },
         traits::{
             BinarySend, CheckConstraintLike, ColumnGrantLike, ColumnLike, DataTypeLike,
@@ -1031,6 +1031,22 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             format!("{subject} / forced row level security"),
             table.has_forced_row_level_security(database)?.to_string(),
         );
+        let replica_identity = match table.replica_identity(database)? {
+            ReplicaIdentity::Default => "DEFAULT".to_owned(),
+            ReplicaIdentity::Nothing => "NOTHING".to_owned(),
+            ReplicaIdentity::Full => "FULL".to_owned(),
+            ReplicaIdentity::Index(None) => "USING INDEX of a dropped index".to_owned(),
+            ReplicaIdentity::Index(Some(ReplicaIdentityIndex::Index(index))) => {
+                format!("USING INDEX {}", index.name().unwrap_or("<unnamed>"))
+            }
+            ReplicaIdentity::Index(Some(ReplicaIdentityIndex::UniqueIndex(key))) => {
+                format!(
+                    "USING INDEX of key {}",
+                    key.constraint_name(database)?.unwrap_or_default()
+                )
+            }
+        };
+        self.text(format!("{subject} / replica identity"), replica_identity);
         self.text(
             format!("{subject} / unlogged"),
             table.is_unlogged().to_string(),
