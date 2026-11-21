@@ -18,7 +18,7 @@ use pg_diesel::sqlparser::{
 use pg_diesel::{
     PgDieselDatabase,
     database::{PgDatabaseBuildError, PgDieselDatabaseBuilder},
-    model_metadata::{PgTable, TriggerDefinitionError},
+    model_metadata::{PgFunction, PgTable, TriggerDefinitionError},
     sql_traits::{
         errors::LookupError,
         structs::{
@@ -169,6 +169,26 @@ fn table<'db>(database: &'db PgDieselDatabase, name: &str) -> &'db PgTable {
         .tables()
         .find(|table| table.name() == name)
         .unwrap_or_else(|| panic!("the database holds the table {name}"))
+}
+
+/// Returns the function `schema.name` taking `arguments`, failing the test
+/// when absent.
+fn function<'db>(
+    database: &'db PgDieselDatabase,
+    schema: &str,
+    name: &str,
+    arguments: &[&str],
+) -> &'db PgFunction {
+    database
+        .functions()
+        .find(|function| {
+            function.target_name().schema() == Some(schema)
+                && function.name() == name
+                && function
+                    .argument_type_names(database)
+                    .eq(arguments.iter().copied())
+        })
+        .unwrap_or_else(|| panic!("the function {schema}.{name} is recorded"))
 }
 
 /// The function a call of `name` holds at the top of the expression,
@@ -654,19 +674,55 @@ async fn function_leakproof_marking() {
             ("pg_catalog", "lower", &["text"], false),
         ];
         for (schema, name, arguments, leakproof) in cases {
-            let function = database
-                .functions()
-                .find(|function| {
-                    function.target_name().schema() == Some(schema)
-                        && function.name() == name
-                        && function
-                            .argument_type_names(&database)
-                            .eq(arguments.iter().copied())
-                })
-                .unwrap_or_else(|| panic!("the function {schema}.{name} is recorded"));
+            let function = function(&database, schema, name, arguments);
             assert_eq!(
                 function.is_leakproof(),
                 leakproof,
+                "{schema}.{name} on PostgreSQL {major}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn function_row_estimate() {
+    for &major in COMPILED_MAJORS {
+        let database_name = "function_row_estimate";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("the database starts");
+        let mut conn: PgConnection =
+            establish_connection(docker.port, database_name).expect("the connection opens");
+        conn.batch_execute(
+            "
+            CREATE FUNCTION public.scalar() RETURNS INT
+                LANGUAGE sql AS 'SELECT 1';
+            CREATE FUNCTION public.unsized() RETURNS SETOF INT
+                LANGUAGE sql AS 'SELECT 1';
+            CREATE FUNCTION public.sized_later() RETURNS SETOF INT
+                LANGUAGE sql AS 'SELECT 1';
+            ALTER FUNCTION public.sized_later() ROWS 10;
+            ",
+        )
+        .expect("the function fixture applies");
+
+        let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+            .connection(&mut conn)
+            .catalog(database_name)
+            .schema("public")
+            .try_into()
+            .expect("the public schema loads");
+        let cases: [(&str, &str, &[&str], Option<f32>); 4] = [
+            ("public", "scalar", &[], None),
+            ("public", "unsized", &[], Some(1000.0)),
+            ("public", "sized_later", &[], Some(10.0)),
+            ("pg_catalog", "unnest", &["anyarray"], Some(100.0)),
+        ];
+        for (schema, name, arguments, estimated_rows) in cases {
+            let function = function(&database, schema, name, arguments);
+            assert_eq!(
+                function.estimated_rows(),
+                estimated_rows,
                 "{schema}.{name} on PostgreSQL {major}"
             );
         }
