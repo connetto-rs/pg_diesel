@@ -398,6 +398,9 @@ pub(crate) struct AttributeFacts {
     pub(crate) fdw_options: Option<Vec<String>>,
     /// Whether the column comes from a parent rather than this table.
     pub(crate) inherited: bool,
+    /// The `attgenerated` letter: `s` for a stored generated column, `v`
+    /// for a virtual one, and empty for a column that is not generated.
+    pub(crate) generation: String,
 }
 
 /// The raw row `table_facts` reads, named like its `SELECT` aliases.
@@ -629,7 +632,8 @@ pub(crate) fn attributes(
     use crate::shared::schema::pg_catalog::pg_attribute;
 
     // `attndims` is an `integer` before `PostgreSQL` 16 and a `smallint`
-    // from it on, so the cast reads both widths alike.
+    // from it on, so the cast reads both widths alike. `attgenerated` is a
+    // `"char"`, whose empty value reads as an empty `text`.
     Ok(pg_attribute::table
         .filter(pg_attribute::attrelid.eq(relation_oid))
         .filter(pg_attribute::attnum.gt(0))
@@ -643,18 +647,31 @@ pub(crate) fn attributes(
             diesel::dsl::sql::<diesel::sql_types::Integer>("attndims::integer"),
             pg_attribute::attfdwoptions,
             pg_attribute::attislocal,
+            diesel::dsl::sql::<diesel::sql_types::Text>("attgenerated::text"),
         ))
-        .load::<(String, i16, u32, i32, i32, Option<Vec<String>>, bool)>(conn)?
+        .load::<(
+            String,
+            i16,
+            u32,
+            i32,
+            i32,
+            Option<Vec<String>>,
+            bool,
+            String,
+        )>(conn)?
         .into_iter()
         .map(
-            |(name, number, type_oid, typmod, ndims, fdw_options, local)| AttributeFacts {
-                name,
-                number,
-                type_oid,
-                typmod,
-                ndims,
-                fdw_options,
-                inherited: !local,
+            |(name, number, type_oid, typmod, ndims, fdw_options, local, generation)| {
+                AttributeFacts {
+                    name,
+                    number,
+                    type_oid,
+                    typmod,
+                    ndims,
+                    fdw_options,
+                    inherited: !local,
+                    generation,
+                }
             },
         )
         .collect())

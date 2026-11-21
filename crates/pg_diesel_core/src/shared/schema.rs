@@ -85,7 +85,8 @@ pub(crate) mod pg_catalog {
             attidentity -> Char,
             /// Generated column property:
             /// '' = not generated,
-            /// 's' = stored (generated always stored).
+            /// 's' = stored (generated always stored),
+            /// 'v' = virtual (generated always virtual, `PostgreSQL` 18 and later).
             attgenerated -> Char,
             /// `true` if the column has been dropped (still present for compatibility).
             attisdropped -> Bool,

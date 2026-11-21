@@ -1187,6 +1187,10 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             column.is_generated(database).to_string(),
         );
         self.text(
+            format!("{subject} / generation storage"),
+            format!("{:?}", column.generation_storage(database)),
+        );
+        self.text(
             format!("{subject} / identity"),
             format!("{:?}", column.identity_generation(database)),
         );
