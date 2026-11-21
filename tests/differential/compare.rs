@@ -1637,6 +1637,10 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 format!("{trigger_subject} / enablement"),
                 format!("{:?}", trigger.enablement(database)?),
             );
+            self.text(
+                format!("{trigger_subject} / deferral"),
+                format!("{:?}", trigger.deferral()),
+            );
             let parent = match trigger.parent_trigger(database)? {
                 Some(parent) => Some((
                     self.relation_name(&parent.relation(database)?),

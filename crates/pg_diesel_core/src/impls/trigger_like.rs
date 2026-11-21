@@ -2,12 +2,15 @@
 
 use sql_traits::{
     errors::LookupError,
-    structs::{TargetName, TriggerEnablement},
+    structs::{ConstraintDeferral, TargetName, TriggerEnablement},
     traits::{DatabaseLike, Metadata, Relation, TableLike, TriggerLike},
 };
 use sqlparser::ast::{Expr, TriggerEvent, TriggerObjectKind, TriggerPeriod};
 
-use crate::{PgDieselDatabase, model_metadata::TriggerMetadata};
+use crate::{
+    PgDieselDatabase,
+    model_metadata::{TriggerMetadata, decode_deferral},
+};
 
 impl Metadata for TriggerMetadata {
     type Meta = ();
@@ -76,6 +79,13 @@ impl TriggerLike for TriggerMetadata {
 
     fn enablement(&self, _database: &Self::DB) -> Result<TriggerEnablement, LookupError> {
         Ok(self.enablement)
+    }
+
+    /// A partition's copy of a constraint trigger carries the deferral flags
+    /// of the trigger it copies.
+    fn deferral(&self) -> Option<ConstraintDeferral> {
+        (self.model.tgconstraint != 0)
+            .then(|| decode_deferral(self.model.tgdeferrable, self.model.tginitdeferred))
     }
 
     fn function<'db>(

@@ -858,6 +858,70 @@ async fn foreign_key_deferral() {
 }
 
 #[tokio::test]
+async fn constraint_trigger_deferral() {
+    for &major in COMPILED_MAJORS {
+        let database_name = "constraint_trigger_deferral";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("the database starts");
+        let mut conn: PgConnection =
+            establish_connection(docker.port, database_name).expect("the connection opens");
+        conn.batch_execute(
+            "
+            CREATE TABLE public.parents (id INTEGER PRIMARY KEY);
+            CREATE FUNCTION public.f() RETURNS trigger LANGUAGE plpgsql
+                AS $$ BEGIN RETURN NULL; END $$;
+            CREATE CONSTRAINT TRIGGER deferred AFTER INSERT ON public.parents
+                DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.f();
+            CREATE CONSTRAINT TRIGGER immediate AFTER INSERT ON public.parents
+                DEFERRABLE FOR EACH ROW EXECUTE FUNCTION public.f();
+            CREATE CONSTRAINT TRIGGER fixed AFTER INSERT ON public.parents
+                FOR EACH ROW EXECUTE FUNCTION public.f();
+            CREATE TRIGGER plain AFTER INSERT ON public.parents
+                FOR EACH ROW EXECUTE FUNCTION public.f();
+            CREATE TABLE public.events (id INTEGER) PARTITION BY RANGE (id);
+            CREATE TABLE public.events_low PARTITION OF public.events
+                FOR VALUES FROM (0) TO (100);
+            CREATE CONSTRAINT TRIGGER copied AFTER INSERT ON public.events
+                DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.f();
+            ",
+        )
+        .expect("the trigger fixture applies");
+
+        let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+            .connection(&mut conn)
+            .catalog(database_name)
+            .schema("public")
+            .try_into()
+            .expect("the public schema loads");
+        let deferrals = |relation: &str| -> BTreeSet<(&str, Option<ConstraintDeferral>)> {
+            table(&database, relation)
+                .triggers(&database)
+                .expect("in database")
+                .map(|trigger| (TriggerLike::name(trigger), trigger.deferral()))
+                .collect()
+        };
+        assert_eq!(
+            deferrals("parents"),
+            BTreeSet::from([
+                ("deferred", Some(ConstraintDeferral::InitiallyDeferred)),
+                ("immediate", Some(ConstraintDeferral::InitiallyImmediate)),
+                ("fixed", Some(ConstraintDeferral::NotDeferrable)),
+                ("plain", None),
+            ]),
+            "PostgreSQL {major}"
+        );
+        for relation in ["events", "events_low"] {
+            assert_eq!(
+                deferrals(relation),
+                BTreeSet::from([("copied", Some(ConstraintDeferral::InitiallyDeferred))]),
+                "{relation} on PostgreSQL {major}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn foreign_key_referenced_column_names() {
     for &major in COMPILED_MAJORS {
         let database_name = "foreign_key_referenced_column_names";
