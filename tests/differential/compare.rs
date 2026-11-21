@@ -1931,9 +1931,9 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         Ok(())
     }
 
-    /// Records a function's configuration, result type, null behaviour per
-    /// argument, bound body calls and `EXECUTE` privileges, for a function
-    /// taking `inputs` arguments.
+    /// Records a function's row estimate, configuration, result type, null
+    /// behaviour per argument, bound body calls and `EXECUTE` privileges, for
+    /// a function taking `inputs` arguments.
     fn function_details(
         &mut self,
         subject: &str,
@@ -1941,6 +1941,10 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         inputs: usize,
     ) -> Result<(), DescribeError> {
         let database = self.database;
+        self.text(
+            format!("{subject} / estimated rows"),
+            format!("{:?}", function.estimated_rows()),
+        );
         self.text(
             format!("{subject} / configuration"),
             set(function

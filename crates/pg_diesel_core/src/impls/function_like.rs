@@ -85,6 +85,10 @@ impl FunctionLike for PgFunction {
         self.model().proretset
     }
 
+    fn estimated_rows(&self) -> Option<f32> {
+        self.model().proretset.then_some(self.model().prorows)
+    }
+
     fn argument_names<'db>(
         &'db self,
         _database: &'db Self::DB,
