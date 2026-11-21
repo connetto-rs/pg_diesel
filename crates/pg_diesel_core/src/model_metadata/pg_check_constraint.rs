@@ -98,6 +98,7 @@ impl PgCheckConstraint {
             self.table.catalog(),
             &target,
             table_metadata.column_arc_slice(),
+            IdentifierCase::AsWritten,
         )
         .expect("the check expression names only its table's columns");
         let calls = ExpressionCalls::resolve(
