@@ -203,8 +203,16 @@ fn nulls_not_distinct(version: ServerVersion) -> diesel::expression::SqlLiteral<
     })
 }
 
-/// Returns the indices of the table with OID `table_oid` a `PRIMARY KEY` or
-/// `UNIQUE` constraint created, read from a server of `version`.
+/// The `pg_constraint.contype` of the primary key, unique and exclusion
+/// constraints, which an index of their own table enforces.
+///
+/// A foreign key's `conindid` names the index the referenced columns hold,
+/// on another table, so a foreign key says nothing about what that index
+/// enforces.
+const INDEX_BACKED_CONSTRAINT_TYPES: [&str; 3] = ["p", "u", "x"];
+
+/// Returns the indices of the table with OID `table_oid` a `PRIMARY KEY`,
+/// `UNIQUE` or `EXCLUDE` constraint created, read from a server of `version`.
 pub(crate) fn unique_indices(
     table_oid: u32,
     version: ServerVersion,
@@ -222,7 +230,8 @@ pub(crate) fn unique_indices(
         .filter(diesel::dsl::exists(
             pg_constraint::table
                 .select(pg_constraint::oid)
-                .filter(pg_constraint::conindid.eq(pg_index::indexrelid)),
+                .filter(pg_constraint::conindid.eq(pg_index::indexrelid))
+                .filter(pg_constraint::contype.eq_any(INDEX_BACKED_CONSTRAINT_TYPES)),
         ))
         .select((
             PgIndex::as_select(),
@@ -238,25 +247,16 @@ pub(crate) fn unique_indices(
 /// Returns, for each index of the table, the name of the primary key, unique,
 /// or exclusion constraint the index enforces, and the OID the engine gives
 /// the index.
-///
-/// A foreign key constraint points at the index the referenced columns hold
-/// and takes its name from the key, so the names those constraints record
-/// do not describe what the index enforces, and the query skips them.
 pub(crate) fn index_constraint_names(
     table_oid: u32,
     conn: &mut PgConnection,
 ) -> Result<Vec<(u32, String)>, diesel::result::Error> {
     use crate::shared::schema::pg_catalog::{pg_constraint, pg_index};
 
-    let backed = pg_constraint::contype
-        .eq("p")
-        .or(pg_constraint::contype.eq("u"))
-        .or(pg_constraint::contype.eq("x"));
-
     pg_constraint::table
         .inner_join(pg_index::table.on(pg_constraint::conindid.eq(pg_index::indexrelid)))
         .filter(pg_index::indrelid.eq(table_oid))
-        .filter(backed)
+        .filter(pg_constraint::contype.eq_any(INDEX_BACKED_CONSTRAINT_TYPES))
         .select((pg_constraint::conindid, pg_constraint::conname))
         .load::<(u32, String)>(conn)
 }
