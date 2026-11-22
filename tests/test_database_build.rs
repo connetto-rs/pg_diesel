@@ -922,6 +922,129 @@ async fn constraint_trigger_deferral() {
 }
 
 #[tokio::test]
+async fn index_deferral() {
+    for &major in COMPILED_MAJORS {
+        let database_name = "index_deferral";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("the database starts");
+        let mut conn: PgConnection =
+            establish_connection(docker.port, database_name).expect("the connection opens");
+        conn.batch_execute(
+            "
+            CREATE TABLE public.t (
+                id INTEGER PRIMARY KEY DEFERRABLE,
+                a INTEGER UNIQUE,
+                b INTEGER UNIQUE DEFERRABLE INITIALLY DEFERRED,
+                c INTEGER,
+                d INTEGER,
+                r INT4RANGE,
+                EXCLUDE USING gist (r WITH &&) DEFERRABLE INITIALLY DEFERRED
+            );
+            CREATE UNIQUE INDEX t_c ON public.t (c);
+            CREATE INDEX t_d ON public.t (d);
+            ",
+        )
+        .expect("the index fixture applies");
+
+        let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+            .connection(&mut conn)
+            .catalog(database_name)
+            .schema("public")
+            .try_into()
+            .expect("the public schema loads");
+        let t = table(&database, "t");
+        let deferrals: BTreeSet<(&str, ConstraintDeferral)> = t
+            .unique_indices(&database)
+            .expect("in database")
+            .map(|index| {
+                (
+                    IndexLike::name(index).expect("the index is named"),
+                    index.deferral(&database),
+                )
+            })
+            .chain(t.indices(&database).expect("in database").map(|index| {
+                (
+                    IndexLike::name(index).expect("the index is named"),
+                    index.deferral(&database),
+                )
+            }))
+            .collect();
+        assert_eq!(
+            deferrals,
+            BTreeSet::from([
+                ("t_pkey", ConstraintDeferral::InitiallyImmediate),
+                ("t_a_key", ConstraintDeferral::NotDeferrable),
+                ("t_b_key", ConstraintDeferral::InitiallyDeferred),
+                ("t_r_excl", ConstraintDeferral::InitiallyDeferred),
+                ("t_c", ConstraintDeferral::NotDeferrable),
+                ("t_d", ConstraintDeferral::NotDeferrable),
+            ]),
+            "PostgreSQL {major}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn typed_table_of_type() {
+    for &major in COMPILED_MAJORS {
+        let database_name = "typed_table_of_type";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("the database starts");
+        let mut conn: PgConnection =
+            establish_connection(docker.port, database_name).expect("the connection opens");
+        conn.batch_execute(
+            "
+            CREATE TYPE public.point2 AS (x INTEGER, y INTEGER);
+            CREATE TABLE public.points OF public.point2 (x WITH OPTIONS NOT NULL);
+            CREATE TABLE public.readings OF public.point2 PARTITION BY RANGE (x);
+            CREATE TABLE public.readings_low PARTITION OF public.readings
+                FOR VALUES FROM (0) TO (10);
+            CREATE TABLE public.copied (LIKE public.points);
+            CREATE TABLE public.plain (x INTEGER);
+            CREATE SCHEMA elsewhere;
+            CREATE TYPE elsewhere.pair AS (a INTEGER, b INTEGER);
+            CREATE TABLE public.pairs OF elsewhere.pair;
+            ",
+        )
+        .expect("the typed table fixture applies");
+
+        let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+            .connection(&mut conn)
+            .catalog(database_name)
+            .schema("public")
+            .try_into()
+            .expect("the public schema loads");
+        let of_type = |name: &str| {
+            table(&database, name)
+                .of_type(&database)
+                .map(|type_| type_.map(|type_| (type_.schema(), type_.name())))
+        };
+        for (name, expected) in [
+            ("points", Some(("public", "point2"))),
+            ("readings", Some(("public", "point2"))),
+            ("readings_low", None),
+            ("copied", None),
+            ("plain", None),
+        ] {
+            assert_eq!(
+                of_type(name).expect("in database"),
+                expected,
+                "{name} on PostgreSQL {major}"
+            );
+        }
+        assert!(
+            matches!(
+                of_type("pairs"),
+                Err(LookupError::ObjectNotInDatabase { .. })
+            ),
+            "a type of an unloaded schema is not in the database on PostgreSQL {major}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn foreign_key_referenced_column_names() {
     for &major in COMPILED_MAJORS {
         let database_name = "foreign_key_referenced_column_names";

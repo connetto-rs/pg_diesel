@@ -256,6 +256,16 @@ impl PgTable {
         &self.model.table_name
     }
 
+    /// Returns the schema and name of the composite type a typed table takes
+    /// its columns from, `None` for a table written without `OF`.
+    #[must_use]
+    pub fn of_type_name(&self) -> Option<(&str, &str)> {
+        self.model
+            .user_defined_type_schema
+            .as_deref()
+            .zip(self.model.user_defined_type_name.as_deref())
+    }
+
     /// Returns whether the table is `UNLOGGED`.
     #[must_use]
     pub fn unlogged(&self) -> bool {

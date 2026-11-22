@@ -1119,7 +1119,8 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
         Ok(())
     }
 
-    /// Records the tables a table inherits from or is partitioned under.
+    /// Records the tables a table inherits from or is partitioned under, and
+    /// the composite type a typed table takes its columns from.
     fn table_hierarchy(&mut self, subject: &str, table: &DB::Table) -> Result<(), DescribeError> {
         let database = self.database;
         let qualified = |table: &DB::Table| {
@@ -1139,6 +1140,14 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             format!("{subject} / partition strategy"),
             format!("{:?}", table.partition_strategy()),
         );
+        let of_type = table.of_type(database)?.map(|type_| {
+            format!(
+                "{}.{}",
+                self.scope.schema(type_.stored_schema()),
+                type_.stored_name()
+            )
+        });
+        self.text(format!("{subject} / of type"), format!("{of_type:?}"));
         Ok(())
     }
 
@@ -1433,6 +1442,10 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             self.text(
                 format!("{index_subject} / primary key"),
                 index.is_primary_key(database)?.to_string(),
+            );
+            self.text(
+                format!("{index_subject} / deferral"),
+                format!("{:?}", index.deferral(database)),
             );
             self.text(
                 format!("{index_subject} / constraint index schema"),

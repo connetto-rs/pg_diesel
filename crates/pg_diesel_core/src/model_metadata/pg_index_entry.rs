@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 
-use sql_traits::structs::IndexKey;
+use sql_traits::structs::{ConstraintDeferral, IndexKey};
 use sqlparser::{
     ast::{Expr, Ident, IndexColumn, IndexType, ObjectName, OrderByOptions},
     dialect::PostgreSqlDialect,
@@ -145,6 +145,23 @@ pub(crate) fn printed_key(definition: &str) -> Result<Vec<IndexColumn>, ParserEr
     Ok(key)
 }
 
+/// The primary key, unique or exclusion constraint an index enforces.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct IndexConstraint {
+    /// The name the constraint holds.
+    name: String,
+    /// When the constraint is checked, as `condeferrable` and `condeferred`
+    /// record it.
+    deferral: ConstraintDeferral,
+}
+
+impl IndexConstraint {
+    /// Pairs the name a constraint holds with when it is checked.
+    pub(crate) fn new(name: String, deferral: ConstraintDeferral) -> Self {
+        Self { name, deferral }
+    }
+}
+
 /// A `pg_index` row paired with the name and schema its `indexrelid` names,
 /// its access method, the columns of its `INCLUDE` list, its keys and the
 /// predicate of a partial index.
@@ -164,9 +181,9 @@ pub struct PgIndexEntry<On = OnTable> {
     name: String,
     /// The access method, `INCLUDE` list and null treatment of the index.
     shape: IndexShape,
-    /// The name the primary key, unique or exclusion constraint the index
-    /// enforces holds, when one does.
-    constraint_name: Option<String>,
+    /// The primary key, unique or exclusion constraint the index enforces,
+    /// when it enforces one.
+    constraint: Option<IndexConstraint>,
     /// The expression of the single key in parentheses, or the tuple of the
     /// expressions of several keys in the order `indkey` lists them.
     expression: Expr,
@@ -193,7 +210,7 @@ impl<On> PgIndexEntry<On> {
         row: IndexRow,
         schema: String,
         attributes: &[AttributeFacts],
-        constraint_name: Option<String>,
+        constraint: Option<IndexConstraint>,
     ) -> Result<Self, IndexDefinitionError> {
         let IndexRow {
             index,
@@ -237,7 +254,7 @@ impl<On> PgIndexEntry<On> {
             schema,
             name,
             IndexShape::new(&access_method, include_column_names, !nulls_not_distinct),
-            constraint_name,
+            constraint,
             key,
             predicate,
         ))
@@ -251,7 +268,7 @@ impl<On> PgIndexEntry<On> {
         schema: String,
         name: String,
         shape: IndexShape,
-        constraint_name: Option<String>,
+        constraint: Option<IndexConstraint>,
         key: Vec<IndexColumn>,
         predicate: Option<Expr>,
     ) -> Self {
@@ -276,7 +293,7 @@ impl<On> PgIndexEntry<On> {
             schema,
             name,
             shape,
-            constraint_name,
+            constraint,
             expression,
             key_options,
             predicate,
@@ -333,7 +350,20 @@ impl<On> PgIndexEntry<On> {
     /// does.
     #[must_use = "the index may enforce no constraint, so the caller decides"]
     pub fn constraint_name(&self) -> Option<&str> {
-        self.constraint_name.as_deref()
+        self.constraint
+            .as_ref()
+            .map(|constraint| constraint.name.as_str())
+    }
+
+    /// Returns when the constraint the index enforces is checked,
+    /// [`ConstraintDeferral::NotDeferrable`] for an index enforcing none.
+    #[must_use]
+    pub fn constraint_deferral(&self) -> ConstraintDeferral {
+        self.constraint
+            .as_ref()
+            .map_or(ConstraintDeferral::NotDeferrable, |constraint| {
+                constraint.deferral
+            })
     }
 
     /// Returns the predicate of a partial index, `None` for an index over
