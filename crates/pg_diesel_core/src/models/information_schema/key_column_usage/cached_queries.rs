@@ -7,7 +7,10 @@ use diesel::{
 };
 use sql_traits::structs::ConstraintDeferral;
 
-use crate::models::{KeyColumnUsage, ReferentialConstraint, Table};
+use crate::{
+    model_metadata::decode_deferral,
+    models::{KeyColumnUsage, ReferentialConstraint, Table},
+};
 
 /// Returns the referential constraint associated with this key column usage.
 pub(super) fn referential_constraint(
@@ -44,11 +47,7 @@ pub(super) fn deferral(
             table_constraints::initially_deferred.eq("YES"),
         ))
         .first(conn)?;
-    Ok(match (deferrable, initially_deferred) {
-        (false, _) => ConstraintDeferral::NotDeferrable,
-        (true, false) => ConstraintDeferral::InitiallyImmediate,
-        (true, true) => ConstraintDeferral::InitiallyDeferred,
-    })
+    Ok(decode_deferral(deferrable, initially_deferred))
 }
 
 /// Returns the names of the host columns of this key column usage, in the

@@ -99,6 +99,7 @@ impl PgCheckConstraint {
             &target,
             table_metadata.column_arc_slice(),
             IdentifierCase::AsWritten,
+            &PostgreSqlDialect {},
         )
         .expect("the check expression names only its table's columns");
         let calls = ExpressionCalls::resolve(
