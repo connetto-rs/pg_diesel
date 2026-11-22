@@ -133,6 +133,27 @@ impl TableLike for PgTable {
             })
     }
 
+    fn of_type<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<Option<&'db <Self::DB as DatabaseLike>::UserDefinedType>, LookupError>
+    where
+        Self: 'db,
+    {
+        metadata(self, database)?;
+        let Some((schema, name)) = self.of_type_name() else {
+            return Ok(None);
+        };
+        database
+            .user_defined_types()
+            .find(|candidate| candidate.schema() == schema && candidate.name() == name)
+            .map(Some)
+            .ok_or_else(|| LookupError::ObjectNotInDatabase {
+                object_kind: sql_traits::errors::ObjectKind::Type,
+                object: format!("{schema}.{name}"),
+            })
+    }
+
     fn partition_strategy(&self) -> Option<PartitionStrategy> {
         PgTable::partition_strategy(self)
     }
