@@ -35,6 +35,7 @@ pub use pg_foreign_key::PgForeignKey;
 mod pg_policy;
 pub use pg_policy::PgPolicy;
 mod pg_index_entry;
+pub(crate) use pg_index_entry::IndexConstraint;
 pub use pg_index_entry::{IndexDefinitionError, PgIndexEntry};
 mod indexed_relation;
 pub use indexed_relation::{IndexedRelation, OnMaterializedView, OnTable};

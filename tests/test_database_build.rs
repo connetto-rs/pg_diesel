@@ -922,6 +922,70 @@ async fn constraint_trigger_deferral() {
 }
 
 #[tokio::test]
+async fn index_deferral() {
+    for &major in COMPILED_MAJORS {
+        let database_name = "index_deferral";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("the database starts");
+        let mut conn: PgConnection =
+            establish_connection(docker.port, database_name).expect("the connection opens");
+        conn.batch_execute(
+            "
+            CREATE TABLE public.t (
+                id INTEGER PRIMARY KEY DEFERRABLE,
+                a INTEGER UNIQUE,
+                b INTEGER UNIQUE DEFERRABLE INITIALLY DEFERRED,
+                c INTEGER,
+                d INTEGER,
+                r INT4RANGE,
+                EXCLUDE USING gist (r WITH &&) DEFERRABLE INITIALLY DEFERRED
+            );
+            CREATE UNIQUE INDEX t_c ON public.t (c);
+            CREATE INDEX t_d ON public.t (d);
+            ",
+        )
+        .expect("the index fixture applies");
+
+        let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+            .connection(&mut conn)
+            .catalog(database_name)
+            .schema("public")
+            .try_into()
+            .expect("the public schema loads");
+        let t = table(&database, "t");
+        let deferrals: BTreeSet<(&str, ConstraintDeferral)> = t
+            .unique_indices(&database)
+            .expect("in database")
+            .map(|index| {
+                (
+                    IndexLike::name(index).expect("the index is named"),
+                    index.deferral(&database),
+                )
+            })
+            .chain(t.indices(&database).expect("in database").map(|index| {
+                (
+                    IndexLike::name(index).expect("the index is named"),
+                    index.deferral(&database),
+                )
+            }))
+            .collect();
+        assert_eq!(
+            deferrals,
+            BTreeSet::from([
+                ("t_pkey", ConstraintDeferral::InitiallyImmediate),
+                ("t_a_key", ConstraintDeferral::NotDeferrable),
+                ("t_b_key", ConstraintDeferral::InitiallyDeferred),
+                ("t_r_excl", ConstraintDeferral::InitiallyDeferred),
+                ("t_c", ConstraintDeferral::NotDeferrable),
+                ("t_d", ConstraintDeferral::NotDeferrable),
+            ]),
+            "PostgreSQL {major}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn foreign_key_referenced_column_names() {
     for &major in COMPILED_MAJORS {
         let database_name = "foreign_key_referenced_column_names";

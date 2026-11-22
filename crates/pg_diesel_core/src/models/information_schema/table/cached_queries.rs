@@ -9,6 +9,7 @@ use diesel::{
 
 use crate::{
     database::ServerVersion,
+    model_metadata::{IndexConstraint, decode_deferral},
     models::{Column, KeyColumnUsage, PgDescription, Table},
     shared::models::PgIndex,
 };
@@ -244,21 +245,34 @@ pub(crate) fn unique_indices(
         .load::<IndexRow>(conn)
 }
 
-/// Returns, for each index of the table, the name of the primary key, unique,
-/// or exclusion constraint the index enforces, and the OID the engine gives
-/// the index.
-pub(crate) fn index_constraint_names(
+/// Returns, for each index of the table, the primary key, unique or
+/// exclusion constraint the index enforces, by the OID the engine gives the
+/// index.
+pub(crate) fn index_constraints(
     table_oid: u32,
     conn: &mut PgConnection,
-) -> Result<Vec<(u32, String)>, diesel::result::Error> {
+) -> Result<Vec<(u32, IndexConstraint)>, diesel::result::Error> {
     use crate::shared::schema::pg_catalog::{pg_constraint, pg_index};
 
-    pg_constraint::table
+    Ok(pg_constraint::table
         .inner_join(pg_index::table.on(pg_constraint::conindid.eq(pg_index::indexrelid)))
         .filter(pg_index::indrelid.eq(table_oid))
         .filter(pg_constraint::contype.eq_any(INDEX_BACKED_CONSTRAINT_TYPES))
-        .select((pg_constraint::conindid, pg_constraint::conname))
-        .load::<(u32, String)>(conn)
+        .select((
+            pg_constraint::conindid,
+            pg_constraint::conname,
+            pg_constraint::condeferrable,
+            pg_constraint::condeferred,
+        ))
+        .load::<(u32, String, bool, bool)>(conn)?
+        .into_iter()
+        .map(|(index, name, deferrable, initially_deferred)| {
+            (
+                index,
+                IndexConstraint::new(name, decode_deferral(deferrable, initially_deferred)),
+            )
+        })
+        .collect())
 }
 
 /// Returns all indices of the table or materialized view with OID

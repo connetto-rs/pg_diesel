@@ -1435,6 +1435,10 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 index.is_primary_key(database)?.to_string(),
             );
             self.text(
+                format!("{index_subject} / deferral"),
+                format!("{:?}", index.deferral(database)),
+            );
+            self.text(
                 format!("{index_subject} / constraint index schema"),
                 self.index_schema(index),
             );

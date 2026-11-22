@@ -348,16 +348,16 @@ impl Table {
                 columns,
             )));
         }
-        let mut constraint_names = index_constraint_names(facts.oid, conn)?
+        let mut constraints = index_constraints(facts.oid, conn)?
             .into_iter()
             .collect::<HashMap<_, _>>();
         for row in cached_queries::unique_indices(facts.oid, version, conn)? {
-            let constraint_name = constraint_names.remove(&row.index.indexrelid);
+            let constraint = constraints.remove(&row.index.indexrelid);
             sql_metadata.add_unique_index(Arc::new(PgIndexEntry::from_catalog(
                 row,
                 self.table_schema.clone(),
                 &attributes,
-                constraint_name,
+                constraint,
             )?));
         }
         for row in cached_queries::standalone_indices(facts.oid, version, conn)? {

@@ -5,7 +5,7 @@ use std::borrow::Cow;
 
 use sql_traits::{
     errors::{LookupError, ObjectKind},
-    structs::{IndexKey, WrittenCall},
+    structs::{ConstraintDeferral, IndexKey, WrittenCall},
     traits::{DatabaseLike, IndexLike, Metadata, Relation, TableIndexLike, TableLike},
 };
 use sqlparser::ast::{Expr, IndexType};
@@ -128,6 +128,10 @@ impl TableIndexLike for PgIndexEntry<OnTable> {
         metadata(self, database)
             .expect("an index the database lists carries its metadata")
             .relation()
+    }
+
+    fn deferral(&self, _database: &Self::DB) -> ConstraintDeferral {
+        PgIndexEntry::constraint_deferral(self)
     }
 
     fn include_columns<'db>(
