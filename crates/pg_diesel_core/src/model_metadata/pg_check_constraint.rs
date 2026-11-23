@@ -108,12 +108,7 @@ impl PgCheckConstraint {
             search_path,
             IdentifierCase::AsWritten,
         );
-        CheckMetadata::new(
-            self.expression.clone(),
-            Arc::clone(&self.table),
-            columns,
-            calls,
-        )
+        CheckMetadata::new(Arc::clone(&self.table), columns, calls)
     }
 
     /// Returns the name the constraint is recorded under.
