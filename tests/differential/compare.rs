@@ -1654,6 +1654,12 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 format!("{trigger_subject} / deferral"),
                 format!("{:?}", trigger.deferral()),
             );
+            self.text(
+                format!("{trigger_subject} / transition tables"),
+                set(trigger
+                    .transition_tables()
+                    .map(|table| format!("{} {}", table.rows().name(), table.stored_name()))),
+            );
             let parent = match trigger.parent_trigger(database)? {
                 Some(parent) => Some((
                     self.relation_name(&parent.relation(database)?),
