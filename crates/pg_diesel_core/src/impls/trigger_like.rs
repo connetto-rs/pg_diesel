@@ -2,7 +2,7 @@
 
 use sql_traits::{
     errors::LookupError,
-    structs::{ConstraintDeferral, TargetName, TriggerEnablement},
+    structs::{ConstraintDeferral, TargetName, TransitionTable, TriggerEnablement, TriggerRow},
     traits::{DatabaseLike, Metadata, Relation, TableLike, TriggerLike},
 };
 use sqlparser::ast::{Expr, TriggerEvent, TriggerObjectKind, TriggerPeriod};
@@ -53,6 +53,17 @@ impl TriggerLike for TriggerMetadata {
 
     fn condition(&self) -> Option<&Expr> {
         self.condition.as_ref()
+    }
+
+    /// The catalog keeps no written order, so the old table comes first as
+    /// `pg_get_triggerdef` prints it, each name the stored one.
+    fn transition_tables(&self) -> impl Iterator<Item = TransitionTable<'_>> {
+        [
+            (TriggerRow::Old, &self.model.tgoldtable),
+            (TriggerRow::New, &self.model.tgnewtable),
+        ]
+        .into_iter()
+        .filter_map(|(rows, name)| Some(TransitionTable::new(rows, name.as_deref()?, true)))
     }
 
     /// Only a partition's copy of a trigger records a parent, and a partition

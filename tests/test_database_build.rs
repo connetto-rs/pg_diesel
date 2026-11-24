@@ -2,7 +2,7 @@
 
 mod test_utils;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use diesel::{PgConnection, connection::SimpleConnection};
 use pg_diesel::dialect::PostgresDialect;
@@ -23,7 +23,7 @@ use pg_diesel::{
         errors::LookupError,
         structs::{
             AggregateKind, ConstraintDeferral, FunctionKind, PrivilegeHolder, SequenceType,
-            WrittenCall,
+            TransitionTable, TriggerRow, WrittenCall,
         },
         traits::{
             CheckConstraintLike, ColumnCollation, ColumnGrantLike, ColumnLike, DatabaseLike,
@@ -918,6 +918,76 @@ async fn constraint_trigger_deferral() {
                 "{relation} on PostgreSQL {major}"
             );
         }
+    }
+}
+
+#[tokio::test]
+async fn trigger_transition_tables() {
+    for &major in COMPILED_MAJORS {
+        let database_name = "trigger_transition_tables";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("the database starts");
+        let mut conn: PgConnection =
+            establish_connection(docker.port, database_name).expect("the connection opens");
+        conn.batch_execute(
+            r#"
+            CREATE TABLE public.memberships (user_id INTEGER PRIMARY KEY);
+            CREATE FUNCTION public.f() RETURNS trigger LANGUAGE plpgsql
+                AS $$ BEGIN RETURN NULL; END $$;
+            CREATE TRIGGER accept AFTER INSERT ON public.memberships
+                REFERENCING NEW TABLE AS new_rows
+                FOR EACH STATEMENT EXECUTE FUNCTION public.f();
+            CREATE TRIGGER audit AFTER UPDATE ON public.memberships
+                REFERENCING NEW TABLE AS "After_Rows" OLD TABLE AS Before_Rows
+                FOR EACH STATEMENT EXECUTE FUNCTION public.f();
+            CREATE TRIGGER forget AFTER DELETE ON public.memberships
+                REFERENCING OLD TABLE AS old_rows
+                FOR EACH ROW EXECUTE FUNCTION public.f();
+            CREATE TRIGGER plain AFTER INSERT ON public.memberships
+                FOR EACH STATEMENT EXECUTE FUNCTION public.f();
+            "#,
+        )
+        .expect("the trigger fixture applies");
+
+        let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+            .connection(&mut conn)
+            .catalog(database_name)
+            .schema("public")
+            .try_into()
+            .expect("the public schema loads");
+        let tables: BTreeMap<&str, Vec<TransitionTable<'_>>> = table(&database, "memberships")
+            .triggers(&database)
+            .expect("in database")
+            .map(|trigger| {
+                (
+                    TriggerLike::name(trigger),
+                    trigger.transition_tables().collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            tables,
+            BTreeMap::from([
+                (
+                    "accept",
+                    vec![TransitionTable::new(TriggerRow::New, "new_rows", true)]
+                ),
+                (
+                    "audit",
+                    vec![
+                        TransitionTable::new(TriggerRow::Old, "before_rows", true),
+                        TransitionTable::new(TriggerRow::New, "After_Rows", true),
+                    ]
+                ),
+                (
+                    "forget",
+                    vec![TransitionTable::new(TriggerRow::Old, "old_rows", true)]
+                ),
+                ("plain", vec![]),
+            ]),
+            "PostgreSQL {major}"
+        );
     }
 }
 
