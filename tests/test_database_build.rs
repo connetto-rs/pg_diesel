@@ -992,6 +992,91 @@ async fn trigger_transition_tables() {
 }
 
 #[tokio::test]
+async fn stored_names_keep_their_case() {
+    for &major in COMPILED_MAJORS {
+        let database_name = "stored_names";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("the database starts");
+        let mut conn: PgConnection =
+            establish_connection(docker.port, database_name).expect("the connection opens");
+        conn.batch_execute(
+            r#"
+            CREATE ROLE admin;
+            CREATE ROLE "Admin";
+            CREATE ROLE alice;
+            GRANT admin TO alice;
+            CREATE SCHEMA "Notes";
+            CREATE TABLE "Notes".memos (id INTEGER PRIMARY KEY, "Title" TEXT);
+            ALTER TABLE "Notes".memos ENABLE ROW LEVEL SECURITY;
+            CREATE POLICY readable ON "Notes".memos FOR SELECT TO "Admin" USING (true);
+            GRANT SELECT ON "Notes".memos TO "Admin";
+            GRANT UPDATE ("Title") ON "Notes".memos TO "Admin";
+            CREATE FUNCTION "Notes".f() RETURNS trigger LANGUAGE plpgsql
+                AS $$ BEGIN RETURN NEW; END $$;
+            CREATE TRIGGER "Retitled" BEFORE UPDATE OF "Title" ON "Notes".memos
+                FOR EACH ROW EXECUTE FUNCTION "Notes".f();
+            "#,
+        )
+        .expect("the fixture applies");
+
+        let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+            .connection(&mut conn)
+            .catalog(database_name)
+            .schema("Notes")
+            .try_into()
+            .expect("the Notes schema loads");
+        assert!(
+            database
+                .schemas()
+                .any(|(schema, ())| schema.stored_name() == "Notes"),
+            "PostgreSQL {major}"
+        );
+        let memos = table(&database, "memos");
+
+        let policy = memos
+            .policies(&database)
+            .expect("in database")
+            .next()
+            .expect("the policy is read");
+        let roles: Vec<String> = policy.roles(&database).map(ToString::to_string).collect();
+        assert_eq!(roles, ["\"Admin\""], "PostgreSQL {major}");
+        let role = |name: &str| database.role(name).expect("the role is read");
+        assert_eq!(role("Admin").stored_name(), "Admin", "PostgreSQL {major}");
+        assert!(
+            policy.applies_to_role(role("Admin"), &database),
+            "PostgreSQL {major}"
+        );
+        assert!(
+            !policy.applies_to_role(role("alice"), &database),
+            "PostgreSQL {major}"
+        );
+
+        let table_grantees: Vec<String> = database
+            .table_grants()
+            .flat_map(|grant| grant.grantees(&database))
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(table_grantees, ["\"Admin\""], "PostgreSQL {major}");
+        let column_grantees: Vec<String> = database
+            .column_grants()
+            .flat_map(|grant| grant.grantees(&database))
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(column_grantees, ["\"Admin\""], "PostgreSQL {major}");
+
+        let trigger = memos
+            .triggers(&database)
+            .expect("in database")
+            .next()
+            .expect("the trigger is read");
+        assert_eq!(trigger.stored_name(), "Retitled", "PostgreSQL {major}");
+        let events: Vec<String> = trigger.events().iter().map(ToString::to_string).collect();
+        assert_eq!(events, ["UPDATE OF \"Title\""], "PostgreSQL {major}");
+    }
+}
+
+#[tokio::test]
 async fn index_deferral() {
     for &major in COMPILED_MAJORS {
         let database_name = "index_deferral";

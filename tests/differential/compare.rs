@@ -37,13 +37,17 @@ use pg_diesel::{
             SequenceLike, SequenceOwner, TableGrantLike, TableIndexLike, TableLike, TriggerLike,
             UniqueIndexLike, UserDefinedTypeLike, ViewLike, grant::GrantTarget,
         },
-        utils::{identifier_resolution::normalize_identifier, normalize_postgres_type},
+        utils::{
+            identifier_resolution::{normalize_identifier, stored_ident_name},
+            normalize_postgres_type,
+        },
     },
     sqlparser::{
         ast::{
             Action, CreateRule, CreateTrigger, Expr, Function, FunctionDefinitionSetParam,
-            FunctionSetValue, Ident, IndexType, ObjectName, OrderByOptions, Query, Statement,
-            Value as SqlValue, Visit, Visitor, visit_expressions, visit_expressions_mut,
+            FunctionSetValue, Grantee, GranteeName, Ident, IndexType, ObjectName, ObjectNamePart,
+            OrderByOptions, Owner, Query, Statement, TriggerEvent, Value as SqlValue, Visit,
+            Visitor, visit_expressions, visit_expressions_mut,
         },
         dialect::PostgreSqlDialect,
         parser::{Parser, ParserError},
@@ -786,6 +790,43 @@ fn set<I: IntoIterator<Item = String>>(values: I) -> String {
     values.sort();
     values.dedup();
     values.join(", ")
+}
+
+/// Returns the stored name of the role a policy targets, or the keyword for
+/// `CURRENT_USER` and its kin.
+fn policy_role(owner: &Owner) -> String {
+    match owner {
+        Owner::Ident(ident) => stored_ident_name(ident).into_owned(),
+        other => other.to_string(),
+    }
+}
+
+/// Returns the stored name of the role a grantee names, or the grantee as
+/// written when it names no single role.
+fn grantee_role(grantee: &Grantee) -> String {
+    match &grantee.name {
+        Some(GranteeName::ObjectName(ObjectName(parts))) => match parts.as_slice() {
+            [ObjectNamePart::Identifier(ident)] => stored_ident_name(ident).into_owned(),
+            _ => grantee.to_string(),
+        },
+        _ => grantee.to_string(),
+    }
+}
+
+/// Returns a trigger event as SQL naming each `UPDATE OF` column by its
+/// stored name, quoted.
+fn trigger_event(event: &TriggerEvent) -> String {
+    match event {
+        TriggerEvent::Update(columns) if !columns.is_empty() => format!(
+            "UPDATE OF {}",
+            columns
+                .iter()
+                .map(|column| quoted(&stored_ident_name(column)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        other => other.to_string(),
+    }
 }
 
 /// Hands every call of an expression to the closure it wraps, in the order
@@ -1664,7 +1705,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             );
             self.text(
                 format!("{trigger_subject} / events"),
-                set(trigger.events().iter().map(ToString::to_string)),
+                set(trigger.events().iter().map(trigger_event)),
             );
             self.text(
                 format!("{trigger_subject} / orientation"),
@@ -1712,7 +1753,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 let events = trigger
                     .events()
                     .iter()
-                    .map(ToString::to_string)
+                    .map(trigger_event)
                     .collect::<Vec<_>>()
                     .join(" OR ");
                 let written = format!(
@@ -1763,7 +1804,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
             );
             self.text(
                 format!("{policy_subject} / roles"),
-                set(policy.roles(database).map(ToString::to_string)),
+                set(policy.roles(database).map(policy_role)),
             );
             self.text(
                 format!("{policy_subject} / using functions"),
@@ -2272,7 +2313,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
     fn grants(&mut self) -> Result<(), DescribeError> {
         let database = self.database;
         for grant in database.table_grants() {
-            let grantees: Vec<String> = grant.grantees(database).map(ToString::to_string).collect();
+            let grantees: Vec<String> = grant.grantees(database).map(grantee_role).collect();
             let privileges: Vec<String> = if grant.is_all_privileges() {
                 vec!["ALL".to_owned()]
             } else {
@@ -2328,7 +2369,7 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                     .collect(),
                 None => Vec::new(),
             };
-            let grantees: Vec<String> = grant.grantees(database).map(ToString::to_string).collect();
+            let grantees: Vec<String> = grant.grantees(database).map(grantee_role).collect();
             let privileges: Vec<String> =
                 grant.privileges(database).map(privilege_keyword).collect();
             for column in &columns {

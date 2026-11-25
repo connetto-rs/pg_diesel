@@ -15,6 +15,10 @@ impl SchemaLike for PgSchema {
         &self.model().schema_name
     }
 
+    fn name_is_quoted(&self) -> bool {
+        true
+    }
+
     fn authorization(&self) -> Option<&str> {
         Some(&self.model().schema_owner)
     }
