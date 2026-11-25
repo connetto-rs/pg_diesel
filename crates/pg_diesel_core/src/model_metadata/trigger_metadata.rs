@@ -275,7 +275,8 @@ impl TriggerMetadata {
 }
 
 /// Decodes the events a `tgtype` mask fires the trigger on, an `UPDATE`
-/// naming the columns the mask fired it for.
+/// naming the columns the mask fired it for, each by its stored name quoted
+/// so that folding cannot rename it.
 fn decode_events(tgtype: i16, update_columns: Vec<String>) -> Vec<TriggerEvent> {
     let mut events = Vec::new();
     if tgtype & TYPE_INSERT != 0 {
@@ -287,7 +288,7 @@ fn decode_events(tgtype: i16, update_columns: Vec<String>) -> Vec<TriggerEvent> 
     if tgtype & TYPE_UPDATE != 0 {
         let columns = update_columns
             .into_iter()
-            .map(|column| Ident::new(column.as_str()))
+            .map(|column| Ident::with_quote('"', column))
             .collect();
         events.push(TriggerEvent::Update(columns));
     }

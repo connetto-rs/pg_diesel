@@ -14,6 +14,10 @@ impl RoleLike for PgRole {
         self.rolname.as_deref().unwrap_or("<unknown>")
     }
 
+    fn name_is_quoted(&self) -> bool {
+        true
+    }
+
     fn is_superuser(&self) -> bool {
         self.rolsuper.unwrap_or(false)
     }

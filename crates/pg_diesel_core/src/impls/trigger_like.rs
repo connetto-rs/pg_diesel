@@ -23,6 +23,10 @@ impl TriggerLike for TriggerMetadata {
         &self.model.tgname
     }
 
+    fn name_is_quoted(&self) -> bool {
+        true
+    }
+
     /// The relation is read by the stored name the catalog bound it to, the
     /// kind `pg_class` records deciding the store it lives in.
     fn relation<'db>(

@@ -77,7 +77,8 @@ fn all_privileges_for(relkind: &str, version: ServerVersion) -> &'static [&'stat
     }
 }
 
-/// The grantee one `aclexplode` entry names, `PUBLIC` for the pseudo-role.
+/// The grantee one `aclexplode` entry names, `PUBLIC` for the pseudo-role and
+/// any other role by its stored name, quoted so that folding cannot rename it.
 fn acl_grantee(name: &str) -> Grantee {
     if name.eq_ignore_ascii_case("PUBLIC") {
         Grantee {
@@ -88,7 +89,7 @@ fn acl_grantee(name: &str) -> Grantee {
         Grantee {
             grantee_type: GranteesType::None,
             name: Some(GranteeName::ObjectName(ObjectName(vec![
-                ObjectNamePart::Identifier(Ident::new(name)),
+                ObjectNamePart::Identifier(Ident::with_quote('"', name)),
             ]))),
         }
     }
@@ -662,7 +663,8 @@ impl<'a, C: VersionCatalog> TryFrom<PgDieselDatabaseBuilder<'a, C>> for PgDiesel
                         .entry(role.rolname.clone())
                         .or_default()
                         .push(Arc::clone(policy));
-                    roles.push(Owner::Ident(Ident::new(role.rolname)));
+                    // A stored name, quoted so that folding cannot rename it.
+                    roles.push(Owner::Ident(Ident::with_quote('"', role.rolname)));
                 }
 
                 let functions = generic_builder.function_arc_vec();
