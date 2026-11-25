@@ -39,8 +39,9 @@ pub enum OnMaterializedView {}
 impl IndexedRelation for OnTable {
     type Relation = PgTable;
 
-    /// Looks the index up among the plain indexes and then among the unique
-    /// ones, since one entry type serves both collections.
+    /// Looks the index up among the plain indexes, then the unique ones and
+    /// then the exclusion ones, since one entry type serves all three
+    /// collections.
     fn metadata<'db>(
         index: &PgIndexEntry<Self>,
         database: &'db PgDieselDatabase,
@@ -48,6 +49,7 @@ impl IndexedRelation for OnTable {
         database
             .index_metadata(index)
             .or_else(|| database.unique_index_metadata(index))
+            .or_else(|| database.exclusion_index_metadata(index))
     }
 
     fn relation(relation: &Self::Relation) -> Relation<'_, PgDieselDatabase> {

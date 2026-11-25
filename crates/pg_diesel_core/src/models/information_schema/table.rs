@@ -351,14 +351,20 @@ impl Table {
         let mut constraints = index_constraints(facts.oid, conn)?
             .into_iter()
             .collect::<HashMap<_, _>>();
-        for row in cached_queries::unique_indices(facts.oid, version, conn)? {
+        for row in cached_queries::constraint_indices(facts.oid, version, conn)? {
             let constraint = constraints.remove(&row.index.indexrelid);
-            sql_metadata.add_unique_index(Arc::new(PgIndexEntry::from_catalog(
+            let exclusion = row.index.indisexclusion;
+            let index = Arc::new(PgIndexEntry::from_catalog(
                 row,
                 self.table_schema.clone(),
                 &attributes,
                 constraint,
-            )?));
+            )?);
+            if exclusion {
+                sql_metadata.add_exclusion_index(index);
+            } else {
+                sql_metadata.add_unique_index(index);
+            }
         }
         for row in cached_queries::standalone_indices(facts.oid, version, conn)? {
             sql_metadata.add_index(Arc::new(PgIndexEntry::from_catalog(

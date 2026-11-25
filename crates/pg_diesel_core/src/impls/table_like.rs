@@ -255,6 +255,16 @@ impl TableLike for PgTable {
         Ok(metadata(self, database)?.unique_indices())
     }
 
+    fn exclusion_indices<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<impl Iterator<Item = &'db <Self::DB as DatabaseLike>::ExclusionIndex>, LookupError>
+    where
+        Self: 'db,
+    {
+        Ok(metadata(self, database)?.exclusion_indices())
+    }
+
     fn policies<'db>(
         &'db self,
         database: &'db Self::DB,

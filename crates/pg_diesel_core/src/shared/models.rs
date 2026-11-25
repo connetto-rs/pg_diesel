@@ -12,6 +12,8 @@ pub(crate) struct PgIndex {
     pub(crate) indrelid: u32,
     /// `true` if the index enforces uniqueness.
     pub(crate) indisunique: bool,
+    /// `true` if the index enforces an exclusion constraint.
+    pub(crate) indisexclusion: bool,
     /// `true` if the index is the table's replica identity, which
     /// `ALTER TABLE ... REPLICA IDENTITY USING INDEX` chose.
     pub(crate) indisreplident: bool,

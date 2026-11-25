@@ -510,12 +510,12 @@ async fn column_and_domain_expressions() {
     }
 }
 
-/// A unique index over an expression reports that expression in
+/// An exclusion index over an expression reports that expression in
 /// parentheses, as `pg_get_indexdef` prints it and `ParserDB` holds it.
 #[tokio::test]
-async fn unique_index_over_an_expression() {
+async fn exclusion_index_over_an_expression() {
     for &major in COMPILED_MAJORS {
-        let database_name = "unique_index_over_an_expression";
+        let database_name = "exclusion_index_over_an_expression";
         let docker = reference_docker(major, database_name)
             .await
             .expect("the database starts");
@@ -539,7 +539,7 @@ async fn unique_index_over_an_expression() {
             .try_into()
             .expect("the app schema loads");
         let index = table(&database, "tags")
-            .unique_indices(&database)
+            .exclusion_indices(&database)
             .expect("in database")
             .next()
             .expect("the exclusion constraint's index is recorded");
@@ -643,7 +643,7 @@ async fn index_key_and_predicate_calls() {
         ));
 
         let excluded_probe = probe
-            .unique_indices(&database)
+            .exclusion_indices(&database)
             .expect("in database")
             .next()
             .expect("the exclusion constraint's index is recorded");
@@ -1033,6 +1033,16 @@ async fn index_deferral() {
                     index.deferral(&database),
                 )
             })
+            .chain(
+                t.exclusion_indices(&database)
+                    .expect("in database")
+                    .map(|index| {
+                        (
+                            IndexLike::name(index).expect("the index is named"),
+                            index.deferral(&database),
+                        )
+                    }),
+            )
             .chain(t.indices(&database).expect("in database").map(|index| {
                 (
                     IndexLike::name(index).expect("the index is named"),
@@ -1049,6 +1059,62 @@ async fn index_deferral() {
                 ("t_r_excl", ConstraintDeferral::InitiallyDeferred),
                 ("t_c", ConstraintDeferral::NotDeferrable),
                 ("t_d", ConstraintDeferral::NotDeferrable),
+            ]),
+            "PostgreSQL {major}"
+        );
+    }
+}
+
+/// Only an `EXCLUDE` constraint makes a table answer that it has an
+/// exclusion constraint, whether written in its definition or added later,
+/// and the unique index a primary or unique key builds does not.
+#[tokio::test]
+async fn table_exclusion_constraints() {
+    for &major in COMPILED_MAJORS {
+        let database_name = "table_exclusion_constraints";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("the database starts");
+        let mut conn: PgConnection =
+            establish_connection(docker.port, database_name).expect("the connection opens");
+        conn.batch_execute(
+            "
+            CREATE TABLE public.reservations (
+                period INT4RANGE,
+                EXCLUDE USING gist (period WITH &&)
+            );
+            CREATE TABLE public.bookings (period INT4RANGE);
+            ALTER TABLE public.bookings ADD EXCLUDE USING gist (period WITH &&);
+            CREATE TABLE public.rooms (id INTEGER PRIMARY KEY, name TEXT UNIQUE);
+            CREATE TABLE public.notes (body TEXT);
+            ",
+        )
+        .expect("the exclusion fixture applies");
+
+        let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+            .connection(&mut conn)
+            .catalog(database_name)
+            .schema("public")
+            .try_into()
+            .expect("the public schema loads");
+        let excluded: BTreeMap<&str, bool> = ["bookings", "notes", "reservations", "rooms"]
+            .into_iter()
+            .map(|name| {
+                (
+                    name,
+                    table(&database, name)
+                        .has_exclusion_constraints(&database)
+                        .expect("in database"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            excluded,
+            BTreeMap::from([
+                ("bookings", true),
+                ("notes", false),
+                ("reservations", true),
+                ("rooms", false),
             ]),
             "PostgreSQL {major}"
         );

@@ -54,6 +54,7 @@ impl SchemaProfile for PgDieselProfile {
     type DataType = PgDataType;
     type Dialect = PostgresDialect;
     type Domain = PgDomainEntry;
+    type ExclusionIndex = PgIndexEntry;
     type Extension = PgExtensionEntry;
     type ForeignKey = PgForeignKey;
     type Function = PgFunction;

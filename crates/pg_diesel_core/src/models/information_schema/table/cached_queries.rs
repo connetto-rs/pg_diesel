@@ -214,7 +214,7 @@ const INDEX_BACKED_CONSTRAINT_TYPES: [&str; 3] = ["p", "u", "x"];
 
 /// Returns the indices of the table with OID `table_oid` a `PRIMARY KEY`,
 /// `UNIQUE` or `EXCLUDE` constraint created, read from a server of `version`.
-pub(crate) fn unique_indices(
+pub(crate) fn constraint_indices(
     table_oid: u32,
     version: ServerVersion,
     conn: &mut PgConnection,
@@ -310,7 +310,7 @@ pub(crate) fn standalone_indices(
     conn: &mut PgConnection,
 ) -> Result<Vec<IndexRow>, diesel::result::Error> {
     let all = indices(table_oid, version, conn)?;
-    let backed: Vec<u32> = unique_indices(table_oid, version, conn)?
+    let backed: Vec<u32> = constraint_indices(table_oid, version, conn)?
         .into_iter()
         .map(|row| row.index.indexrelid)
         .collect();

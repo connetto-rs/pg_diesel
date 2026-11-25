@@ -1465,6 +1465,30 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                 self.index_reached_functions(index)?,
             );
         }
+        for index in table.exclusion_indices(database)? {
+            let constraint_name = index.constraint_name(database)?.map(Cow::into_owned);
+            let name = constraint_name
+                .as_deref()
+                .unwrap_or_else(|| index.name().unwrap_or("<unnamed>"));
+            let index_subject = format!("{subject} / exclusion index {name}");
+            self.text(
+                format!("{index_subject} / constraint name"),
+                format!("{constraint_name:?}"),
+            );
+            self.text(
+                format!("{index_subject} / deferral"),
+                format!("{:?}", index.deferral(database)),
+            );
+            self.text(
+                format!("{index_subject} / include"),
+                index
+                    .include_columns(database)?
+                    .map(|column| column.stored_column_name().into_owned())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            self.index(schema, table_name, &index_subject, index)?;
+        }
         for index in table.indices(database)? {
             let name = index.name().unwrap_or("<unnamed>").to_owned();
             let index_subject = format!("{subject} / index {name}");
