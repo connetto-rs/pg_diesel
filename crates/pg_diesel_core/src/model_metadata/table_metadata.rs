@@ -162,6 +162,18 @@ impl TableMetadata {
         self.metadata.unique_index_arcs()
     }
 
+    /// Returns an iterator over the indices the exclusion constraints of the
+    /// table build.
+    pub fn exclusion_indices(&self) -> impl Iterator<Item = &PgIndexEntry> {
+        self.metadata.exclusion_indices()
+    }
+
+    /// Returns an iterator over the Arc of the indices the exclusion
+    /// constraints of the table build.
+    pub fn exclusion_index_arcs(&self) -> impl Iterator<Item = &Arc<PgIndexEntry>> {
+        self.metadata.exclusion_index_arcs()
+    }
+
     /// Returns an iterator over the foreign keys of the table.
     pub fn foreign_keys(&self) -> impl Iterator<Item = &PgForeignKey> {
         self.metadata.foreign_keys()

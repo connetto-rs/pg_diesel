@@ -627,6 +627,11 @@ impl<'a, C: VersionCatalog> TryFrom<PgDieselDatabaseBuilder<'a, C>> for PgDiesel
                 generic_builder = generic_builder.add_unique_index(Arc::clone(index), metadata);
             }
 
+            for index in table_metadata.exclusion_index_arcs() {
+                let metadata = index_metadata(index, &table, &functions, &search_path);
+                generic_builder = generic_builder.add_exclusion_index(Arc::clone(index), metadata);
+            }
+
             for index in table_metadata.index_arcs() {
                 let metadata = index_metadata(index, &table, &functions, &search_path);
                 generic_builder = generic_builder.add_index(Arc::clone(index), metadata);
