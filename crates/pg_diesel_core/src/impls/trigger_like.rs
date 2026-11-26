@@ -5,7 +5,7 @@ use sql_traits::{
     structs::{ConstraintDeferral, TargetName, TransitionTable, TriggerEnablement, TriggerRow},
     traits::{DatabaseLike, Metadata, Relation, TableLike, TriggerLike},
 };
-use sqlparser::ast::{Expr, TriggerEvent, TriggerObjectKind, TriggerPeriod};
+use sqlparser::ast::{Expr, Statement, TriggerEvent, TriggerObjectKind, TriggerPeriod};
 
 use crate::{
     PgDieselDatabase,
@@ -117,5 +117,11 @@ impl TriggerLike for TriggerMetadata {
 
     fn function_name(&self) -> Option<&str> {
         Some(&self.function_name)
+    }
+
+    /// A PostgreSQL trigger always executes a function and runs no
+    /// statement inline.
+    fn statements(&self) -> &[Statement] {
+        &[]
     }
 }
