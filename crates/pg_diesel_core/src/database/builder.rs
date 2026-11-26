@@ -33,7 +33,7 @@ use crate::{
         PgExtensionEntry, PgFunction, PgIndexEntry, PgOperatorEntry, PgPolicy, PgRoleMembership,
         PgRuleEntry, PgSchema, PgSequenceEntry, PgTable, PgTableError, PgTableGrant,
         PgUserDefinedType, PgViewDefinition, RuleDefinitionError, TriggerDefinitionError,
-        TriggerMetadata, UserDefinedTypeError, ViewDefinitionError,
+        TriggerMetadata, UserDefinedTypeError, ViewDefinitionError, ViewFacts,
         catalog_identity::CatalogObjects,
     },
     models::{
@@ -145,21 +145,31 @@ fn bound_calls(
     Ok(pinned)
 }
 
-/// Returns the `pg_class.reloptions` of every view and materialized view in
+/// Returns what `pg_class` records about every view and materialized view in
 /// the schemas, keyed by the schema and name `pg_class` records the relation
-/// under.
+/// under, with the owner's privileges in the order a server of `version`
+/// lists table privileges.
 ///
 /// # Errors
 ///
 /// Returns a `diesel::result::Error` if the query fails.
-fn relation_options(
+fn view_facts(
     connection: &mut PgConnection,
     schemas: &[String],
-) -> Result<HashMap<(String, String), Vec<String>>, diesel::result::Error> {
+    version: ServerVersion,
+) -> Result<HashMap<(String, String), ViewFacts>, diesel::result::Error> {
     use crate::{
         schema::pg_catalog::pg_namespace::pg_namespace, shared::schema::pg_catalog::pg_class,
     };
 
+    // `aclexplode` is a table function the DSL cannot place in a `FROM`, so
+    // the owner's entry is read through a fragment. `acldefault` stands for
+    // the ACL a relation holds while `relacl` is `NULL`.
+    let owner_entry = sql::<Array<Text>>(
+        "ARRAY(SELECT entry.privilege_type \
+         FROM aclexplode(coalesce(pg_class.relacl, acldefault('r', pg_class.relowner))) AS entry \
+         WHERE entry.grantee = pg_class.relowner)",
+    );
     let rows = pg_class::table
         .inner_join(pg_namespace::table.on(pg_namespace::oid.eq(pg_class::relnamespace)))
         .filter(pg_namespace::nspname.eq_any(schemas))
@@ -168,11 +178,24 @@ fn relation_options(
             pg_namespace::nspname,
             pg_class::relname,
             pg_class::reloptions,
+            owner_entry,
         ))
-        .load::<(String, String, Option<Vec<String>>)>(connection)?;
+        .load::<(String, String, Option<Vec<String>>, Vec<String>)>(connection)?;
     Ok(rows
         .into_iter()
-        .map(|(schema, name, options)| ((schema, name), options.unwrap_or_default()))
+        .map(|(schema, name, options, held)| {
+            let owner_privileges = version
+                .table_privileges()
+                .iter()
+                .filter(|privilege| held.iter().any(|entry| entry == *privilege))
+                .filter_map(|privilege| string_to_action(privilege))
+                .collect();
+            let facts = ViewFacts {
+                options: options.unwrap_or_default(),
+                owner_privileges,
+            };
+            ((schema, name), facts)
+        })
         .collect())
 }
 
@@ -211,17 +234,16 @@ fn materialized_view_indexes(
         .collect()
 }
 
-/// Returns the `pg_class.reloptions` the relation of the given schema and
-/// name carries, empty when the relation left none.
-fn relation_options_for<'a>(
-    options: &'a HashMap<(String, String), Vec<String>>,
+/// Takes what `pg_class` records about the relation of the given schema and
+/// name out of `facts`, nothing when it recorded no such relation.
+fn view_facts_for(
+    facts: &mut HashMap<(String, String), ViewFacts>,
     schema: Option<&str>,
     name: Option<&str>,
-) -> &'a [String] {
+) -> ViewFacts {
     schema
         .zip(name)
-        .and_then(|(schema, name)| options.get(&(schema.to_owned(), name.to_owned())))
-        .map(Vec::as_slice)
+        .and_then(|(schema, name)| facts.remove(&(schema.to_owned(), name.to_owned())))
         .unwrap_or_default()
 }
 
@@ -652,23 +674,23 @@ impl<'a, C: VersionCatalog> TryFrom<PgDieselDatabaseBuilder<'a, C>> for PgDiesel
             generic_builder = generic_builder.add_table(table, table_metadata)?;
         }
 
-        let view_options = relation_options(connection, &table_schemas)?;
+        let mut view_facts = view_facts(connection, &table_schemas, version)?;
         for view in PgView::load_all(&table_schemas, connection)? {
-            let options = relation_options_for(
-                &view_options,
+            let facts = view_facts_for(
+                &mut view_facts,
                 view.schemaname.as_deref(),
                 view.viewname.as_deref(),
             );
             generic_builder =
-                generic_builder.add_view(Arc::new(PgViewDefinition::plain(view, options)?), ());
+                generic_builder.add_view(Arc::new(PgViewDefinition::plain(view, facts)?), ());
         }
         for view in PgMatview::load_all(&table_schemas, connection)? {
-            let options = relation_options_for(
-                &view_options,
+            let facts = view_facts_for(
+                &mut view_facts,
                 view.schemaname.as_deref(),
                 view.matviewname.as_deref(),
             );
-            let view = Arc::new(PgViewDefinition::materialized(view, options)?);
+            let view = Arc::new(PgViewDefinition::materialized(view, facts)?);
             for index in materialized_view_indexes(&view, version, connection)? {
                 let metadata = index_metadata(&index, &view, &functions, &search_path);
                 generic_builder =

@@ -48,7 +48,7 @@ pub use pg_schema::PgSchema;
 mod pg_grant;
 pub use pg_grant::{PgColumnGrant, PgTableGrant};
 mod view_definition;
-pub use view_definition::{PgViewDefinition, ViewDefinitionError};
+pub use view_definition::{PgViewDefinition, ViewDefinitionError, ViewFacts};
 mod pg_sequence_entry;
 pub use pg_sequence_entry::PgSequenceEntry;
 mod pg_rule_entry;

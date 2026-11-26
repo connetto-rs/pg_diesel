@@ -864,6 +864,100 @@ async fn function_declared_types() {
 }
 
 #[tokio::test]
+async fn view_privileges() {
+    for &major in COMPILED_MAJORS {
+        let database_name = "view_privileges";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("the database starts");
+        let mut conn: PgConnection =
+            establish_connection(docker.port, database_name).expect("the connection opens");
+        conn.batch_execute(
+            "
+            CREATE ROLE app;
+            CREATE ROLE mover;
+            CREATE TABLE public.resources (id INT PRIMARY KEY, parent_id INT);
+            CREATE VIEW public.resource_moves AS
+                SELECT id, parent_id FROM public.resources WHERE parent_id > 0;
+            ALTER VIEW public.resource_moves OWNER TO mover;
+            GRANT SELECT, UPDATE (parent_id) ON public.resource_moves TO app;
+            CREATE VIEW public.trimmed AS SELECT id FROM public.resources;
+            ALTER VIEW public.trimmed OWNER TO mover;
+            REVOKE TRUNCATE, TRIGGER ON public.trimmed FROM mover;
+            ",
+        )
+        .expect("the view fixture applies");
+
+        let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+            .connection(&mut conn)
+            .catalog(database_name)
+            .schema("public")
+            .try_into()
+            .expect("the public schema loads");
+        let view = |name: &str| {
+            database
+                .views()
+                .find(|view| view.view_name() == name)
+                .unwrap_or_else(|| panic!("the view {name} is recorded"))
+        };
+        let owner_privileges = |name: &str| {
+            ViewLike::owner_privileges(view(name), &database)
+                .expect("in database")
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        };
+        let mut every = vec![
+            "SELECT",
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "TRUNCATE",
+            "REFERENCES",
+            "TRIGGER",
+        ];
+        if major >= 17 {
+            every.push("MAINTAIN");
+        }
+        assert_eq!(
+            owner_privileges("resource_moves"),
+            every,
+            "an untouched owner entry holds every privilege on PostgreSQL {major}"
+        );
+        every.retain(|privilege| !matches!(*privilege, "TRUNCATE" | "TRIGGER"));
+        assert_eq!(
+            owner_privileges("trimmed"),
+            every,
+            "a revoke takes from the owner's entry on PostgreSQL {major}"
+        );
+
+        let resource_moves = view("resource_moves");
+        let app = resource_moves
+            .privileges(
+                database.role("app").expect("the role is recorded"),
+                &database,
+            )
+            .expect("in database");
+        assert!(app.select.on_table(), "PostgreSQL {major}");
+        assert!(!app.update.on_column(0), "PostgreSQL {major}");
+        assert!(
+            app.update.on_column(1),
+            "a column grant on a view holds on the column it names on PostgreSQL {major}"
+        );
+        assert!(!app.delete, "PostgreSQL {major}");
+        let owner = resource_moves
+            .privileges(
+                database.role("mover").expect("the role is recorded"),
+                &database,
+            )
+            .expect("in database");
+        assert!(
+            owner.insert.on_table() && owner.update.on_table() && owner.delete,
+            "the owner holds its own entry on PostgreSQL {major}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn function_extension_membership() {
     for &major in COMPILED_MAJORS {
         let database_name = "function_extension_membership";

@@ -4,7 +4,7 @@ use sql_traits::{
     errors::{LookupError, ObjectKind},
     traits::{DatabaseLike, Metadata, ViewLike},
 };
-use sqlparser::ast::Query;
+use sqlparser::ast::{Action, Query};
 
 use crate::{PgDieselDatabase, model_metadata::PgViewDefinition};
 
@@ -45,18 +45,14 @@ impl ViewLike for PgViewDefinition {
     }
 
     fn owner<'db>(&self, database: &'db Self::DB) -> Result<Option<&'db str>, LookupError> {
-        let held = if self.is_materialized() {
-            database.materialized_views().find(|view| *view == self)
-        } else {
-            database.views().find(|view| *view == self)
-        };
-        match held {
-            Some(view) => Ok(view.owner()),
-            None => Err(LookupError::ObjectNotInDatabase {
-                object_kind: ObjectKind::View,
-                object: format!("{}.{}", self.schema(), self.name()),
-            }),
-        }
+        Ok(held(self, database)?.owner())
+    }
+
+    fn owner_privileges<'db>(
+        &'db self,
+        database: &'db Self::DB,
+    ) -> Result<impl Iterator<Item = &'db Action>, LookupError> {
+        Ok(held(self, database)?.owner_privileges().iter())
     }
 
     fn definition(&self) -> &Query {
@@ -67,4 +63,20 @@ impl ViewLike for PgViewDefinition {
         // `pg_get_viewdef` does not reconstruct the declared column list.
         &[]
     }
+}
+
+/// Returns the view `database` holds as `view`.
+fn held<'db>(
+    view: &PgViewDefinition,
+    database: &'db PgDieselDatabase,
+) -> Result<&'db PgViewDefinition, LookupError> {
+    let held = if view.is_materialized() {
+        database.materialized_views().find(|held| *held == view)
+    } else {
+        database.views().find(|held| *held == view)
+    };
+    held.ok_or_else(|| LookupError::ObjectNotInDatabase {
+        object_kind: ObjectKind::View,
+        object: format!("{}.{}", view.schema(), view.name()),
+    })
 }
