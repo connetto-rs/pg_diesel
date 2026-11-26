@@ -4,7 +4,7 @@ use sql_traits::structs::AggregateKind;
 
 use crate::{
     database::CatalogCache,
-    model_metadata::RETURNED_COLUMN_MODE,
+    model_metadata::{PgDataType, RETURNED_COLUMN_MODE},
     models::{PgProc, PgType, ProcAclEntry},
 };
 
@@ -85,16 +85,14 @@ pub enum ExecuteHolder {
 /// Struct collecting metadata about a `PostgreSQL` function represented by a
 /// [`PgProc`] entry.
 pub struct PgProcMetadata {
-    /// Every argument type the function declares, `OUT` included.
-    argument_types: Vec<PgType>,
-    /// The name each argument type declares under, `OUT` included, in the
-    /// spelling the reading session resolves it to.
-    argument_type_names: Vec<String>,
-    /// The name and type name of each column a `RETURNS TABLE` clause
-    /// declares, in declaration order.
-    returned_columns: Vec<(String, String)>,
-    /// The return type.
-    return_type: Option<PgType>,
+    /// The type each argument declares, `OUT` included, in declaration order.
+    argument_types: Vec<PgDataType>,
+    /// The name and type of each column a `RETURNS TABLE` clause declares,
+    /// in declaration order.
+    returned_columns: Vec<(String, PgDataType)>,
+    /// The type `prorettype` records, `None` for a result described by output
+    /// arguments.
+    return_type: Option<PgDataType>,
     /// The return type the function declares, the `SETOF` marker included.
     return_type_name: Option<String>,
     /// The type one call of the function yields.
@@ -121,7 +119,8 @@ impl PgProcMetadata {
     ///
     /// A type or role the cache does not hold is left out rather than looked
     /// up: the cache reads whole catalogs, so a miss means the object is gone.
-    ///
+    /// `pg_proc` keeps no type modifier, so every type it records is
+    /// unmodified.
     #[must_use]
     pub fn new(
         pg_proc: &PgProc,
@@ -135,33 +134,37 @@ impl PgProcMetadata {
             .unwrap_or(pg_proc.proargtypes.as_slice());
         let modes = pg_proc.proargmodes.as_deref().unwrap_or_default();
         let names = pg_proc.proargnames.as_deref().unwrap_or_default();
-        let mut argument_types: Vec<PgType> = Vec::new();
-        let mut argument_type_names: Vec<String> = Vec::new();
-        let mut returned_columns: Vec<(String, String)> = Vec::new();
+        let mut argument_pg_types: Vec<&PgType> = Vec::new();
+        let mut argument_types: Vec<PgDataType> = Vec::new();
+        let mut returned_columns: Vec<(String, PgDataType)> = Vec::new();
         for (position, oid) in argument_oids.iter().enumerate() {
             let Some(pg_type) = cache.pg_type(*oid) else {
                 continue;
             };
-            let declared = type_name(*oid, cache, pg_type);
+            let Some(declared) = PgDataType::from_type(pg_type, -1, cache, 0) else {
+                continue;
+            };
             if modes.get(position).map(String::as_str) == Some(RETURNED_COLUMN_MODE) {
                 if let Some(column) = names.get(position) {
                     returned_columns.push((column.clone(), declared));
                 }
             } else {
-                argument_type_names.push(declared);
-                argument_types.push(pg_type.clone());
+                argument_pg_types.push(pg_type);
+                argument_types.push(declared);
             }
         }
-        let return_type = cache.pg_type(pg_proc.prorettype).cloned();
-        let return_type_name = Self::declared_return_type(pg_proc, return_type.as_ref(), cache);
+        let return_pg_type = cache.pg_type(pg_proc.prorettype);
+        let return_type = return_pg_type
+            .filter(|pg_type| !Self::declares_no_return_type(pg_proc, pg_type))
+            .and_then(|pg_type| PgDataType::from_type(pg_type, -1, cache, 0));
+        let return_type_name = Self::declared_return_type(pg_proc, return_pg_type, cache);
         let result_type_name =
-            Self::yielded_result_type(pg_proc, return_type.as_ref(), &argument_types, cache);
+            Self::yielded_result_type(pg_proc, return_pg_type, &argument_pg_types, cache);
         let owner = cache.role(pg_proc.proowner).map(ToOwned::to_owned);
         let owner_oid = pg_proc.proowner;
 
         Self {
             argument_types,
-            argument_type_names,
             returned_columns,
             return_type,
             return_type_name,
@@ -267,7 +270,7 @@ impl PgProcMetadata {
             return Some("TABLE".to_owned());
         }
         let pg_type = return_type?;
-        if pg_type.oid == RECORD_TYPE_OID && Self::has_output_arguments(pg_proc) {
+        if Self::declares_no_return_type(pg_proc, pg_type) {
             return None;
         }
 
@@ -277,6 +280,12 @@ impl PgProcMetadata {
         } else {
             name
         })
+    }
+
+    /// Whether `prorettype`, read as `pg_type`, stands for a result described
+    /// by output arguments rather than a declared `RETURNS` clause.
+    fn declares_no_return_type(pg_proc: &PgProc, pg_type: &PgType) -> bool {
+        pg_type.oid == RECORD_TYPE_OID && Self::has_output_arguments(pg_proc)
     }
 
     /// Whether the function declares an `OUT` or `INOUT` argument.
@@ -297,7 +306,7 @@ impl PgProcMetadata {
     fn yielded_result_type(
         pg_proc: &PgProc,
         return_type: Option<&PgType>,
-        argument_types: &[PgType],
+        argument_types: &[&PgType],
         cache: &CatalogCache,
     ) -> Option<String> {
         let pg_type = return_type?;
@@ -315,7 +324,7 @@ impl PgProcMetadata {
     /// declares.
     fn single_output_argument_type(
         pg_proc: &PgProc,
-        argument_types: &[PgType],
+        argument_types: &[&PgType],
         cache: &CatalogCache,
     ) -> Option<String> {
         let outputs: Vec<usize> = pg_proc
@@ -335,31 +344,24 @@ impl PgProcMetadata {
             .map(|pg_type| type_name(pg_type.oid, cache, pg_type))
     }
 
-    /// Returns the argument types, every argument the function declares,
-    /// `OUT` included.
+    /// Returns the type each argument declares, `OUT` included, in
+    /// declaration order.
     #[must_use]
-    pub fn argument_types(&self) -> &[PgType] {
+    pub fn argument_types(&self) -> &[PgDataType] {
         &self.argument_types
     }
 
-    /// Returns the name each argument type declares under, in the spelling
-    /// the reading session resolves it to, `OUT` included.
+    /// Returns the name and type of each column a `RETURNS TABLE` clause
+    /// declares, in declaration order.
     #[must_use]
-    pub fn argument_type_names(&self) -> &[String] {
-        &self.argument_type_names
-    }
-
-    /// Returns the name and type name of each column a `RETURNS TABLE`
-    /// clause declares, in declaration order, with each type in the spelling
-    /// the reading session resolves it to.
-    #[must_use]
-    pub fn returned_columns(&self) -> &[(String, String)] {
+    pub fn returned_columns(&self) -> &[(String, PgDataType)] {
         &self.returned_columns
     }
 
-    /// Returns the return type.
+    /// Returns the type `prorettype` records, `None` for a result described
+    /// by output arguments.
     #[must_use]
-    pub fn return_type(&self) -> Option<&PgType> {
+    pub fn return_type(&self) -> Option<&PgDataType> {
         self.return_type.as_ref()
     }
 
@@ -483,14 +485,10 @@ mod tests {
 
     #[test]
     fn test_pg_proc_metadata() {
-        let arg_type = dummy_pg_type(1, "int4");
-        let ret_type = dummy_pg_type(2, "int4");
-
         let metadata = PgProcMetadata {
-            argument_types: vec![arg_type],
-            argument_type_names: vec!["int4".to_string()],
+            argument_types: vec![],
             returned_columns: vec![],
-            return_type: Some(ret_type),
+            return_type: None,
             return_type_name: Some("int4".to_string()),
             result_type_name: Some("int4".to_string()),
             owner: Some("app_owner".to_string()),
@@ -501,9 +499,6 @@ mod tests {
             extension: None,
         };
 
-        assert_eq!(metadata.argument_types().len(), 1);
-        assert_eq!(metadata.argument_types()[0].typname, "int4");
-        assert_eq!(metadata.return_type().unwrap().typname, "int4");
         assert_eq!(metadata.return_type_name(), Some("int4"));
         assert_eq!(metadata.result_type_name(), Some("int4"));
         assert_eq!(metadata.owner(), Some("app_owner"));
@@ -514,7 +509,6 @@ mod tests {
     fn test_default_execute_privileges() {
         let metadata = PgProcMetadata {
             argument_types: vec![],
-            argument_type_names: vec![],
             returned_columns: vec![],
             return_type: None,
             return_type_name: None,
@@ -547,7 +541,6 @@ mod tests {
     fn test_public_revoked() {
         let metadata = PgProcMetadata {
             argument_types: vec![],
-            argument_type_names: vec![],
             returned_columns: vec![],
             return_type: None,
             return_type_name: None,
@@ -573,7 +566,6 @@ mod tests {
     fn test_grant_option_reaches_one_grantee() {
         let metadata = PgProcMetadata {
             argument_types: vec![],
-            argument_type_names: vec![],
             returned_columns: vec![],
             return_type: None,
             return_type_name: None,
@@ -606,7 +598,6 @@ mod tests {
     fn test_owner_entry_revoked() {
         let metadata = PgProcMetadata {
             argument_types: vec![],
-            argument_type_names: vec![],
             returned_columns: vec![],
             return_type: None,
             return_type_name: None,
@@ -684,12 +675,11 @@ mod tests {
     // which then yields the type of its single output argument.
     #[test]
     fn test_single_output_argument_type() {
-        fn argument_types(names: &[(&str, u32)]) -> Vec<PgType> {
-            names
-                .iter()
-                .map(|(name, oid)| dummy_pg_type(*oid, name))
-                .collect()
-        }
+        let (text, int4, uuid) = (
+            dummy_pg_type(1, "text"),
+            dummy_pg_type(2, "int4"),
+            dummy_pg_type(3, "uuid"),
+        );
 
         let cache = CatalogCache::default();
 
@@ -701,7 +691,7 @@ mod tests {
         assert_eq!(
             PgProcMetadata::single_output_argument_type(
                 &two_outputs,
-                &argument_types(&[("text", 1), ("int4", 2), ("uuid", 3)]),
+                &[&text, &int4, &uuid],
                 &cache
             ),
             None,
@@ -714,18 +704,14 @@ mod tests {
         single_output.proargmodes = Some(vec!["i".to_string(), "o".to_string()]);
 
         assert_eq!(
-            PgProcMetadata::single_output_argument_type(
-                &single_output,
-                &argument_types(&[("int4", 2), ("uuid", 3)]),
-                &cache
-            ),
+            PgProcMetadata::single_output_argument_type(&single_output, &[&int4, &uuid], &cache),
             Some("uuid".to_string()),
             "the single output argument yields its type"
         );
 
         let no_output = dummy_pg_proc();
         assert_eq!(
-            PgProcMetadata::single_output_argument_type(&no_output, &argument_types(&[]), &cache),
+            PgProcMetadata::single_output_argument_type(&no_output, &[], &cache),
             None,
             "no output argument and `RETURNS record` leaves the result a `record`"
         );

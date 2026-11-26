@@ -1974,10 +1974,10 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                     "{:?}",
                     function
                         .returned_columns(database)
-                        .map(|(column, type_name)| format!(
+                        .map(|(column, declared)| format!(
                             "{} {}",
                             normalize_identifier(column.name(), column.name_is_quoted()),
-                            normalize_postgres_type(&type_name)
+                            normalize_postgres_type(&declared.name(database))
                         ))
                         .collect::<Vec<_>>()
                 ),

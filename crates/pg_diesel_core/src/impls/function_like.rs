@@ -15,7 +15,7 @@ use sqlparser::ast::{
 use crate::{
     PgDieselDatabase,
     database::{ExecuteHolder, PgProcMetadata},
-    model_metadata::{PgExtensionEntry, PgFunction},
+    model_metadata::{PgDataType, PgExtensionEntry, PgFunction},
 };
 
 impl Metadata for PgFunction {
@@ -108,14 +108,13 @@ impl FunctionLike for PgFunction {
             .chain(std::iter::repeat_n(None, unnamed))
     }
 
-    fn argument_type_names<'db>(
+    fn argument_types<'db>(
         &'db self,
         database: &'db Self::DB,
-    ) -> impl Iterator<Item = Cow<'db, str>> {
+    ) -> impl Iterator<Item = &'db PgDataType> {
         metadata(self, database)
             .into_iter()
-            .flat_map(PgProcMetadata::argument_type_names)
-            .map(|name| Cow::Borrowed(name.as_str()))
+            .flat_map(PgProcMetadata::argument_types)
     }
 
     fn argument_modes(&self) -> impl Iterator<Item = ArgMode> {
@@ -125,16 +124,11 @@ impl FunctionLike for PgFunction {
     fn returned_columns<'db>(
         &'db self,
         database: &'db Self::DB,
-    ) -> impl Iterator<Item = (TargetName<'db>, Cow<'db, str>)> {
+    ) -> impl Iterator<Item = (TargetName<'db>, &'db PgDataType)> {
         metadata(self, database)
             .into_iter()
             .flat_map(PgProcMetadata::returned_columns)
-            .map(|(column, type_name)| {
-                (
-                    TargetName::new(column, true),
-                    Cow::Borrowed(type_name.as_str()),
-                )
-            })
+            .map(|(column, declared)| (TargetName::new(column, true), declared))
     }
 
     fn argument_default_count(&self) -> usize {
@@ -147,6 +141,10 @@ impl FunctionLike for PgFunction {
             .ok()?
             .return_type_name()
             .map(Cow::Borrowed)
+    }
+
+    fn return_type<'db>(&'db self, database: &'db Self::DB) -> Option<&'db PgDataType> {
+        metadata(self, database).ok()?.return_type()
     }
 
     fn result_type_name<'db>(&'db self, database: &'db Self::DB) -> Option<Cow<'db, str>> {

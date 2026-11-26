@@ -1,6 +1,10 @@
 //! The relation kind a `pg_views` or `pg_matviews` row becomes.
 
-use sqlparser::{ast::Query, dialect::PostgreSqlDialect, parser::Parser};
+use sqlparser::{
+    ast::{Action, Query},
+    dialect::PostgreSqlDialect,
+    parser::Parser,
+};
 
 use crate::models::{PgMatview, PgView};
 
@@ -23,8 +27,22 @@ pub struct PgViewDefinition {
     /// Whether the view runs with the rights of its reader, from its
     /// `pg_class.reloptions`.
     security_invoker: bool,
+    /// The relation-level privileges the owner's own `pg_class.relacl`
+    /// entry holds.
+    owner_privileges: Vec<Action>,
     /// The parsed defining query, boxed to keep the struct small.
     definition: Box<Query>,
+}
+
+/// What `pg_class` records about a view beyond its definition.
+#[derive(Debug, Clone, Default)]
+pub struct ViewFacts {
+    /// The relation options `pg_class.reloptions` records, each as
+    /// `PostgreSQL` stores the `name=value` pair.
+    pub options: Vec<String>,
+    /// The relation-level privileges the owner's own `pg_class.relacl`
+    /// entry holds, every one of them while the ACL is left implicit.
+    pub owner_privileges: Vec<Action>,
 }
 
 /// What stopped a catalog row from becoming a [`PgViewDefinition`].
@@ -89,8 +107,8 @@ fn relation_option_is_set(options: &[String], name: &str) -> bool {
 }
 
 impl PgViewDefinition {
-    /// Reads a plain view from a `pg_catalog.pg_views` row, whose
-    /// `pg_class.reloptions` are `options`.
+    /// Reads a plain view from a `pg_catalog.pg_views` row, of which
+    /// `pg_class` records `facts`.
     ///
     /// # Errors
     ///
@@ -98,7 +116,7 @@ impl PgViewDefinition {
     ///   schema, name or definition.
     /// * [`ViewDefinitionError::Unparsable`] when `sqlparser` refuses the
     ///   definition the catalog reconstructed.
-    pub fn plain(view: PgView, options: &[String]) -> Result<Self, ViewDefinitionError> {
+    pub fn plain(view: PgView, facts: ViewFacts) -> Result<Self, ViewDefinitionError> {
         let schema = required(view.schemaname, "pg_views", "schemaname")?;
         let name = required(view.viewname, "pg_views", "viewname")?;
         let definition = required(view.definition, "pg_views", "definition")?;
@@ -108,14 +126,15 @@ impl PgViewDefinition {
             name,
             owner: view.viewowner,
             materialized: false,
-            security_barrier: relation_option_is_set(options, "security_barrier"),
-            security_invoker: relation_option_is_set(options, "security_invoker"),
+            security_barrier: relation_option_is_set(&facts.options, "security_barrier"),
+            security_invoker: relation_option_is_set(&facts.options, "security_invoker"),
+            owner_privileges: facts.owner_privileges,
             definition,
         })
     }
 
-    /// Reads a materialized view from a `pg_catalog.pg_matviews` row, whose
-    /// `pg_class.reloptions` are `options`.
+    /// Reads a materialized view from a `pg_catalog.pg_matviews` row, of
+    /// which `pg_class` records `facts`.
     ///
     /// # Errors
     ///
@@ -123,7 +142,7 @@ impl PgViewDefinition {
     ///   schema, name or definition.
     /// * [`ViewDefinitionError::Unparsable`] when `sqlparser` refuses the
     ///   definition the catalog reconstructed.
-    pub fn materialized(view: PgMatview, options: &[String]) -> Result<Self, ViewDefinitionError> {
+    pub fn materialized(view: PgMatview, facts: ViewFacts) -> Result<Self, ViewDefinitionError> {
         let schema = required(view.schemaname, "pg_matviews", "schemaname")?;
         let name = required(view.matviewname, "pg_matviews", "matviewname")?;
         let definition = required(view.definition, "pg_matviews", "definition")?;
@@ -133,8 +152,9 @@ impl PgViewDefinition {
             name,
             owner: view.matviewowner,
             materialized: true,
-            security_barrier: relation_option_is_set(options, "security_barrier"),
-            security_invoker: relation_option_is_set(options, "security_invoker"),
+            security_barrier: relation_option_is_set(&facts.options, "security_barrier"),
+            security_invoker: relation_option_is_set(&facts.options, "security_invoker"),
+            owner_privileges: facts.owner_privileges,
             definition,
         })
     }
@@ -155,6 +175,12 @@ impl PgViewDefinition {
     #[must_use]
     pub fn owner(&self) -> Option<&str> {
         self.owner.as_deref()
+    }
+
+    /// Returns the relation-level privileges the owner's own entry holds.
+    #[must_use]
+    pub fn owner_privileges(&self) -> &[Action] {
+        &self.owner_privileges
     }
 
     /// Returns whether the view holds a stored snapshot.

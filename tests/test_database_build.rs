@@ -18,7 +18,7 @@ use pg_diesel::sqlparser::{
 use pg_diesel::{
     PgDieselDatabase,
     database::{PgDatabaseBuildError, PgDieselDatabaseBuilder},
-    model_metadata::{PgFunction, PgTable, TriggerDefinitionError},
+    model_metadata::{PgDataType, PgFunction, PgTable, TriggerDefinitionError},
     models::PgRole,
     sql_traits::{
         errors::LookupError,
@@ -27,11 +27,11 @@ use pg_diesel::{
             TransitionTable, TriggerRow, WrittenCall,
         },
         traits::{
-            CheckConstraintLike, ColumnCollation, ColumnGrantLike, ColumnLike, DatabaseLike,
-            DialectLike, DomainLike, ExtensionLike, ForeignKeyLike, FunctionLike, GrantLike,
-            IndexLike, PartitionStrategy, PolicyLike, Relation, RoleLike, SchemaLike, SequenceLike,
-            TableGrantLike, TableIndexLike, TableLike, TriggerLike, TypeMatch, UserDefinedTypeKind,
-            ViewLike, grant::GrantTarget,
+            CheckConstraintLike, ColumnCollation, ColumnGrantLike, ColumnLike, DataTypeLike,
+            DatabaseLike, DialectLike, DomainLike, ExtensionLike, ForeignKeyLike, FunctionLike,
+            GrantLike, IndexLike, PartitionStrategy, PolicyLike, Relation, RoleLike, SchemaLike,
+            SequenceLike, TableGrantLike, TableIndexLike, TableLike, TriggerLike, TypeMatch,
+            UserDefinedTypeKind, ViewLike, grant::GrantTarget,
         },
     },
 };
@@ -758,6 +758,202 @@ async fn function_row_estimate() {
                 "{schema}.{name} on PostgreSQL {major}"
             );
         }
+    }
+}
+
+/// The name, character length, precision and scale `declared` answers.
+fn type_facts(
+    declared: &PgDataType,
+    database: &PgDieselDatabase,
+) -> (String, Option<u64>, Option<u64>, Option<i64>) {
+    (
+        declared.name(database).into_owned(),
+        declared.max_character_length(database),
+        declared.numeric_precision(database),
+        declared.numeric_scale(database),
+    )
+}
+
+#[tokio::test]
+async fn function_declared_types() {
+    for &major in COMPILED_MAJORS {
+        let database_name = "function_declared_types";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("the database starts");
+        let mut conn: PgConnection =
+            establish_connection(docker.port, database_name).expect("the connection opens");
+        conn.batch_execute(
+            "
+            CREATE FUNCTION public.coded(
+                code VARCHAR(3), OUT amount NUMERIC(5,2), OUT label VARCHAR(4)
+            ) LANGUAGE sql AS 'SELECT 1.5, ''ab''';
+            CREATE FUNCTION public.labelled(code VARCHAR(3)) RETURNS SETOF VARCHAR(4)
+                LANGUAGE sql AS 'SELECT code';
+            CREATE FUNCTION public.priced() RETURNS TABLE (code VARCHAR(3), amount NUMERIC(5,2))
+                LANGUAGE sql AS 'SELECT ''ab'', 1.5';
+            ",
+        )
+        .expect("the function fixture applies");
+
+        let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+            .connection(&mut conn)
+            .catalog(database_name)
+            .schema("public")
+            .try_into()
+            .expect("the public schema loads");
+        let unmodified = |name: &str| (name.to_owned(), None, None, None);
+
+        // `pg_proc` keeps no type modifier, so every declared type is unmodified.
+        let coded = function(
+            &database,
+            "public",
+            "coded",
+            &["character varying", "numeric", "character varying"],
+        );
+        assert_eq!(
+            coded
+                .argument_types(&database)
+                .map(|declared| type_facts(declared, &database))
+                .collect::<Vec<_>>(),
+            [
+                unmodified("character varying"),
+                unmodified("numeric"),
+                unmodified("character varying"),
+            ],
+            "PostgreSQL {major}"
+        );
+        assert_eq!(
+            coded.return_type(&database),
+            None,
+            "several output arguments declare no return type on PostgreSQL {major}"
+        );
+
+        let labelled = function(&database, "public", "labelled", &["character varying"]);
+        assert_eq!(
+            labelled
+                .return_type(&database)
+                .map(|declared| type_facts(declared, &database)),
+            Some(unmodified("character varying")),
+            "a set answers its element type on PostgreSQL {major}"
+        );
+
+        let priced = function(&database, "public", "priced", &[]);
+        assert_eq!(
+            priced
+                .returned_columns(&database)
+                .map(|(column, declared)| (
+                    column.name().to_owned(),
+                    type_facts(declared, &database)
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("code".to_owned(), unmodified("character varying")),
+                ("amount".to_owned(), unmodified("numeric")),
+            ],
+            "PostgreSQL {major}"
+        );
+        assert_eq!(
+            priced
+                .return_type(&database)
+                .map(|declared| declared.name(&database).into_owned()),
+            Some("record".to_owned()),
+            "`RETURNS TABLE` answers the type `prorettype` stores on PostgreSQL {major}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn view_privileges() {
+    for &major in COMPILED_MAJORS {
+        let database_name = "view_privileges";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("the database starts");
+        let mut conn: PgConnection =
+            establish_connection(docker.port, database_name).expect("the connection opens");
+        conn.batch_execute(
+            "
+            CREATE ROLE app;
+            CREATE ROLE mover;
+            CREATE TABLE public.resources (id INT PRIMARY KEY, parent_id INT);
+            CREATE VIEW public.resource_moves AS
+                SELECT id, parent_id FROM public.resources WHERE parent_id > 0;
+            ALTER VIEW public.resource_moves OWNER TO mover;
+            GRANT SELECT, UPDATE (parent_id) ON public.resource_moves TO app;
+            CREATE VIEW public.trimmed AS SELECT id FROM public.resources;
+            ALTER VIEW public.trimmed OWNER TO mover;
+            REVOKE TRUNCATE, TRIGGER ON public.trimmed FROM mover;
+            ",
+        )
+        .expect("the view fixture applies");
+
+        let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+            .connection(&mut conn)
+            .catalog(database_name)
+            .schema("public")
+            .try_into()
+            .expect("the public schema loads");
+        let view = |name: &str| {
+            database
+                .views()
+                .find(|view| view.view_name() == name)
+                .unwrap_or_else(|| panic!("the view {name} is recorded"))
+        };
+        let owner_privileges = |name: &str| {
+            ViewLike::owner_privileges(view(name), &database)
+                .expect("in database")
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        };
+        let mut every = vec![
+            "SELECT",
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "TRUNCATE",
+            "REFERENCES",
+            "TRIGGER",
+        ];
+        if major >= 17 {
+            every.push("MAINTAIN");
+        }
+        assert_eq!(
+            owner_privileges("resource_moves"),
+            every,
+            "an untouched owner entry holds every privilege on PostgreSQL {major}"
+        );
+        every.retain(|privilege| !matches!(*privilege, "TRUNCATE" | "TRIGGER"));
+        assert_eq!(
+            owner_privileges("trimmed"),
+            every,
+            "a revoke takes from the owner's entry on PostgreSQL {major}"
+        );
+
+        let resource_moves = view("resource_moves");
+        let app = resource_moves
+            .privileges(
+                database.role("app").expect("the role is recorded"),
+                &database,
+            )
+            .expect("in database");
+        assert!(app.select.on_table(), "PostgreSQL {major}");
+        assert!(!app.update.on_column(0), "PostgreSQL {major}");
+        assert!(
+            app.update.on_column(1),
+            "a column grant on a view holds on the column it names on PostgreSQL {major}"
+        );
+        assert!(!app.delete, "PostgreSQL {major}");
+        let owner = resource_moves
+            .privileges(
+                database.role("mover").expect("the role is recorded"),
+                &database,
+            )
+            .expect("in database");
+        assert!(
+            owner.insert.on_table() && owner.update.on_table() && owner.delete,
+            "the owner holds its own entry on PostgreSQL {major}"
+        );
     }
 }
 

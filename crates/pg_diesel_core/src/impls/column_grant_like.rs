@@ -76,6 +76,11 @@ impl ColumnGrantLike for PgColumnGrant {
             .filter(move |column| column.column_name() == self.column_name()))
     }
 
+    fn column_names(&self) -> impl Iterator<Item = (&str, bool)> {
+        // A stored name, quoted so that folding cannot rename it.
+        std::iter::once((self.column_name(), true))
+    }
+
     fn table<'a>(
         &'a self,
         database: &'a Self::DB,
