@@ -297,4 +297,12 @@ impl CatalogCache {
     pub(crate) fn enum_labels(&self, oid: u32) -> Option<&Arc<[String]>> {
         self.enum_labels.get(&oid)
     }
+
+    /// Records `pg_type` under its OID, as a test's catalog holds it.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_type(mut self, pg_type: PgType) -> Self {
+        self.types.insert(pg_type.oid, pg_type);
+        self
+    }
 }

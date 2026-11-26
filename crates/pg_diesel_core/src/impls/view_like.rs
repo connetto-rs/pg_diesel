@@ -80,3 +80,33 @@ fn held<'db>(
         object: format!("{}.{}", view.schema(), view.name()),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{dialect::PostgresDialect, model_metadata::ViewFacts, models::PgView};
+
+    #[test]
+    fn a_view_the_database_does_not_hold_reports_it() {
+        let view = PgViewDefinition::plain(
+            PgView {
+                schemaname: Some("app".to_owned()),
+                viewname: Some("absent".to_owned()),
+                viewowner: Some("app_owner".to_owned()),
+                definition: Some("SELECT 1".to_owned()),
+            },
+            ViewFacts::default(),
+        )
+        .expect("the definition parses");
+        let database: PgDieselDatabase =
+            PgDieselDatabase::new("catalog".to_owned(), PostgresDialect).into();
+        let absent = LookupError::ObjectNotInDatabase {
+            object_kind: ObjectKind::View,
+            object: "app.absent".to_owned(),
+        };
+        assert_eq!(
+            ViewLike::owner_privileges(&view, &database).err(),
+            Some(absent)
+        );
+    }
+}
