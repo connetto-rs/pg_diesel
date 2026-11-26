@@ -671,6 +671,26 @@ mod tests {
         );
     }
 
+    // An enum whose labels the cache does not hold cannot be described, and
+    // is left out like a type the cache does not hold at all.
+    #[test]
+    fn an_undescribable_argument_type_is_left_out() {
+        let mut labelless = dummy_pg_type(40_000, "mood");
+        labelless.typtype = "e".to_string();
+        let cache = CatalogCache::default()
+            .with_type(labelless)
+            .with_type(dummy_pg_type(23, "int4"));
+        let mut pg_proc = dummy_pg_proc();
+        pg_proc.proargtypes = vec![40_000, 23];
+
+        let metadata = PgProcMetadata::new(&pg_proc, &cache, None);
+        let int4 = cache.pg_type(23).expect("the cache holds int4");
+        assert_eq!(
+            metadata.argument_types(),
+            [PgDataType::from_type(int4, -1, &cache, 0).expect("a base type is described")]
+        );
+    }
+
     // `prorettype` is `record` for a result described by output arguments,
     // which then yields the type of its single output argument.
     #[test]
