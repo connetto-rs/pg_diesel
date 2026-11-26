@@ -1749,6 +1749,10 @@ impl<DB: DatabaseLike> Describer<'_, DB> {
                         .map(|function| self.function_name(function))
                 ),
             );
+            self.text(
+                format!("{trigger_subject} / statements"),
+                format!("{:?}", trigger.statements()),
+            );
             if let Some(condition) = trigger.condition() {
                 let events = trigger
                     .events()
