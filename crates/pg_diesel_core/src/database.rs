@@ -6,16 +6,18 @@ use sql_traits::structs::{GenericDB, SchemaProfile};
 
 use crate::dialect::PostgresDialect;
 use crate::model_metadata::{
-    OnMaterializedView, PgCastEntry, PgCheckConstraint, PgColumn, PgDataType, PgDomainEntry,
-    PgExtensionEntry, PgForeignKey, PgFunction, PgIndexEntry, PgOperatorEntry, PgPolicy,
-    PgRoleMembership, PgRuleEntry, PgSchema, PgSequenceEntry, PgTable, PgUserDefinedType,
-    PgViewDefinition, TableMetadata, TriggerMetadata,
+    OnMaterializedView, PgCastEntry, PgCheckConstraint, PgColumn, PgColumnGrant, PgDataType,
+    PgDomainEntry, PgExtensionEntry, PgForeignKey, PgFunction, PgIndexEntry, PgOperatorEntry,
+    PgPolicy, PgRoleMembership, PgRuleEntry, PgSchema, PgSequenceEntry, PgTable, PgTableGrant,
+    PgUserDefinedType, PgViewDefinition, TableMetadata, TriggerMetadata,
 };
-use crate::models::{PgRole, RoleColumnGrants, RoleTableGrants};
+use crate::models::PgRole;
 mod key_column_usage_metadata;
 pub use key_column_usage_metadata::KeyColumnUsageMetadata;
 mod pg_proc_metadata;
 pub use pg_proc_metadata::{ExecuteHolder, PgProcMetadata};
+mod acl_column_grant;
+pub use acl_column_grant::AclColumnGrant;
 mod acl_schema_grant;
 pub use acl_schema_grant::AclSchemaGrant;
 mod acl_table_grant;
@@ -50,7 +52,7 @@ impl SchemaProfile for PgDieselProfile {
     type Cast = PgCastEntry;
     type CheckConstraint = PgCheckConstraint;
     type Column = PgColumn;
-    type ColumnGrant = RoleColumnGrants;
+    type ColumnGrant = PgColumnGrant;
     type DataType = PgDataType;
     type Dialect = PostgresDialect;
     type Domain = PgDomainEntry;
@@ -70,7 +72,7 @@ impl SchemaProfile for PgDieselProfile {
     type Schema = PgSchema;
     type Sequence = PgSequenceEntry;
     type Table = PgTable;
-    type TableGrant = RoleTableGrants;
+    type TableGrant = PgTableGrant;
     type Trigger = TriggerMetadata;
     type UniqueIndex = PgIndexEntry;
     type UserDefinedType = PgUserDefinedType;

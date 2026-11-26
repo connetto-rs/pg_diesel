@@ -45,6 +45,8 @@ mod pg_table;
 pub use pg_table::{PgTable, PgTableError, storage_option_entries};
 mod pg_schema;
 pub use pg_schema::PgSchema;
+mod pg_grant;
+pub use pg_grant::{PgColumnGrant, PgTableGrant};
 mod view_definition;
 pub use view_definition::{PgViewDefinition, ViewDefinitionError};
 mod pg_sequence_entry;

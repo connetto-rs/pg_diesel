@@ -21,5 +21,4 @@ mod trigger_like;
 mod user_defined_type_like;
 mod view_like;
 
-pub use column_grant_like::RoleColumnGrantsMetadata;
-pub use table_grant_like::{RoleTableGrantsMetadata, string_to_action};
+pub use table_grant_like::string_to_action;

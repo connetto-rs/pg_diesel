@@ -14,9 +14,7 @@ use sql_traits::{
     },
 };
 use sqlparser::{
-    ast::{
-        Action, Expr, Grantee, GranteeName, GranteesType, Ident, ObjectName, ObjectNamePart, Owner,
-    },
+    ast::{Action, Expr, Ident, Owner},
     dialect::PostgreSqlDialect,
     parser::Parser,
 };
@@ -24,22 +22,23 @@ use sqlparser::{
 use crate::{
     PgDieselDatabase,
     database::{
-        AclSchemaGrant, AclTableGrant, CatalogCache, FIRST_NORMAL_OBJECT_ID, PgCatalogMetadata,
-        ServerVersion, VersionCatalog,
+        AclColumnGrant, AclSchemaGrant, AclTableGrant, CatalogCache, FIRST_NORMAL_OBJECT_ID,
+        PgCatalogMetadata, ServerVersion, VersionCatalog,
     },
     dialect::PostgresDialect,
-    impls::{RoleColumnGrantsMetadata, RoleTableGrantsMetadata, string_to_action},
+    impls::string_to_action,
     model_metadata::{
         DomainDefinitionError, DomainMetadata, IndexDefinitionError, IndexMetadata,
-        IndexedRelation, OnMaterializedView, PgCastEntry, PgColumn, PgDomainEntry,
+        IndexedRelation, OnMaterializedView, PgCastEntry, PgColumnGrant, PgDomainEntry,
         PgExtensionEntry, PgFunction, PgIndexEntry, PgOperatorEntry, PgPolicy, PgRoleMembership,
-        PgRuleEntry, PgSchema, PgSequenceEntry, PgTable, PgTableError, PgUserDefinedType,
-        PgViewDefinition, RuleDefinitionError, TriggerDefinitionError, TriggerMetadata,
-        UserDefinedTypeError, ViewDefinitionError, catalog_identity::CatalogObjects,
+        PgRuleEntry, PgSchema, PgSequenceEntry, PgTable, PgTableError, PgTableGrant,
+        PgUserDefinedType, PgViewDefinition, RuleDefinitionError, TriggerDefinitionError,
+        TriggerMetadata, UserDefinedTypeError, ViewDefinitionError,
+        catalog_identity::CatalogObjects,
     },
     models::{
-        PgDbRoleSetting, PgMatview, PgProc, PgRole, PgView, RoleColumnGrants, RoleSettingError,
-        RoleTableGrants, Table, TableMetadataError,
+        PgDbRoleSetting, PgMatview, PgProc, PgRole, PgView, RoleSettingError, Table,
+        TableMetadataError,
     },
 };
 
@@ -74,24 +73,6 @@ fn all_privileges_for(relkind: &str, version: ServerVersion) -> &'static [&'stat
         "v" | "m" | "f" => &VIEW_ALL_PRIVILEGES,
         "S" => &SEQUENCE_ALL_PRIVILEGES,
         _ => &[],
-    }
-}
-
-/// The grantee one `aclexplode` entry names, `PUBLIC` for the pseudo-role and
-/// any other role by its stored name, quoted so that folding cannot rename it.
-fn acl_grantee(name: &str) -> Grantee {
-    if name.eq_ignore_ascii_case("PUBLIC") {
-        Grantee {
-            grantee_type: GranteesType::Public,
-            name: None,
-        }
-    } else {
-        Grantee {
-            grantee_type: GranteesType::None,
-            name: Some(GranteeName::ObjectName(ObjectName(vec![
-                ObjectNamePart::Identifier(Ident::with_quote('"', name)),
-            ]))),
-        }
     }
 }
 
@@ -574,8 +555,6 @@ impl<'a, C: VersionCatalog> TryFrom<PgDieselDatabaseBuilder<'a, C>> for PgDiesel
         });
 
         let mut tables_by_schema_name: HashMap<(String, String), Arc<PgTable>> = HashMap::new();
-        let mut columns_by_table_column: HashMap<(String, String, String), Arc<PgColumn>> =
-            HashMap::new();
         let mut policies_by_role: HashMap<String, Vec<Arc<PgPolicy>>> = HashMap::new();
 
         for table in tables {
@@ -588,15 +567,6 @@ impl<'a, C: VersionCatalog> TryFrom<PgDieselDatabaseBuilder<'a, C>> for PgDiesel
                 table.metadata(connection, version, &value.denylist_types, &cache)?;
 
             for column in table_metadata.column_arcs() {
-                columns_by_table_column.insert(
-                    (
-                        table.schema().to_string(),
-                        table.name().to_string(),
-                        column.column_name().to_string(),
-                    ),
-                    Arc::clone(column),
-                );
-
                 let metadata = table_metadata
                     .column_metadata(column.column_name())
                     .expect("a column of the table carries the metadata read with it")
@@ -798,7 +768,7 @@ impl<'a, C: VersionCatalog> TryFrom<PgDieselDatabaseBuilder<'a, C>> for PgDiesel
         // privilege, so the rows of one relation and grantee group back into
         // the grant the DDL wrote.
         let mut grants_by_relation: std::collections::BTreeMap<
-            (String, String, String),
+            (String, String, Option<String>),
             Vec<AclTableGrant>,
         > = std::collections::BTreeMap::new();
         for grant in
@@ -822,117 +792,80 @@ impl<'a, C: VersionCatalog> TryFrom<PgDieselDatabaseBuilder<'a, C>> for PgDiesel
             let full_set: std::collections::BTreeSet<String> =
                 full.iter().copied().map(ToString::to_string).collect();
             if !full_set.is_empty() && held == full_set {
-                let grantable = rows.iter().all(|row| row.is_grantable);
-                let table_rc = tables_by_schema_name
-                    .get(&(table_schema.clone(), table_name.clone()))
-                    .cloned();
-                let metadata =
-                    RoleTableGrantsMetadata::new(None, Some(acl_grantee(&grantee)), table_rc);
-                let model = RoleTableGrants {
-                    grantor: Some(rows[0].grantor.clone()),
-                    grantee: Some(grantee),
-                    table_catalog: Some(table_catalog.clone()),
-                    table_schema: Some(table_schema),
-                    table_name: Some(table_name),
-                    privilege_type: Some("ALL".to_owned()),
-                    is_grantable: Some(if grantable { "YES" } else { "NO" }.to_owned()),
-                    with_hierarchy: None,
-                };
-                generic_builder = generic_builder.add_table_grant(Arc::new(model), metadata);
+                let grant = PgTableGrant::new(
+                    rows[0].grantor.clone(),
+                    grantee.as_deref(),
+                    table_schema,
+                    Some(table_name),
+                    None,
+                    rows.iter().all(|row| row.is_grantable),
+                );
+                generic_builder = generic_builder.add_table_grant(Arc::new(grant), ());
                 continue;
             }
-            for grant in rows {
-                let action = string_to_action(&grant.privilege_type).ok_or_else(|| {
+            for row in rows {
+                let action = string_to_action(&row.privilege_type).ok_or_else(|| {
                     PgDatabaseBuildError::UnrepresentablePrivilege {
-                        object: format!("{}.{}", grant.table_schema, grant.table_name),
-                        privilege: grant.privilege_type.clone(),
+                        object: format!("{}.{}", row.table_schema, row.table_name),
+                        privilege: row.privilege_type.clone(),
                     }
                 })?;
-                let table_rc = tables_by_schema_name
-                    .get(&(grant.table_schema.clone(), grant.table_name.clone()))
-                    .cloned();
-                let metadata = RoleTableGrantsMetadata::new(
+                let grant = PgTableGrant::new(
+                    row.grantor,
+                    row.grantee.as_deref(),
+                    row.table_schema,
+                    Some(row.table_name),
                     Some(action),
-                    Some(acl_grantee(&grant.grantee)),
-                    table_rc,
+                    row.is_grantable,
                 );
-                let model = RoleTableGrants {
-                    grantor: Some(grant.grantor),
-                    grantee: Some(grant.grantee),
-                    table_catalog: Some(table_catalog.clone()),
-                    table_schema: Some(grant.table_schema),
-                    table_name: Some(grant.table_name),
-                    privilege_type: Some(grant.privilege_type),
-                    is_grantable: Some(if grant.is_grantable { "YES" } else { "NO" }.to_owned()),
-                    with_hierarchy: None,
-                };
-                generic_builder = generic_builder.add_table_grant(Arc::new(model), metadata);
+                generic_builder = generic_builder.add_table_grant(Arc::new(grant), ());
             }
         }
 
         // A schema grant goes through the table grants as in `ParserDB`,
         // a grant naming its schema and no relation.
-        for grant in AclSchemaGrant::load(&table_schemas, connection)? {
-            let action = schema_action(&grant.privilege_type).ok_or_else(|| {
+        for row in AclSchemaGrant::load(&table_schemas, connection)? {
+            let action = schema_action(&row.privilege_type).ok_or_else(|| {
                 PgDatabaseBuildError::UnrepresentablePrivilege {
-                    object: grant.schema.clone(),
-                    privilege: grant.privilege_type.clone(),
+                    object: row.schema.clone(),
+                    privilege: row.privilege_type.clone(),
                 }
             })?;
-            let metadata =
-                RoleTableGrantsMetadata::new(Some(action), Some(acl_grantee(&grant.grantee)), None);
-            let model = RoleTableGrants {
-                grantor: Some(grant.grantor),
-                grantee: Some(grant.grantee),
-                table_catalog: Some(table_catalog.clone()),
-                table_schema: Some(grant.schema),
-                table_name: None,
-                privilege_type: Some(grant.privilege_type),
-                is_grantable: Some(if grant.is_grantable { "YES" } else { "NO" }.to_owned()),
-                with_hierarchy: None,
-            };
-            generic_builder = generic_builder.add_table_grant(Arc::new(model), metadata);
+            let grant = PgTableGrant::new(
+                row.grantor,
+                row.grantee.as_deref(),
+                row.schema,
+                None,
+                Some(action),
+                row.is_grantable,
+            );
+            generic_builder = generic_builder.add_table_grant(Arc::new(grant), ());
         }
 
-        for grant in
-            RoleColumnGrants::load_acl_filtered(&table_schemas, table_oids.as_deref(), connection)?
+        for row in AclColumnGrant::load_filtered(&table_schemas, table_oids.as_deref(), connection)?
         {
-            let action = string_to_action(&grant.privilege_type).ok_or_else(|| {
+            let action = string_to_action(&row.privilege_type).ok_or_else(|| {
                 PgDatabaseBuildError::UnrepresentablePrivilege {
                     object: format!(
                         "{}.{}.{}",
-                        grant.table_schema, grant.table_name, grant.column_name
+                        row.table_schema, row.table_name, row.column_name
                     ),
-                    privilege: grant.privilege_type.clone(),
+                    privilege: row.privilege_type.clone(),
                 }
             })?;
-            let table_rc = tables_by_schema_name
-                .get(&(grant.table_schema.clone(), grant.table_name.clone()))
+            let table = tables_by_schema_name
+                .get(&(row.table_schema.clone(), row.table_name.clone()))
                 .cloned();
-            let column_rc = columns_by_table_column
-                .get(&(
-                    grant.table_schema.clone(),
-                    grant.table_name.clone(),
-                    grant.column_name.clone(),
-                ))
-                .cloned();
-            let metadata = RoleColumnGrantsMetadata::new(
-                Some(action),
-                Some(acl_grantee(&grant.grantee)),
-                table_rc,
-                column_rc,
+            let grant = PgColumnGrant::new(
+                row.grantor,
+                row.grantee.as_deref(),
+                row.table_schema,
+                row.table_name,
+                row.column_name,
+                action,
+                row.is_grantable,
             );
-            let model = RoleColumnGrants {
-                grantor: Some(grant.grantor),
-                grantee: Some(grant.grantee),
-                table_catalog: Some(table_catalog.clone()),
-                table_schema: Some(grant.table_schema),
-                table_name: Some(grant.table_name),
-                column_name: Some(grant.column_name),
-                privilege_type: Some(grant.privilege_type),
-                is_grantable: Some(if grant.is_grantable { "YES" } else { "NO" }.to_owned()),
-            };
-            generic_builder = generic_builder.add_column_grant(Arc::new(model), metadata);
+            generic_builder = generic_builder.add_column_grant(Arc::new(grant), table);
         }
 
         Ok(generic_builder

@@ -1,4 +1,4 @@
-//! Implementation of `ColumnGrantLike` trait for `RoleColumnGrants`.
+//! Implementation of `ColumnGrantLike` trait for `PgColumnGrant`.
 
 use std::sync::Arc;
 
@@ -6,133 +6,66 @@ use sql_traits::{
     errors::LookupError,
     structs::TargetName,
     traits::{
-        ColumnGrantLike, DatabaseLike, GrantLike, Metadata, Relation, TableLike, ViewLike,
-        grant::GrantTarget,
+        ColumnGrantLike, ColumnLike, DatabaseLike, GrantLike, Metadata, Relation, TableLike,
+        ViewLike, grant::GrantTarget,
     },
 };
-use sqlparser::ast::{Action, Grantee};
+use sqlparser::ast::{Action, Grantee, GranteesType};
 
 use crate::{
     PgDieselDatabase,
     impls::table_grant_like::relation_target,
-    model_metadata::{PgColumn, PgTable},
-    models::RoleColumnGrants,
+    model_metadata::{PgColumnGrant, PgTable},
 };
 
-/// Metadata for `RoleColumnGrants`.
-#[derive(Debug, Clone)]
-pub struct RoleColumnGrantsMetadata {
-    /// The parsed privilege action.
-    pub privilege: Option<Action>,
-    /// The parsed grantee.
-    pub grantee: Option<Grantee>,
-    /// The table this grant applies to.
-    pub table: Option<Arc<PgTable>>,
-    /// The column this grant applies to.
-    pub column: Option<Arc<PgColumn>>,
+impl Metadata for PgColumnGrant {
+    /// The table the column belongs to, `None` for a view's column.
+    type Meta = Option<Arc<PgTable>>;
 }
 
-impl RoleColumnGrantsMetadata {
-    /// Creates a new `RoleColumnGrantsMetadata`.
-    #[must_use]
-    pub fn new(
-        privilege: Option<Action>,
-        grantee: Option<Grantee>,
-        table: Option<Arc<PgTable>>,
-        column: Option<Arc<PgColumn>>,
-    ) -> Self {
-        Self {
-            privilege,
-            grantee,
-            table,
-            column,
-        }
-    }
-
-    /// Returns the privilege action.
-    #[must_use]
-    pub fn privilege(&self) -> Option<&Action> {
-        self.privilege.as_ref()
-    }
-
-    /// Returns the grantee.
-    #[must_use]
-    pub fn grantee(&self) -> Option<&Grantee> {
-        self.grantee.as_ref()
-    }
-
-    /// Returns the table.
-    #[must_use]
-    pub fn table(&self) -> Option<&PgTable> {
-        self.table.as_deref()
-    }
-
-    /// Returns the column.
-    #[must_use]
-    pub fn column(&self) -> Option<&PgColumn> {
-        self.column.as_deref()
-    }
-}
-
-impl Metadata for RoleColumnGrants {
-    type Meta = RoleColumnGrantsMetadata;
-}
-
-impl GrantLike for RoleColumnGrants {
+impl GrantLike for PgColumnGrant {
     type DB = PgDieselDatabase;
 
-    fn privileges<'db>(&'db self, database: &'db Self::DB) -> impl Iterator<Item = &'db Action>
+    fn privileges<'db>(&'db self, _database: &'db Self::DB) -> impl Iterator<Item = &'db Action>
     where
         Self: 'db,
     {
-        database
-            .column_grant_metadata(self)
-            .and_then(RoleColumnGrantsMetadata::privilege)
-            .into_iter()
+        std::iter::once(self.privilege())
     }
 
     fn is_all_privileges(&self) -> bool {
-        self.privilege_type.as_deref().is_some_and(|p| {
-            p.eq_ignore_ascii_case("ALL") || p.eq_ignore_ascii_case("ALL PRIVILEGES")
-        })
+        false
     }
 
-    fn grantees<'db>(&'db self, database: &'db Self::DB) -> impl Iterator<Item = &'db Grantee>
+    fn grantees<'db>(&'db self, _database: &'db Self::DB) -> impl Iterator<Item = &'db Grantee>
     where
         Self: 'db,
     {
-        database
-            .column_grant_metadata(self)
-            .and_then(RoleColumnGrantsMetadata::grantee)
-            .into_iter()
+        std::iter::once(self.grantee())
     }
 
     fn applies_to_public(&self) -> bool {
-        self.grantee
-            .as_deref()
-            .is_some_and(|grantee| grantee.eq_ignore_ascii_case("PUBLIC"))
+        self.grantee().grantee_type == GranteesType::Public
     }
 
     fn target(&self) -> GrantTarget<impl Iterator<Item = TargetName<'_>>> {
-        relation_target(self.table_schema.as_deref(), self.table_name.as_deref())
+        relation_target(self.schema_name(), Some(self.relation_name()))
     }
 
     fn with_grant_option(&self) -> bool {
-        self.is_grantable
-            .as_deref()
-            .is_some_and(|g| g.eq_ignore_ascii_case("YES"))
+        self.grantable()
     }
 
     fn granted_by<'a>(&'a self, _database: &'a Self::DB) -> Option<&'a str> {
-        self.grantor.as_deref()
+        Some(self.grantor())
     }
 
     fn applies_to_role(&self, role: &<Self::DB as DatabaseLike>::Role) -> bool {
-        self.applies_to_public() || self.grantee.as_deref().is_some_and(|g| g == role.name())
+        self.applies_to_public() || self.grantee_role() == Some(role.name())
     }
 }
 
-impl ColumnGrantLike for RoleColumnGrants {
+impl ColumnGrantLike for PgColumnGrant {
     fn columns<'a>(
         &'a self,
         table: &'a <Self::DB as DatabaseLike>::Table,
@@ -140,7 +73,7 @@ impl ColumnGrantLike for RoleColumnGrants {
     ) -> Result<impl Iterator<Item = &'a <Self::DB as DatabaseLike>::Column>, LookupError> {
         Ok(table
             .columns(database)?
-            .filter(move |column| self.column_name.as_deref() == Some(column.column_name())))
+            .filter(move |column| column.column_name() == self.column_name()))
     }
 
     fn table<'a>(
@@ -149,12 +82,12 @@ impl ColumnGrantLike for RoleColumnGrants {
     ) -> Option<&'a <Self::DB as DatabaseLike>::Table> {
         database
             .column_grant_metadata(self)
-            .and_then(RoleColumnGrantsMetadata::table)
+            .and_then(Option::as_deref)
     }
 
     fn relation<'a>(&'a self, database: &'a Self::DB) -> Option<Relation<'a, Self::DB>> {
         let names = |schema: Option<&str>, name: &str| {
-            self.table_schema.as_deref() == schema && self.table_name.as_deref() == Some(name)
+            schema == Some(self.schema_name()) && name == self.relation_name()
         };
         if let Some(table) = database
             .tables()
@@ -178,16 +111,5 @@ impl ColumnGrantLike for RoleColumnGrants {
             .materialized_views()
             .find(|v| names(v.view_schema(), v.view_name()))
             .map(Relation::MaterializedView)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_grant_metadata_answers_the_column_it_applies_to() {
-        let metadata = RoleColumnGrantsMetadata::new(None, None, None, None);
-        assert!(metadata.column().is_none());
     }
 }
