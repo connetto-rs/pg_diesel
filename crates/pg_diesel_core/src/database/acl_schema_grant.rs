@@ -10,9 +10,9 @@ pub struct AclSchemaGrant {
     /// The role that granted the privilege, its OID when the role is gone.
     #[diesel(sql_type = diesel::sql_types::Text)]
     pub grantor: String,
-    /// The role that received it, `PUBLIC` for the pseudo-role.
-    #[diesel(sql_type = diesel::sql_types::Text)]
-    pub grantee: String,
+    /// The role that received it, `None` for the `PUBLIC` pseudo-role.
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+    pub grantee: Option<String>,
     /// The schema the privilege reaches.
     #[diesel(sql_type = diesel::sql_types::Text)]
     pub schema: String,
@@ -46,8 +46,8 @@ impl AclSchemaGrant {
 
         diesel::sql_query(
             "SELECT coalesce(grantor.rolname, entry.grantor::text) AS grantor, \
-             CASE WHEN entry.grantee = 0 THEN 'PUBLIC' \
-                  ELSE coalesce(grantee.rolname, entry.grantee::text) END AS grantee, \
+             CASE WHEN entry.grantee <> 0 \
+                  THEN coalesce(grantee.rolname, entry.grantee::text) END AS grantee, \
              namespace.nspname AS schema, \
              entry.privilege_type AS privilege_type, entry.is_grantable AS is_grantable \
              FROM pg_catalog.pg_namespace AS namespace \

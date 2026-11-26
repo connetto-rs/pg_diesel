@@ -1,12 +1,9 @@
-//! `RoleTableGrants` model representing the table-level grants a relation's
-//! `pg_class.relacl` records, and the grants a schema's
-//! `pg_namespace.nspacl` records.
+//! `RoleTableGrants` model of the `information_schema.role_table_grants`
+//! view.
 
 use diesel::{Queryable, QueryableByName, Selectable};
 
-/// Model struct for one table-level grant, the way its `privilege_type`
-/// names the privilege, or for one schema grant, which names its schema and
-/// no table.
+/// One row of `information_schema.role_table_grants`.
 #[derive(
     Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Queryable, QueryableByName, Selectable,
 )]
@@ -19,9 +16,9 @@ pub struct RoleTableGrants {
     pub grantee: Option<String>,
     /// Catalog (database) containing the table.
     pub table_catalog: Option<String>,
-    /// Schema containing the table, or the schema a schema grant reaches.
+    /// Schema containing the table.
     pub table_schema: Option<String>,
-    /// Name of the table, `None` for a schema grant.
+    /// Name of the table.
     pub table_name: Option<String>,
     /// Type of privilege granted.
     pub privilege_type: Option<String>,

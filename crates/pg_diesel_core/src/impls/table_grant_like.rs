@@ -1,6 +1,4 @@
-//! Implementation of `TableGrantLike` trait for `RoleTableGrants`.
-
-use std::sync::Arc;
+//! Implementation of `TableGrantLike` trait for `PgTableGrant`.
 
 use sql_traits::{
     structs::TargetName,
@@ -9,160 +7,94 @@ use sql_traits::{
         ViewLike, grant::GrantTarget,
     },
 };
-use sqlparser::ast::{Action, Grantee};
+use sqlparser::ast::{Action, Grantee, GranteesType};
 
-use crate::{PgDieselDatabase, model_metadata::PgTable, models::RoleTableGrants};
+use crate::{PgDieselDatabase, model_metadata::PgTableGrant};
 
-/// Metadata for `RoleTableGrants`.
-#[derive(Debug, Clone)]
-pub struct RoleTableGrantsMetadata {
-    /// The parsed privilege action.
-    pub privilege: Option<Action>,
-    /// The parsed grantee.
-    pub grantee: Option<Grantee>,
-    /// The table this grant applies to.
-    pub table: Option<Arc<PgTable>>,
-}
-
-impl RoleTableGrantsMetadata {
-    /// Creates a new `RoleTableGrantsMetadata`.
-    #[must_use]
-    pub fn new(
-        privilege: Option<Action>,
-        grantee: Option<Grantee>,
-        table: Option<Arc<PgTable>>,
-    ) -> Self {
-        Self {
-            privilege,
-            grantee,
-            table,
-        }
-    }
-
-    /// Returns the privilege action.
-    #[must_use]
-    pub fn privilege(&self) -> Option<&Action> {
-        self.privilege.as_ref()
-    }
-
-    /// Returns the grantee.
-    #[must_use]
-    pub fn grantee(&self) -> Option<&Grantee> {
-        self.grantee.as_ref()
-    }
-
-    /// Returns the table.
-    #[must_use]
-    pub fn table(&self) -> Option<&PgTable> {
-        self.table.as_deref()
-    }
-}
-
-impl Metadata for RoleTableGrants {
-    type Meta = RoleTableGrantsMetadata;
+impl Metadata for PgTableGrant {
+    type Meta = ();
 }
 
 /// Returns whether a grant naming `schema` and `name` matches a relation
 /// recorded under `relation_schema` and `relation_name`.
 fn names_relation(
-    schema: Option<&str>,
+    schema: &str,
     name: Option<&str>,
     relation_schema: Option<&str>,
     relation_name: &str,
 ) -> bool {
-    schema == relation_schema && name == Some(relation_name)
+    relation_schema == Some(schema) && name == Some(relation_name)
 }
 
 /// Returns the grant target of a privilege `aclexplode` read from one
-/// relation, the relation recorded under `schema` and `name`, or from one
-/// schema, recorded under `schema` and no name.
+/// relation, the relation `name` of `schema`, or from `schema` itself when
+/// `name` is `None`.
 ///
 /// The server expands `ON ALL TABLES IN SCHEMA` into an entry per relation,
 /// so a grant read from the catalog names the one relation it reached.
 pub(crate) fn relation_target<'a>(
-    schema: Option<&'a str>,
+    schema: &'a str,
     name: Option<&'a str>,
 ) -> GrantTarget<std::option::IntoIter<TargetName<'a>>> {
-    match (schema, name) {
-        (Some(schema), None) => {
-            GrantTarget::Schemas(Some(TargetName::new(schema, true)).into_iter())
-        }
-        (schema, name) => {
-            let target = name.map(|name| {
-                let target = TargetName::new(name, true);
-                match schema {
-                    Some(schema) => target.with_schema(schema, true),
-                    None => target,
-                }
-            });
-            GrantTarget::Tables(target.into_iter())
-        }
+    match name {
+        None => GrantTarget::Schemas(Some(TargetName::new(schema, true)).into_iter()),
+        Some(name) => GrantTarget::Tables(
+            Some(TargetName::new(name, true).with_schema(schema, true)).into_iter(),
+        ),
     }
 }
 
-impl GrantLike for RoleTableGrants {
+impl GrantLike for PgTableGrant {
     type DB = PgDieselDatabase;
 
-    fn privileges<'db>(&'db self, database: &'db Self::DB) -> impl Iterator<Item = &'db Action>
+    fn privileges<'db>(&'db self, _database: &'db Self::DB) -> impl Iterator<Item = &'db Action>
     where
         Self: 'db,
     {
-        database
-            .table_grant_metadata(self)
-            .and_then(RoleTableGrantsMetadata::privilege)
-            .into_iter()
+        self.privilege().into_iter()
     }
 
     fn is_all_privileges(&self) -> bool {
-        self.privilege_type.as_deref().is_some_and(|p| {
-            p.eq_ignore_ascii_case("ALL") || p.eq_ignore_ascii_case("ALL PRIVILEGES")
-        })
+        self.privilege().is_none()
     }
 
-    fn grantees<'db>(&'db self, database: &'db Self::DB) -> impl Iterator<Item = &'db Grantee>
+    fn grantees<'db>(&'db self, _database: &'db Self::DB) -> impl Iterator<Item = &'db Grantee>
     where
         Self: 'db,
     {
-        database
-            .table_grant_metadata(self)
-            .and_then(RoleTableGrantsMetadata::grantee)
-            .into_iter()
+        std::iter::once(self.grantee())
     }
 
     fn applies_to_public(&self) -> bool {
-        self.grantee
-            .as_deref()
-            .is_some_and(|grantee| grantee.eq_ignore_ascii_case("PUBLIC"))
+        self.grantee().grantee_type == GranteesType::Public
     }
 
     fn target(&self) -> GrantTarget<impl Iterator<Item = TargetName<'_>>> {
-        relation_target(self.table_schema.as_deref(), self.table_name.as_deref())
+        relation_target(self.schema_name(), self.relation_name())
     }
 
     fn with_grant_option(&self) -> bool {
-        self.is_grantable
-            .as_deref()
-            .is_some_and(|g| g.eq_ignore_ascii_case("YES"))
+        self.grantable()
     }
 
     fn granted_by<'a>(&'a self, _database: &'a Self::DB) -> Option<&'a str> {
-        self.grantor.as_deref()
+        Some(self.grantor())
     }
 
     fn applies_to_role(&self, role: &<Self::DB as DatabaseLike>::Role) -> bool {
-        self.applies_to_public() || self.grantee.as_deref().is_some_and(|g| g == role.name())
+        self.applies_to_public() || self.grantee_role() == Some(role.name())
     }
 }
 
-impl TableGrantLike for RoleTableGrants {
+impl TableGrantLike for PgTableGrant {
     fn tables<'a>(
         &'a self,
         database: &'a Self::DB,
     ) -> impl Iterator<Item = &'a <Self::DB as DatabaseLike>::Table> {
         database.tables().filter(move |table| {
             names_relation(
-                self.table_schema.as_deref(),
-                self.table_name.as_deref(),
+                self.schema_name(),
+                self.relation_name(),
                 table.table_schema(),
                 table.table_name(),
             )
@@ -173,66 +105,41 @@ impl TableGrantLike for RoleTableGrants {
         &'a self,
         database: &'a Self::DB,
     ) -> impl Iterator<Item = Relation<'a, Self::DB>> {
+        let names = move |relation_schema: Option<&str>, relation_name: &str| {
+            names_relation(
+                self.schema_name(),
+                self.relation_name(),
+                relation_schema,
+                relation_name,
+            )
+        };
         database
             .tables()
-            .filter(move |table| {
-                names_relation(
-                    self.table_schema.as_deref(),
-                    self.table_name.as_deref(),
-                    table.table_schema(),
-                    table.table_name(),
-                )
-            })
+            .filter(move |table| names(table.table_schema(), table.table_name()))
             .map(Relation::Table)
             .chain(
                 database
                     .foreign_tables()
-                    .filter(move |table| {
-                        names_relation(
-                            self.table_schema.as_deref(),
-                            self.table_name.as_deref(),
-                            table.table_schema(),
-                            table.table_name(),
-                        )
-                    })
+                    .filter(move |table| names(table.table_schema(), table.table_name()))
                     .map(Relation::ForeignTable),
             )
             .chain(
                 database
                     .views()
-                    .filter(move |view| {
-                        names_relation(
-                            self.table_schema.as_deref(),
-                            self.table_name.as_deref(),
-                            view.view_schema(),
-                            view.view_name(),
-                        )
-                    })
+                    .filter(move |view| names(view.view_schema(), view.view_name()))
                     .map(Relation::View),
             )
             .chain(
                 database
                     .materialized_views()
-                    .filter(move |view| {
-                        names_relation(
-                            self.table_schema.as_deref(),
-                            self.table_name.as_deref(),
-                            view.view_schema(),
-                            view.view_name(),
-                        )
-                    })
+                    .filter(move |view| names(view.view_schema(), view.view_name()))
                     .map(Relation::MaterializedView),
             )
             .chain(
                 database
                     .sequences()
                     .filter(move |sequence| {
-                        names_relation(
-                            self.table_schema.as_deref(),
-                            self.table_name.as_deref(),
-                            sequence.sequence_schema(),
-                            sequence.sequence_name(),
-                        )
+                        names(sequence.sequence_schema(), sequence.sequence_name())
                     })
                     .map(Relation::Sequence),
             )
@@ -244,8 +151,8 @@ impl TableGrantLike for RoleTableGrants {
         _database: &Self::DB,
     ) -> bool {
         names_relation(
-            self.table_schema.as_deref(),
-            self.table_name.as_deref(),
+            self.schema_name(),
+            self.relation_name(),
             table.table_schema(),
             table.table_name(),
         )
@@ -281,28 +188,5 @@ mod tests {
             Some(Action::Select { columns: None })
         );
         assert_eq!(string_to_action("SOMETP"), None);
-    }
-
-    #[test]
-    fn a_grant_that_records_no_schema_targets_the_bare_relation_name() {
-        use sql_traits::traits::GrantLike;
-
-        use crate::models::RoleTableGrants;
-
-        let grant = RoleTableGrants {
-            grantor: None,
-            grantee: Some("app_owner".to_string()),
-            table_catalog: None,
-            table_schema: None,
-            table_name: Some("events".to_string()),
-            privilege_type: Some("SELECT".to_string()),
-            is_grantable: Some("NO".to_string()),
-            with_hierarchy: None,
-        };
-        let GrantTarget::Tables(targets) = GrantLike::target(&grant) else {
-            panic!("a relation grant names its table");
-        };
-        let names: Vec<String> = targets.map(|target| target.to_string()).collect();
-        assert_eq!(names, vec![r#""events""#.to_string()]);
     }
 }

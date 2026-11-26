@@ -10,9 +10,9 @@ pub struct AclTableGrant {
     /// The role that granted the privilege, its OID when the role is gone.
     #[diesel(sql_type = diesel::sql_types::Text)]
     pub grantor: String,
-    /// The role that received it, `PUBLIC` for the pseudo-role.
-    #[diesel(sql_type = diesel::sql_types::Text)]
-    pub grantee: String,
+    /// The role that received it, `None` for the `PUBLIC` pseudo-role.
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+    pub grantee: Option<String>,
     /// The schema the relation the privilege reaches lives in.
     #[diesel(sql_type = diesel::sql_types::Text)]
     pub table_schema: String,
@@ -59,8 +59,8 @@ impl AclTableGrant {
 
         diesel::sql_query(
             "SELECT coalesce(grantor.rolname, entry.grantor::text) AS grantor, \
-             CASE WHEN entry.grantee = 0 THEN 'PUBLIC' \
-                  ELSE coalesce(grantee.rolname, entry.grantee::text) END AS grantee, \
+             CASE WHEN entry.grantee <> 0 \
+                  THEN coalesce(grantee.rolname, entry.grantee::text) END AS grantee, \
              namespace.nspname AS table_schema, class.relname AS table_name, \
              class.relkind AS relkind, \
              entry.privilege_type AS privilege_type, entry.is_grantable AS is_grantable \

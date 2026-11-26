@@ -19,6 +19,7 @@ use pg_diesel::{
     PgDieselDatabase,
     database::{PgDatabaseBuildError, PgDieselDatabaseBuilder},
     model_metadata::{PgFunction, PgTable, TriggerDefinitionError},
+    models::PgRole,
     sql_traits::{
         errors::LookupError,
         structs::{
@@ -1076,6 +1077,107 @@ async fn stored_names_keep_their_case() {
     }
 }
 
+/// Returns a grant's privileges and grantees, each joined, whether it applies
+/// to `PUBLIC`, and whether it applies to `outsider` and to `named`.
+fn grant_reach<G: GrantLike<DB = PgDieselDatabase>>(
+    grant: &G,
+    database: &PgDieselDatabase,
+    outsider: &PgRole,
+    named: &PgRole,
+) -> (String, String, bool, bool, bool) {
+    let joined = |values: Vec<String>| values.join(", ");
+    (
+        joined(
+            grant
+                .privileges(database)
+                .map(ToString::to_string)
+                .collect(),
+        ),
+        joined(grant.grantees(database).map(ToString::to_string).collect()),
+        grant.applies_to_public(),
+        grant.applies_to_role(outsider),
+        grant.applies_to_role(named),
+    )
+}
+
+#[tokio::test]
+async fn a_role_named_public_is_not_the_pseudo_role() {
+    for &major in COMPILED_MAJORS {
+        let database_name = "role_named_public";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("the database starts");
+        let mut conn: PgConnection =
+            establish_connection(docker.port, database_name).expect("the connection opens");
+        conn.batch_execute(
+            r#"
+            CREATE ROLE "PUBLIC";
+            CREATE ROLE outsider;
+            CREATE SCHEMA vault;
+            CREATE TABLE vault.secrets (id INTEGER PRIMARY KEY, note TEXT);
+            CREATE TABLE vault.open (id INTEGER PRIMARY KEY);
+            GRANT USAGE ON SCHEMA vault TO "PUBLIC";
+            GRANT SELECT ON vault.secrets TO "PUBLIC";
+            GRANT UPDATE (note) ON vault.secrets TO "PUBLIC";
+            GRANT SELECT ON vault.open TO PUBLIC;
+            "#,
+        )
+        .expect("the fixture applies");
+
+        let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+            .connection(&mut conn)
+            .catalog(database_name)
+            .schema("vault")
+            .try_into()
+            .expect("the vault schema loads");
+        let named = database.role("PUBLIC").expect("the role is read");
+        let outsider = database.role("outsider").expect("the role is read");
+
+        let mut table_grants: Vec<_> = database
+            .table_grants()
+            .map(|grant| grant_reach(grant, &database, outsider, named))
+            .collect();
+        table_grants.sort();
+        assert_eq!(
+            table_grants,
+            [
+                (
+                    "SELECT".to_owned(),
+                    "\"PUBLIC\"".to_owned(),
+                    false,
+                    false,
+                    true
+                ),
+                ("SELECT".to_owned(), "PUBLIC".to_owned(), true, true, true),
+                (
+                    "USAGE".to_owned(),
+                    "\"PUBLIC\"".to_owned(),
+                    false,
+                    false,
+                    true
+                ),
+            ],
+            "PostgreSQL {major}"
+        );
+
+        let column_grants: Vec<_> = database
+            .column_grants()
+            .map(|grant| grant_reach(grant, &database, outsider, named))
+            .collect();
+        assert_eq!(
+            column_grants,
+            [(
+                "UPDATE".to_owned(),
+                "\"PUBLIC\"".to_owned(),
+                false,
+                false,
+                true
+            )],
+            "PostgreSQL {major}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn index_deferral() {
     for &major in COMPILED_MAJORS {
@@ -1645,8 +1747,8 @@ async fn test_database_build() {
         let grant = database
             .table_grants()
             .find(|grant| {
-                grant.grantee.as_deref() == Some("app_owner")
-                    && grant.table_name.as_deref() == Some("children")
+                grant.grantee_role() == Some("app_owner")
+                    && grant.relation_name() == Some("children")
             })
             .expect("the grant is recorded");
         let GrantTarget::Tables(names) = grant.target() else {
@@ -1662,8 +1764,7 @@ async fn test_database_build() {
         let column_grant = database
             .column_grants()
             .find(|grant| {
-                grant.grantee.as_deref() == Some("app_owner")
-                    && grant.column_name.as_deref() == Some("parent_id")
+                grant.grantee_role() == Some("app_owner") && grant.column_name() == "parent_id"
             })
             .expect("the column grant is recorded");
         let granted_table = column_grant
@@ -2000,7 +2101,7 @@ async fn test_database_build() {
         // relation, and the grant names the role that granted it.
         let foreign_grant = database
             .column_grants()
-            .find(|grant| grant.table_name.as_deref() == Some("remote_lines"))
+            .find(|grant| grant.relation_name() == "remote_lines")
             .expect("the foreign table column grant is recorded");
         assert!(matches!(
             foreign_grant.relation(&database),
@@ -2032,7 +2133,7 @@ async fn test_database_build() {
         );
         let view_grant = database
             .column_grants()
-            .find(|grant| grant.table_name.as_deref() == Some("parent_names"))
+            .find(|grant| grant.relation_name() == "parent_names")
             .expect("the view column grant is recorded");
         assert!(matches!(
             view_grant.relation(&database),
@@ -2040,7 +2141,7 @@ async fn test_database_build() {
         ));
         let materialized_grant = database
             .column_grants()
-            .find(|grant| grant.table_name.as_deref() == Some("parent_ids"))
+            .find(|grant| grant.relation_name() == "parent_ids")
             .expect("the materialized view column grant is recorded");
         assert!(matches!(
             materialized_grant.relation(&database),
@@ -2052,8 +2153,8 @@ async fn test_database_build() {
         let delegated = database
             .table_grants()
             .find(|grant| {
-                grant.grantee.as_deref() == Some("app_worker")
-                    && grant.table_name.as_deref() == Some("events")
+                grant.grantee_role() == Some("app_worker")
+                    && grant.relation_name() == Some("events")
             })
             .expect("the delegated grant is recorded");
         assert_eq!(delegated.granted_by(&database), Some("app_owner"));
@@ -2062,8 +2163,7 @@ async fn test_database_build() {
         let sequence_grant = database
             .table_grants()
             .find(|grant| {
-                grant.grantee.as_deref() == Some("app_worker")
-                    && grant.table_name.as_deref() == Some("odd")
+                grant.grantee_role() == Some("app_worker") && grant.relation_name() == Some("odd")
             })
             .expect("the sequence grant is recorded");
         let relations: Vec<Relation<'_, PgDieselDatabase>> =
@@ -2079,8 +2179,7 @@ async fn test_database_build() {
         let all = database
             .table_grants()
             .find(|grant| {
-                grant.grantee.as_deref() == Some("app_owner")
-                    && grant.table_name.as_deref() == Some("counts")
+                grant.grantee_role() == Some("app_owner") && grant.relation_name() == Some("counts")
             })
             .expect("the `GRANT ALL` on the sequence is recorded");
         assert!(

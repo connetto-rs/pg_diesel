@@ -1,9 +1,9 @@
 //! Table-scoped catalog loading.
 
 use pg_diesel::{
-    database::AclTableGrant,
+    database::{AclColumnGrant, AclTableGrant},
     model_metadata::PgRuleEntry,
-    models::{RoleColumnGrants, Table},
+    models::Table,
 };
 
 use pg_diesel::sql_traits::{
@@ -324,18 +324,18 @@ async fn unfiltered_readers_return_all_schema_metadata() {
                 .map(|grant| (
                     grant.table_name.as_str(),
                     grant.privilege_type.as_str(),
-                    grant.grantee.as_str(),
+                    grant.grantee.as_deref(),
                 ))
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([
-                ("kept", "SELECT", "PUBLIC"),
-                ("kept_view", "SELECT", "PUBLIC"),
-                ("skipped", "SELECT", "PUBLIC"),
-                ("skipped_seq", "USAGE", "PUBLIC"),
+                ("kept", "SELECT", None),
+                ("kept_view", "SELECT", None),
+                ("skipped", "SELECT", None),
+                ("skipped_seq", "USAGE", None),
             ])
         );
 
-        let grants = RoleColumnGrants::load_acl(&schemas, &mut connection).unwrap();
+        let grants = AclColumnGrant::load(&schemas, &mut connection).unwrap();
         assert_eq!(
             grants
                 .iter()
@@ -343,12 +343,12 @@ async fn unfiltered_readers_return_all_schema_metadata() {
                     grant.table_name.as_str(),
                     grant.column_name.as_str(),
                     grant.privilege_type.as_str(),
-                    grant.grantee.as_str(),
+                    grant.grantee.as_deref(),
                 ))
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([
-                ("kept", "value", "UPDATE", "PUBLIC"),
-                ("skipped", "id", "UPDATE", "PUBLIC"),
+                ("kept", "value", "UPDATE", None),
+                ("skipped", "id", "UPDATE", None),
             ])
         );
 
