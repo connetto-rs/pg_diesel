@@ -119,7 +119,7 @@ impl TriggerLike for TriggerMetadata {
         Some(&self.function_name)
     }
 
-    /// A PostgreSQL trigger always executes a function and runs no
+    /// A `PostgreSQL` trigger always executes a function and runs no
     /// statement inline.
     fn statements(&self) -> &[Statement] {
         &[]
