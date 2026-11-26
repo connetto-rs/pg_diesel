@@ -18,7 +18,7 @@ use pg_diesel::sqlparser::{
 use pg_diesel::{
     PgDieselDatabase,
     database::{PgDatabaseBuildError, PgDieselDatabaseBuilder},
-    model_metadata::{PgFunction, PgTable, TriggerDefinitionError},
+    model_metadata::{PgDataType, PgFunction, PgTable, TriggerDefinitionError},
     models::PgRole,
     sql_traits::{
         errors::LookupError,
@@ -27,11 +27,11 @@ use pg_diesel::{
             TransitionTable, TriggerRow, WrittenCall,
         },
         traits::{
-            CheckConstraintLike, ColumnCollation, ColumnGrantLike, ColumnLike, DatabaseLike,
-            DialectLike, DomainLike, ExtensionLike, ForeignKeyLike, FunctionLike, GrantLike,
-            IndexLike, PartitionStrategy, PolicyLike, Relation, RoleLike, SchemaLike, SequenceLike,
-            TableGrantLike, TableIndexLike, TableLike, TriggerLike, TypeMatch, UserDefinedTypeKind,
-            ViewLike, grant::GrantTarget,
+            CheckConstraintLike, ColumnCollation, ColumnGrantLike, ColumnLike, DataTypeLike,
+            DatabaseLike, DialectLike, DomainLike, ExtensionLike, ForeignKeyLike, FunctionLike,
+            GrantLike, IndexLike, PartitionStrategy, PolicyLike, Relation, RoleLike, SchemaLike,
+            SequenceLike, TableGrantLike, TableIndexLike, TableLike, TriggerLike, TypeMatch,
+            UserDefinedTypeKind, ViewLike, grant::GrantTarget,
         },
     },
 };
@@ -758,6 +758,108 @@ async fn function_row_estimate() {
                 "{schema}.{name} on PostgreSQL {major}"
             );
         }
+    }
+}
+
+/// The name, character length, precision and scale `declared` answers.
+fn type_facts(
+    declared: &PgDataType,
+    database: &PgDieselDatabase,
+) -> (String, Option<u64>, Option<u64>, Option<i64>) {
+    (
+        declared.name(database).into_owned(),
+        declared.max_character_length(database),
+        declared.numeric_precision(database),
+        declared.numeric_scale(database),
+    )
+}
+
+#[tokio::test]
+async fn function_declared_types() {
+    for &major in COMPILED_MAJORS {
+        let database_name = "function_declared_types";
+        let docker = reference_docker(major, database_name)
+            .await
+            .expect("the database starts");
+        let mut conn: PgConnection =
+            establish_connection(docker.port, database_name).expect("the connection opens");
+        conn.batch_execute(
+            "
+            CREATE FUNCTION public.coded(
+                code VARCHAR(3), OUT amount NUMERIC(5,2), OUT label VARCHAR(4)
+            ) LANGUAGE sql AS 'SELECT 1.5, ''ab''';
+            CREATE FUNCTION public.labelled(code VARCHAR(3)) RETURNS SETOF VARCHAR(4)
+                LANGUAGE sql AS 'SELECT code';
+            CREATE FUNCTION public.priced() RETURNS TABLE (code VARCHAR(3), amount NUMERIC(5,2))
+                LANGUAGE sql AS 'SELECT ''ab'', 1.5';
+            ",
+        )
+        .expect("the function fixture applies");
+
+        let database: PgDieselDatabase = PgDieselDatabaseBuilder::default()
+            .connection(&mut conn)
+            .catalog(database_name)
+            .schema("public")
+            .try_into()
+            .expect("the public schema loads");
+        let unmodified = |name: &str| (name.to_owned(), None, None, None);
+
+        // `pg_proc` keeps no type modifier, so every declared type is unmodified.
+        let coded = function(
+            &database,
+            "public",
+            "coded",
+            &["character varying", "numeric", "character varying"],
+        );
+        assert_eq!(
+            coded
+                .argument_types(&database)
+                .map(|declared| type_facts(declared, &database))
+                .collect::<Vec<_>>(),
+            [
+                unmodified("character varying"),
+                unmodified("numeric"),
+                unmodified("character varying"),
+            ],
+            "PostgreSQL {major}"
+        );
+        assert_eq!(
+            coded.return_type(&database),
+            None,
+            "several output arguments declare no return type on PostgreSQL {major}"
+        );
+
+        let labelled = function(&database, "public", "labelled", &["character varying"]);
+        assert_eq!(
+            labelled
+                .return_type(&database)
+                .map(|declared| type_facts(declared, &database)),
+            Some(unmodified("character varying")),
+            "a set answers its element type on PostgreSQL {major}"
+        );
+
+        let priced = function(&database, "public", "priced", &[]);
+        assert_eq!(
+            priced
+                .returned_columns(&database)
+                .map(|(column, declared)| (
+                    column.name().to_owned(),
+                    type_facts(declared, &database)
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("code".to_owned(), unmodified("character varying")),
+                ("amount".to_owned(), unmodified("numeric")),
+            ],
+            "PostgreSQL {major}"
+        );
+        assert_eq!(
+            priced
+                .return_type(&database)
+                .map(|declared| declared.name(&database).into_owned()),
+            Some("record".to_owned()),
+            "`RETURNS TABLE` answers the type `prorettype` stores on PostgreSQL {major}"
+        );
     }
 }
 
